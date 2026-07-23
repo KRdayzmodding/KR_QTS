@@ -80,7 +80,8 @@ class FirstRunWizard(QWizard):
         p3 = QWizardPage()
         p3.setTitle(tr("wizard.import_title", "Импорт старых батников"))
         p3.setSubTitle(tr("wizard.import_sub",
-                          "Если вы запускали сервер батниками, из них можно сразу создать пресеты."))
+                          "Приложение разбирает строки запуска в батниках и пробует создать из них пресеты. "
+                          "Работает не со всеми батниками — проверьте, что распозналось, и снимите галки с ненужного."))
         l3 = QVBoxLayout(p3)
         h = QHBoxLayout()
         self.bat_dir = QLineEdit()
@@ -127,10 +128,24 @@ class FirstRunWizard(QWizard):
     def _scan_bats(self) -> None:
         self.bat_list.clear()
         directory = Path(self.bat_dir.text())
-        for preset in import_bats_from_dir(directory):
-            item = QListWidgetItem(
-                tr("wizard.bat_item", "{name}  (режим: {mode}, модов: {n})",
-                   name=preset.name, mode=preset.mode, n=len(preset.mods)))
+        yes, no = tr("wizard.ok", "✓"), tr("wizard.miss", "—")
+
+        def mark(flag: bool) -> str:
+            return yes if flag else no
+
+        for report in import_bats_from_dir(directory):
+            preset = report.preset
+            item = QListWidgetItem(tr(
+                "wizard.bat_item",
+                "{name}  [{mode}]  конфиг {cfg}  миссия {mis}  профиль {prof}  "
+                "модов {n}+{ns}  клиент {cli}",
+                name=preset.name, mode=preset.mode,
+                cfg=mark(report.has_config), mis=mark(report.has_mission),
+                prof=mark(report.has_profiles), n=report.n_mods,
+                ns=report.n_server_mods, cli=mark(report.client_found)))
+            if not (report.has_config and report.has_mission):
+                item.setToolTip(tr("wizard.bat_partial",
+                                   "Распозналось не всё — после импорта дозаполните пресет в редакторе."))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, preset)

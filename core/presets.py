@@ -106,84 +106,187 @@ class ModPreset:
 
 # ---------------------------------------------------------------- импорт батников
 
-_BAT_VARS = {
-    "MODS": ("mods",),
-    "SEVERSIDEMODS": ("server_mods",),
-    "SERVERSIDEMODS": ("server_mods",),
-    "SERVERCFG": ("server_config",),
-    "SERVERDZCFG": ("server_config",),
-    "MISSION": ("mission",),
-    "MISSIONPATH": ("mission",),
-    "PROFILES": ("profiles",),
-}
+@dataclass
+class ImportReport:
+    """Что удалось распознать в батнике — показывается пользователю перед импортом."""
+    preset: "ServerPreset"
+    has_config: bool = False
+    has_mission: bool = False
+    has_profiles: bool = False
+    n_mods: int = 0
+    n_server_mods: int = 0
+    client_found: bool = False
 
 
-def import_bat(path: Path) -> ServerPreset | None:
-    """Разбирает старый батник запуска и строит из него пресет."""
+_EXE_RE = re.compile(
+    r'(?:^|\s)(?:start\s+(?:"[^"]*"\s+)?)?"?(?P<exe>[^"\s]*?(?P<kind>dayzserver_x64|dayzdiag_x64|dayz_x64)\.exe)"?(?P<rest>[^\r\n]*)',
+    re.IGNORECASE,
+)
+_ARG_RE = re.compile(r'-(?P<name>[A-Za-z]\w*)(?:=(?P<val>"[^"]*"|\S+))?')
+_SET_RE = re.compile(r'^\s*@?SET\s+"?(?P<var>[\w~]+)=(?P<val>[^"\r\n]*)"?\s*$',
+                     re.IGNORECASE | re.MULTILINE)
+
+
+def _read_bat(path: Path) -> str | None:
     try:
-        text = path.read_text(encoding="cp1251", errors="replace")
+        raw = path.read_bytes()
     except OSError:
+        return None
+    for enc in ("utf-8-sig", "cp1251"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("cp1251", errors="replace")
+
+
+def _expand_vars(line: str, variables: dict[str, str], bat_dir: Path) -> str:
+    """Подставляет %ПЕРЕМЕННЫЕ% (имена любые) и %~dp0."""
+    line = re.sub(r"%~dp0", lambda _m: str(bat_dir) + "\\", line, flags=re.IGNORECASE)
+    for _ in range(10):  # переменные могут ссылаться друг на друга
+        def repl(m: re.Match) -> str:
+            return variables.get(m.group(1).upper(), m.group(0))
+        new = re.sub(r"%(\w+)%", repl, line)
+        if new == line:
+            break
+        line = new
+    return line
+
+
+def _split_mods(value: str) -> list[str]:
+    return [x.strip() for x in value.strip().strip('"').split(";") if x.strip()]
+
+
+def _parse_launch_args(rest: str) -> dict[str, str | None]:
+    """Аргументы строки запуска: имя (в нижнем регистре) -> значение или None."""
+    out: dict[str, str | None] = {}
+    for m in _ARG_RE.finditer(rest):
+        val = m.group("val")
+        if val is not None:
+            val = val.strip('"')
+        out[m.group("name").lower()] = val
+    return out
+
+
+def _apply_params(args: dict[str, str | None], target_params: dict, extra: list[str]) -> None:
+    """Раскладывает аргументы по справочнику параметров; незнакомое — в extra."""
+    from .params import PARAMS, FLAG, SWITCH, INT
+    known = {s.name.lower(): s for s in PARAMS}
+    handled = {"server", "connect", "port", "mod", "servermod", "config",
+               "mission", "profiles"}
+    for name, val in args.items():
+        if name in handled:
+            continue
+        spec = known.get(name)
+        if spec is None:
+            extra.append(f"-{name}" + (f"={val}" if val is not None else ""))
+            continue
+        if spec.ptype == FLAG:
+            if val is None or val != "0":
+                target_params[spec.name] = True
+        elif spec.ptype == SWITCH:
+            target_params[spec.name] = (val != "0") if val is not None else True
+        elif spec.ptype == INT:
+            try:
+                target_params[spec.name] = int(val)
+            except (TypeError, ValueError):
+                pass
+        else:
+            if val:
+                target_params[spec.name] = val
+
+
+def import_bat(path: Path) -> ImportReport | None:
+    """Разбирает батник по строкам запуска экзешников.
+
+    Не полагается на имена переменных: собирает все SET, подставляет их в
+    строку запуска и парсит готовые аргументы -config/-mission/-mod и т.д.
+    """
+    text = _read_bat(path)
+    if text is None:
+        return None
+
+    variables = {m.group("var").upper(): m.group("val").strip()
+                 for m in _SET_RE.finditer(text)}
+
+    server_args: dict[str, str | None] | None = None
+    server_kind = ""
+    client_args: dict[str, str | None] | None = None
+    client_kind = ""
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        low = line.lower()
+        if not line or low.startswith(("rem", "@rem", "::")) or "taskkill" in low:
+            continue
+        m = _EXE_RE.search(_expand_vars(line, variables, path.parent))
+        if not m:
+            continue
+        kind = m.group("kind").lower()
+        args = _parse_launch_args(m.group("rest"))
+        if kind == "dayzserver_x64" or "server" in args:
+            if server_args is None:
+                server_args, server_kind = args, kind
+        else:
+            if client_args is None:
+                client_args, client_kind = args, kind
+
+    if server_args is None and client_args is None:
         return None
 
     preset = ServerPreset(name=path.stem)
-    found_any = False
+    report = ImportReport(preset=preset)
 
-    for m in re.finditer(r'SET\s+"?(\w+)=([^"\r\n]*)"?', text, re.IGNORECASE):
-        var, value = m.group(1).upper(), m.group(2).strip()
-        if var in ("MODS", "SEVERSIDEMODS", "SERVERSIDEMODS"):
-            mods = [x.strip() for x in value.split(";") if x.strip()]
-            setattr(preset, _BAT_VARS[var][0], mods)
-            found_any = True
-        elif var in _BAT_VARS:
-            setattr(preset, _BAT_VARS[var][0], value)
-            found_any = True
-        elif var == "LOCALHOST" and ":" in value:
+    if server_args is not None:
+        preset.mode = MODE_DIAG if server_kind == "dayzdiag_x64" else MODE_DEDICATED
+        preset.server_config = server_args.get("config") or ""
+        preset.mission = server_args.get("mission") or ""
+        preset.profiles = server_args.get("profiles") or ""
+        if server_args.get("port"):
             try:
-                preset.port = int(value.rsplit(":", 1)[1])
+                preset.port = int(server_args["port"])
             except ValueError:
                 pass
+        preset.mods = _split_mods(server_args.get("mod") or "")
+        preset.server_mods = _split_mods(server_args.get("servermod") or "")
+        extra: list[str] = []
+        _apply_params(server_args, preset.params_server, extra)
+        preset.extra_server = " ".join(extra)
 
-    if not found_any:
-        return None
+    if client_args is not None:
+        report.client_found = True
+        preset.client_use_diag = client_kind == "dayzdiag_x64"
+        connect = client_args.get("connect") or ""
+        if ":" in connect:
+            try:
+                preset.port = int(connect.rsplit(":", 1)[1])
+            except ValueError:
+                pass
+        if server_args is None:
+            # батник только с клиентом: моды и режим берём из строки клиента
+            preset.mods = _split_mods(client_args.get("mod") or "")
+            if preset.client_use_diag:
+                preset.mode = MODE_DIAG
+            preset.launch_server = False
+        extra_c: list[str] = []
+        _apply_params(client_args, preset.params_client, extra_c)
+        preset.extra_client = " ".join(extra_c)
+    else:
+        preset.launch_client = False
 
-    low = text.lower()
-    if "dayzdiag_x64.exe" in low and "-server" in low:
-        preset.mode = MODE_DIAG
-    elif "dayzserver_x64.exe" in low:
-        preset.mode = MODE_DEDICATED
-        preset.client_use_diag = "dayzdiag_x64.exe" in low
-
-    # Типовые ключи из батников переносим в параметры
-    for pname, target in (
-        ("filePatching", "filepatching"), ("battleye", "battleye"),
-        ("newErrorsAreWarnings", "newerrorsarewarnings"), ("doActionLog", "doactionlog"),
-    ):
-        m = re.search(rf"-{target}(?:=(\d))?", low)
-        if m:
-            val = m.group(1)
-            preset.params_server[pname] = bool(int(val)) if val is not None else True
-    m = re.search(r"-scrdef=(\w+)", low)
-    if m:
-        preset.params_server["scrDef"] = m.group(1).upper()
-    if "-dologs" in low:
-        preset.params_server["doLogs"] = True
-    if "-nopause" in low:
-        preset.params_server["noPause"] = True
-        preset.params_client["noPause"] = True
-
-    # Клиенту — те же diag-флаги, что были в строке клиента (упрощённо: копия серверных)
-    for k in ("filePatching", "battleye", "newErrorsAreWarnings"):
-        if k in preset.params_server:
-            preset.params_client[k] = preset.params_server[k]
-
-    return preset
+    report.has_config = bool(preset.server_config)
+    report.has_mission = bool(preset.mission)
+    report.has_profiles = bool(preset.profiles)
+    report.n_mods = len(preset.mods)
+    report.n_server_mods = len(preset.server_mods)
+    return report
 
 
-def import_bats_from_dir(directory: Path) -> list[ServerPreset]:
+def import_bats_from_dir(directory: Path) -> list[ImportReport]:
     out = []
     if directory.is_dir():
         for f in sorted(directory.glob("*.bat")):
-            p = import_bat(f)
-            if p:
-                out.append(p)
+            r = import_bat(f)
+            if r:
+                out.append(r)
     return out
