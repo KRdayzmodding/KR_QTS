@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# Пользовательские данные — не коммитим личные настройки и пресеты
+config/settings.json
+config/presets/
+config/mod_presets/
+config/mod_sources.json
+
+# IDE
+.vscode/
+*.code-workspace
