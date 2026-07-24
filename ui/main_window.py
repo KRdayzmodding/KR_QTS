@@ -381,12 +381,15 @@ class MainWindow(FluentWindow):
         self._notify("success", tr("settings.saved", "Настройки сохранены."))
 
     def _about(self) -> None:
-        MessageBox("KR Server Manager",
-                   tr("main.about",
-                      "Лаунчер и менеджер модов для DayZ-разработки.\n"
-                      "Лицензия GPLv3 — бесплатно навсегда.\n"
-                      "https://github.com/KRdayzmodding/KR_ServerManager"),
-                   self).exec()
+        box = MessageBox("KR Server Manager",
+                         tr("main.about",
+                            "Лаунчер и менеджер модов для DayZ-разработки.\n"
+                            "Лицензия GPLv3 — бесплатно навсегда.\n"
+                            "https://github.com/KRdayzmodding/KR_ServerManager"),
+                         self)
+        box.cancelButton.hide()
+        box.buttonLayout.insertStretch(1)
+        box.exec()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — API Qt
         for w in (self.log_server, self.log_client):
