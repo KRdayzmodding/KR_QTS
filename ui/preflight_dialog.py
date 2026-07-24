@@ -1,11 +1,11 @@
 """Диалог предстартовой проверки: критичные и некритичные проблемы."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QCheckBox,
-)
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidgetItem
 from PySide6.QtGui import QColor
+from qfluentwidgets import (
+    ListWidget, PushButton, PrimaryPushButton, CheckBox, StrongBodyLabel,
+)
 
 from core.i18n import tr
 from core.preflight import Problem, CRITICAL, has_critical
@@ -30,9 +30,9 @@ class PreflightDialog(QDialog):
         header = (tr("preflight.blocked", "Найдены критичные проблемы — запуск невозможен:")
                   if critical else
                   tr("preflight.warnings", "Есть предупреждения. Можно продолжить."))
-        layout.addWidget(QLabel(header))
+        layout.addWidget(StrongBodyLabel(header))
 
-        lst = QListWidget()
+        lst = ListWidget()
         for p in problems:
             mark = "✖" if p.severity == CRITICAL else "⚠"
             item = QListWidgetItem(f"{mark}  {p.message}")
@@ -40,16 +40,16 @@ class PreflightDialog(QDialog):
             lst.addItem(item)
         layout.addWidget(lst, 1)
 
-        self.chk_ignore = QCheckBox(tr("preflight.ignore",
-                                       "Игнорировать эти предупреждения до перезапуска программы"))
+        self.chk_ignore = CheckBox(tr("preflight.ignore",
+                                      "Игнорировать эти предупреждения до перезапуска программы"))
         self.chk_ignore.setEnabled(not critical)
         layout.addWidget(self.chk_ignore)
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        btn_cancel = QPushButton(tr("preflight.cancel", "Отмена"))
+        btn_cancel = PushButton(tr("preflight.cancel", "Отмена"))
         btn_cancel.clicked.connect(self.reject)
-        btn_skip = QPushButton(tr("preflight.skip", "Пропустить и запустить"))
+        btn_skip = PrimaryPushButton(tr("preflight.skip", "Пропустить и запустить"))
         btn_skip.setEnabled(not critical)
         btn_skip.setDefault(not critical)
         btn_skip.clicked.connect(self._skip)

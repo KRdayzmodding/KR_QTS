@@ -1,15 +1,17 @@
-"""Главное окно: пресеты, ветка, вкладки Запуск/Моды/Конфиг, статусы процессов."""
+"""Главное окно (Fluent): боковая навигация — Запуск / Моды / Конфиг / Настройки."""
 from __future__ import annotations
 
 import html
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QFont, QAction
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
-    QTabWidget, QCheckBox, QLabel, QPlainTextEdit, QMessageBox, QApplication,
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QApplication
+from qfluentwidgets import (
+    FluentWindow, NavigationItemPosition, FluentIcon as FIF,
+    ComboBox, CheckBox, PushButton, PrimaryPushButton, TransparentToolButton,
+    BodyLabel, StrongBodyLabel, CardWidget, InfoBar, InfoBarPosition, MessageBox,
 )
 
 from core import logsource
@@ -26,18 +28,89 @@ from ui.preflight_dialog import PreflightDialog
 from ui.preset_editor import (
     AdvancedPresetDialog, LazyPresetWizard, choose_creation_mode,
 )
-from ui.settings_dialog import SettingsDialog
+from ui.settings_page import SettingsPage
 
 _STATUS_COLORS = {"info": "#d4d4d4", "warning": "#e5c07b", "error": "#ff6b6b"}
+_CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
+                "border:1px solid #333;border-radius:6px;padding:4px;}")
 
 
-class MainWindow(QMainWindow):
+class LaunchInterface(QWidget):
+    """Страница «Запуск»: пресет, ветка, галки, кнопки, статус, журнал запуска."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.setObjectName("launchInterface")
+        self.win = win
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        # Пресет + ветка
+        top = QHBoxLayout()
+        top.addWidget(BodyLabel(tr("main.preset", "Пресет:")))
+        self.preset_combo = ComboBox()
+        self.preset_combo.setMinimumWidth(260)
+        top.addWidget(self.preset_combo, 1)
+        self.b_new = TransparentToolButton(FIF.ADD)
+        self.b_new.setToolTip(tr("main.preset_new", "Создать"))
+        self.b_edit = TransparentToolButton(FIF.EDIT)
+        self.b_edit.setToolTip(tr("main.preset_edit", "Изменить"))
+        self.b_del = TransparentToolButton(FIF.DELETE)
+        self.b_del.setToolTip(tr("main.preset_del", "Удалить"))
+        top.addWidget(self.b_new)
+        top.addWidget(self.b_edit)
+        top.addWidget(self.b_del)
+        top.addSpacing(20)
+        top.addWidget(BodyLabel(tr("main.branch", "Ветка:")))
+        self.branch_combo = ComboBox()
+        self.branch_combo.addItem("Stable", userData=STABLE)
+        self.branch_combo.addItem("Experimental", userData=EXPERIMENTAL)
+        top.addWidget(self.branch_combo)
+        layout.addLayout(top)
+
+        # Карточка запуска
+        card = CardWidget()
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(16, 12, 16, 12)
+        row = QHBoxLayout()
+        self.chk_server = CheckBox(tr("main.chk_server", "Сервер"))
+        self.chk_client = CheckBox(tr("main.chk_client", "Клиент"))
+        row.addWidget(self.chk_server)
+        row.addWidget(self.chk_client)
+        row.addStretch(1)
+        self.status_label = StrongBodyLabel("")
+        row.addWidget(self.status_label)
+        cl.addLayout(row)
+
+        row2 = QHBoxLayout()
+        self.btn_launch = PrimaryPushButton(FIF.PLAY, tr("main.launch_btn", "Запустить"))
+        self.btn_launch.setMinimumHeight(38)
+        self.btn_stop = PushButton(FIF.CLOSE, tr("main.stop_btn", "Остановить всё"))
+        self.btn_stop.setMinimumHeight(38)
+        self.btn_logs = PushButton(FIF.DOCUMENT, tr("main.show_logs", "Показать логи"))
+        self.btn_logs.setMinimumHeight(38)
+        row2.addWidget(self.btn_launch, 2)
+        row2.addWidget(self.btn_stop, 1)
+        row2.addWidget(self.btn_logs, 1)
+        cl.addLayout(row2)
+        layout.addWidget(card)
+
+        # Журнал запуска
+        self.launch_log = QPlainTextEdit()
+        self.launch_log.setReadOnly(True)
+        self.launch_log.setFont(QFont("Consolas", 9))
+        self.launch_log.setStyleSheet(_CONSOLE_QSS)
+        layout.addWidget(self.launch_log, 1)
+
+
+class MainWindow(FluentWindow):
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
         self.registry = ModRegistry(settings)
         self.registry.scan()
-        self.presets: list[ServerPreset] = ServerPreset.load_all()
+        self.presets: list[ServerPreset] = []
         self.current: ServerPreset | None = None
         self.worker: LaunchWorker | None = None
         self.server_pid: int | None = None
@@ -45,13 +118,44 @@ class MainWindow(QMainWindow):
         self.ignored_checks: set[str] = set()  # «игнорировать до перезапуска»
 
         self.setWindowTitle("KR Server Manager")
-        self.resize(1000, 700)
+        self.resize(1060, 720)
 
         self.log_server = LogWindow(tr("main.server_log", "Логи сервера"))
         self.log_client = LogWindow(tr("main.client_log", "Логи клиента"))
 
-        self._build_menu()
-        self._build_ui()
+        # Страницы
+        self.launch_page = LaunchInterface(self)
+        self.mods_panel = ModsPanel()
+        self.mods_panel.setObjectName("modsInterface")
+        self.cfg_editor = CfgEditor()
+        self.cfg_editor.setObjectName("cfgInterface")
+        self.settings_page = SettingsPage(settings, on_saved=self._settings_saved)
+        self.settings_page.setObjectName("settingsInterface")
+
+        self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
+        self.addSubInterface(self.mods_panel, FIF.APPLICATION, tr("main.tab_mods", "Моды"))
+        self.addSubInterface(self.cfg_editor, FIF.DOCUMENT, tr("main.tab_cfg", "Конфиг сервера"))
+        self.addSubInterface(self.settings_page, FIF.SETTING,
+                             tr("menu.settings_nav", "Настройки"),
+                             position=NavigationItemPosition.BOTTOM)
+        self.navigationInterface.addItem(
+            routeKey="about", icon=FIF.INFO, text=tr("menu.about", "О программе"),
+            onClick=self._about, selectable=False,
+            position=NavigationItemPosition.BOTTOM)
+
+        # Сигналы страницы запуска
+        lp = self.launch_page
+        lp.preset_combo.currentIndexChanged.connect(self._preset_changed)
+        lp.branch_combo.currentIndexChanged.connect(self._branch_changed)
+        lp.b_new.clicked.connect(self._new_preset)
+        lp.b_edit.clicked.connect(self._edit_preset)
+        lp.b_del.clicked.connect(self._delete_preset)
+        lp.chk_server.toggled.connect(self._launch_flags_changed)
+        lp.chk_client.toggled.connect(self._launch_flags_changed)
+        lp.btn_launch.clicked.connect(self._launch)
+        lp.btn_stop.clicked.connect(self._stop_all)
+        lp.btn_logs.clicked.connect(self._show_logs)
+
         self._reload_presets()
 
         self.status_timer = QTimer(self)
@@ -59,111 +163,16 @@ class MainWindow(QMainWindow):
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start()
 
-    # ------------------------------------------------------------------ UI
-
-    def _build_menu(self) -> None:
-        m_file = self.menuBar().addMenu(tr("menu.file", "Файл"))
-        act_settings = QAction(tr("menu.settings", "Настройки…"), self)
-        act_settings.triggered.connect(self._open_settings)
-        act_exit = QAction(tr("menu.exit", "Выход"), self)
-        act_exit.triggered.connect(self.close)
-        m_file.addAction(act_settings)
-        m_file.addSeparator()
-        m_file.addAction(act_exit)
-
-        m_help = self.menuBar().addMenu(tr("menu.help", "Справка"))
-        act_about = QAction(tr("menu.about", "О программе"), self)
-        act_about.triggered.connect(self._about)
-        m_help.addAction(act_about)
-
-    def _build_ui(self) -> None:
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-
-        # Верхняя полоса: пресет + ветка
-        top = QHBoxLayout()
-        top.addWidget(QLabel(tr("main.preset", "Пресет:")))
-        self.preset_combo = QComboBox()
-        self.preset_combo.currentIndexChanged.connect(self._preset_changed)
-        top.addWidget(self.preset_combo, 1)
-        b_new = QPushButton(tr("main.preset_new", "Создать"))
-        b_new.clicked.connect(self._new_preset)
-        b_edit = QPushButton(tr("main.preset_edit", "Изменить"))
-        b_edit.clicked.connect(self._edit_preset)
-        b_del = QPushButton(tr("main.preset_del", "Удалить"))
-        b_del.clicked.connect(self._delete_preset)
-        top.addWidget(b_new)
-        top.addWidget(b_edit)
-        top.addWidget(b_del)
-        top.addSpacing(16)
-        top.addWidget(QLabel(tr("main.branch", "Ветка:")))
-        self.branch_combo = QComboBox()
-        self.branch_combo.addItem("Stable", STABLE)
-        self.branch_combo.addItem("Experimental", EXPERIMENTAL)
-        self.branch_combo.currentIndexChanged.connect(self._branch_changed)
-        top.addWidget(self.branch_combo)
-        layout.addLayout(top)
-
-        # Вкладки
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
-
-        # --- Вкладка «Запуск»
-        launch_tab = QWidget()
-        lt = QVBoxLayout(launch_tab)
-        row = QHBoxLayout()
-        self.chk_server = QCheckBox(tr("main.chk_server", "Сервер"))
-        self.chk_client = QCheckBox(tr("main.chk_client", "Клиент"))
-        self.chk_server.toggled.connect(self._launch_flags_changed)
-        self.chk_client.toggled.connect(self._launch_flags_changed)
-        row.addWidget(self.chk_server)
-        row.addWidget(self.chk_client)
-        row.addStretch(1)
-        lt.addLayout(row)
-
-        row2 = QHBoxLayout()
-        self.btn_launch = QPushButton(tr("main.launch", "▶  Запустить"))
-        self.btn_launch.setMinimumHeight(40)
-        self.btn_launch.clicked.connect(self._launch)
-        self.btn_stop = QPushButton(tr("main.stop", "■ Остановить всё"))
-        self.btn_stop.setMinimumHeight(40)
-        self.btn_stop.clicked.connect(self._stop_all)
-        btn_logs = QPushButton(tr("main.show_logs", "Показать логи"))
-        btn_logs.setMinimumHeight(40)
-        btn_logs.clicked.connect(self._show_logs)
-        row2.addWidget(self.btn_launch, 2)
-        row2.addWidget(self.btn_stop, 1)
-        row2.addWidget(btn_logs, 1)
-        lt.addLayout(row2)
-
-        self.status_label = QLabel("")
-        lt.addWidget(self.status_label)
-
-        self.launch_log = QPlainTextEdit()
-        self.launch_log.setReadOnly(True)
-        self.launch_log.setFont(QFont("Consolas", 9))
-        self.launch_log.setStyleSheet("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;}")
-        lt.addWidget(self.launch_log, 1)
-        self.tabs.addTab(launch_tab, tr("main.tab_launch", "Запуск"))
-
-        # --- Вкладка «Моды»
-        self.mods_panel = ModsPanel()
-        self.tabs.addTab(self.mods_panel, tr("main.tab_mods", "Моды"))
-
-        # --- Вкладка «Конфиг сервера»
-        self.cfg_editor = CfgEditor()
-        self.tabs.addTab(self.cfg_editor, tr("main.tab_cfg", "Конфиг сервера"))
-
     # ------------------------------------------------------------------ пресеты
 
     def _reload_presets(self, select: str | None = None) -> None:
-        self.preset_combo.blockSignals(True)
-        self.preset_combo.clear()
+        combo = self.launch_page.preset_combo
+        combo.blockSignals(True)
+        combo.clear()
         self.presets = ServerPreset.load_all()
         for p in self.presets:
-            self.preset_combo.addItem(p.name, p.name)
-        self.preset_combo.blockSignals(False)
+            combo.addItem(p.name)
+        combo.blockSignals(False)
         if not self.presets:
             self.current = None
             self._bind_preset()
@@ -174,7 +183,7 @@ class MainWindow(QMainWindow):
                 if p.name == select:
                     idx = i
                     break
-        self.preset_combo.setCurrentIndex(idx)
+        combo.setCurrentIndex(idx)
         self._preset_changed(idx)
 
     def _preset_changed(self, idx: int) -> None:
@@ -183,16 +192,16 @@ class MainWindow(QMainWindow):
 
     def _bind_preset(self) -> None:
         p = self.current
-        self.chk_server.blockSignals(True)
-        self.chk_client.blockSignals(True)
-        self.chk_server.setChecked(p.launch_server if p else True)
-        self.chk_client.setChecked(p.launch_client if p else True)
-        self.chk_server.blockSignals(False)
-        self.chk_client.blockSignals(False)
+        lp = self.launch_page
+        for chk, val in ((lp.chk_server, p.launch_server if p else True),
+                         (lp.chk_client, p.launch_client if p else True)):
+            chk.blockSignals(True)
+            chk.setChecked(val)
+            chk.blockSignals(False)
         if p:
-            self.branch_combo.blockSignals(True)
-            self.branch_combo.setCurrentIndex(0 if p.branch == STABLE else 1)
-            self.branch_combo.blockSignals(False)
+            lp.branch_combo.blockSignals(True)
+            lp.branch_combo.setCurrentIndex(0 if p.branch == STABLE else 1)
+            lp.branch_combo.blockSignals(False)
         self.mods_panel.set_context(self.registry, p)
         self._bind_cfg()
         self._bind_log_dirs()
@@ -213,7 +222,7 @@ class MainWindow(QMainWindow):
         self.log_client.set_directory(logsource.client_log_dir(branch))
 
     def _branch(self) -> str:
-        return self.branch_combo.currentData() or STABLE
+        return self.launch_page.branch_combo.currentData() or STABLE
 
     def _branch_changed(self, _idx: int) -> None:
         if self.current:
@@ -224,8 +233,8 @@ class MainWindow(QMainWindow):
 
     def _launch_flags_changed(self) -> None:
         if self.current:
-            self.current.launch_server = self.chk_server.isChecked()
-            self.current.launch_client = self.chk_client.isChecked()
+            self.current.launch_server = self.launch_page.chk_server.isChecked()
+            self.current.launch_client = self.launch_page.chk_client.isChecked()
             self.current.save()
 
     def _new_preset(self) -> None:
@@ -250,10 +259,10 @@ class MainWindow(QMainWindow):
     def _delete_preset(self) -> None:
         if not self.current:
             return
-        ret = QMessageBox.question(
-            self, tr("main.del_title", "Удаление пресета"),
-            tr("main.del_confirm", "Удалить пресет «{n}»?", n=self.current.name))
-        if ret == QMessageBox.StandardButton.Yes:
+        box = MessageBox(tr("main.del_title", "Удаление пресета"),
+                         tr("main.del_confirm", "Удалить пресет «{n}»?", n=self.current.name),
+                         self)
+        if box.exec():
             self.current.delete()
             self._reload_presets()
 
@@ -261,17 +270,23 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, msg: str, level: str = "info") -> None:
         color = _STATUS_COLORS.get(level, "#d4d4d4")
-        self.launch_log.appendHtml(f'<span style="color:{color};">{html.escape(msg)}</span>')
+        self.launch_page.launch_log.appendHtml(
+            f'<span style="color:{color};">{html.escape(msg)}</span>')
+
+    def _notify(self, kind: str, title: str, text: str = "") -> None:
+        fn = {"success": InfoBar.success, "warning": InfoBar.warning,
+              "error": InfoBar.error}.get(kind, InfoBar.info)
+        fn(title=title, content=text, parent=self, duration=4000,
+           position=InfoBarPosition.TOP_RIGHT)
 
     def _launch(self) -> None:
         p = self.current
         if not p:
-            QMessageBox.information(self, "KR Server Manager",
-                                    tr("main.no_preset", "Сначала создайте пресет."))
+            self._notify("warning", tr("main.no_preset", "Сначала создайте пресет."))
             return
         if not p.launch_server and not p.launch_client:
-            QMessageBox.information(self, "KR Server Manager",
-                                    tr("main.nothing", "Отметьте, что запускать: сервер и/или клиент."))
+            self._notify("warning", tr("main.nothing",
+                                       "Отметьте, что запускать: сервер и/или клиент."))
             return
         if self.worker and self.worker.isRunning():
             return
@@ -302,7 +317,7 @@ class MainWindow(QMainWindow):
         if prof:
             Path(prof).mkdir(parents=True, exist_ok=True)
 
-        self.btn_launch.setEnabled(False)
+        self.launch_page.btn_launch.setEnabled(False)
         self._append_log(tr("main.launching", "— Запуск «{n}» ({b}) —", n=p.name, b=branch))
         self.worker = LaunchWorker(p, self.settings, branch, self.registry)
         self.worker.log.connect(self._append_log)
@@ -322,12 +337,13 @@ class MainWindow(QMainWindow):
         self.client_pid = pid
 
     def _launch_done(self, error: str | None) -> None:
-        self.btn_launch.setEnabled(True)
+        self.launch_page.btn_launch.setEnabled(True)
         if error:
             self._append_log(error, "error")
-            QMessageBox.critical(self, tr("main.launch_failed", "Запуск не удался"), error)
+            self._notify("error", tr("main.launch_failed", "Запуск не удался"), error)
         else:
             self._append_log(tr("main.launch_ok", "Запуск завершён."))
+            self._notify("success", tr("main.launch_ok", "Запуск завершён."))
 
     def _stop_all(self) -> None:
         n = kill_all()
@@ -341,33 +357,36 @@ class MainWindow(QMainWindow):
         self.log_client.raise_()
 
     def _update_status(self) -> None:
-        def state(pid: int | None, name: str) -> str:
+        def state(pid: int | None, name: str, color_run: str) -> str:
             if pid and psutil.pid_exists(pid):
-                return tr("main.st_run", "{n}: работает (PID {p})", n=name, p=pid)
+                return (f'<span style="color:{color_run};">●</span> '
+                        + tr("main.st_run", "{n}: работает (PID {p})", n=name, p=pid))
             if pid:
-                return tr("main.st_dead", "{n}: завершился", n=name)
-            return tr("main.st_off", "{n}: не запущен", n=name)
+                return ('<span style="color:#ff6b6b;">●</span> '
+                        + tr("main.st_dead", "{n}: завершился", n=name))
+            return ('<span style="color:#777;">●</span> '
+                    + tr("main.st_off", "{n}: не запущен", n=name))
 
-        self.status_label.setText(
-            state(self.server_pid, tr("main.server", "Сервер")) + "    |    " +
-            state(self.client_pid, tr("main.client", "Клиент")))
+        self.launch_page.status_label.setText(
+            state(self.server_pid, tr("main.server", "Сервер"), "#4caf50") + "  "
+            + state(self.client_pid, tr("main.client", "Клиент"), "#4caf50"))
+        self.launch_page.status_label.setTextFormat(Qt.TextFormat.RichText)
 
     # ------------------------------------------------------------------ прочее
 
-    def _open_settings(self) -> None:
-        dlg = SettingsDialog(self.settings, self)
-        if dlg.exec():
-            self.registry = ModRegistry(self.settings)
-            self.registry.scan()
-            self._bind_preset()
+    def _settings_saved(self) -> None:
+        self.registry = ModRegistry(self.settings)
+        self.registry.scan()
+        self._bind_preset()
+        self._notify("success", tr("settings.saved", "Настройки сохранены."))
 
     def _about(self) -> None:
-        QMessageBox.about(
-            self, "KR Server Manager",
-            tr("main.about",
-               "KR Server Manager\n\nЛаунчер и менеджер модов для DayZ-разработки.\n"
-               "Лицензия GPLv3 — бесплатно навсегда.\n"
-               "https://github.com/KRdayzmodding/KR_ServerManager"))
+        MessageBox("KR Server Manager",
+                   tr("main.about",
+                      "Лаунчер и менеджер модов для DayZ-разработки.\n"
+                      "Лицензия GPLv3 — бесплатно навсегда.\n"
+                      "https://github.com/KRdayzmodding/KR_ServerManager"),
+                   self).exec()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — API Qt
         for w in (self.log_server, self.log_client):

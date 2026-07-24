@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtWidgets import QApplication
+from qfluentwidgets import setTheme, setThemeColor, Theme
 
 from core import i18n
 from core.settings import Settings
@@ -15,6 +16,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("KR Server Manager")
     app.setOrganizationName("KRdayzmodding")
+    setTheme(Theme.AUTO)  # следуем светлой/тёмной теме Windows, чтобы диалоги не выбивались
+    setThemeColor("#d0752b")  # оливково-оранжевый акцент под DayZ
 
     settings = Settings.load()
     i18n.load(settings.language)

@@ -5,8 +5,11 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QMessageBox, QHeaderView,
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidgetItem, QHeaderView,
+)
+from qfluentwidgets import (
+    PushButton, PrimaryPushButton, TableWidget, BodyLabel, CaptionLabel,
+    InfoBar, InfoBarPosition, FluentIcon as FIF,
 )
 
 from core.i18n import tr
@@ -46,13 +49,14 @@ class CfgEditor(QWidget):
         self.cfg: ServerCfg | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
         top = QHBoxLayout()
-        self.path_label = QLabel(tr("cfg.no_file", "Конфиг не загружен"))
-        self.enc_label = QLabel("")
+        self.path_label = BodyLabel(tr("cfg.no_file", "Конфиг не загружен"))
+        self.enc_label = BodyLabel("")
         self.enc_label.setStyleSheet("color:#b8860b;")
-        btn_reload = QPushButton(tr("cfg.reload", "Перечитать"))
+        btn_reload = PushButton(FIF.SYNC, tr("cfg.reload", "Перечитать"))
         btn_reload.clicked.connect(self.reload)
-        btn_save = QPushButton(tr("cfg.save", "Сохранить (UTF-8 без BOM)"))
+        btn_save = PrimaryPushButton(FIF.SAVE, tr("cfg.save", "Сохранить (UTF-8 без BOM)"))
         btn_save.clicked.connect(self.save)
         top.addWidget(self.path_label, 1)
         top.addWidget(self.enc_label)
@@ -60,7 +64,8 @@ class CfgEditor(QWidget):
         top.addWidget(btn_save)
         layout.addLayout(top)
 
-        self.table = QTableWidget(0, 2)
+        self.table = TableWidget(self)
+        self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels([
             tr("cfg.var", "Переменная"), tr("cfg.value", "Значение"),
         ])
@@ -69,9 +74,8 @@ class CfgEditor(QWidget):
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table, 1)
 
-        hint = QLabel(tr("cfg.hint",
-                         "Меняются только значения — комментарии и структура файла сохраняются."))
-        hint.setStyleSheet("color:#888;")
+        hint = CaptionLabel(tr("cfg.hint",
+                               "Меняются только значения — комментарии и структура файла сохраняются."))
         layout.addWidget(hint)
 
         self._path: Path | None = None
@@ -122,8 +126,9 @@ class CfgEditor(QWidget):
             self.cfg.set_values(values)
             self.cfg.save()
         except OSError as e:
-            QMessageBox.critical(self, tr("cfg.save_err_title", "Ошибка сохранения"), str(e))
+            InfoBar.error(title=tr("cfg.save_err_title", "Ошибка сохранения"), content=str(e),
+                          parent=self, duration=5000, position=InfoBarPosition.TOP_RIGHT)
             return
         self.enc_label.setText("")
-        QMessageBox.information(self, tr("cfg.saved_title", "Сохранено"),
-                                tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."))
+        InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
+                        parent=self, duration=3000, position=InfoBarPosition.TOP_RIGHT)

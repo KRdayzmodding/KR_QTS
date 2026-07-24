@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QComboBox,
-    QCheckBox, QSpinBox, QPushButton, QFileDialog, QDialogButtonBox, QLabel,
-    QGroupBox, QWizard, QWizardPage, QRadioButton, QMessageBox, QWidget,
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog,
+    QGroupBox, QWizard, QWizardPage, QMessageBox, QWidget,
+)
+from qfluentwidgets import (
+    LineEdit, ComboBox, CheckBox, SpinBox, PushButton, PrimaryPushButton,
+    ToolButton, RadioButton, BodyLabel, CaptionLabel, FluentIcon as FIF,
 )
 
 from core.i18n import tr
@@ -37,9 +40,9 @@ class _PathField(QHBoxLayout):
         self.parent_widget = parent
         self.pick_dir = pick_dir
         self.root_hint = root_hint
-        self.edit = QLineEdit(value)
-        btn = QPushButton("…")
-        btn.setFixedWidth(30)
+        self.edit = LineEdit()
+        self.edit.setText(value)
+        btn = ToolButton(FIF.FOLDER if pick_dir else FIF.DOCUMENT)
         btn.clicked.connect(self._browse)
         self.addWidget(self.edit, 1)
         self.addWidget(btn)
@@ -75,26 +78,29 @@ class AdvancedPresetDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.name = QLineEdit(preset.name)
+        self.name = LineEdit()
+        self.name.setText(preset.name)
         form.addRow(tr("preset.name", "Название"), self.name)
 
-        self.mode = QComboBox()
+        self.mode = ComboBox()
         self.mode.addItem(tr("preset.mode_diag",
-                             "Diag: DayZDiag_x64 как сервер и клиент (отладка, filepatching)"), MODE_DIAG)
+                             "Diag: DayZDiag_x64 как сервер и клиент (отладка, filepatching)"),
+                          userData=MODE_DIAG)
         self.mode.addItem(tr("preset.mode_dedicated",
-                             "Dedicated: отдельный DayZServer_x64 + обычный клиент"), MODE_DEDICATED)
+                             "Dedicated: отдельный DayZServer_x64 + обычный клиент"),
+                          userData=MODE_DEDICATED)
         self.mode.setCurrentIndex(0 if preset.mode == MODE_DIAG else 1)
         self.mode.currentIndexChanged.connect(self._rebuild_params)
         form.addRow(tr("preset.mode", "Режим запуска"), self.mode)
 
-        self.branch = QComboBox()
-        self.branch.addItem("Stable", STABLE)
-        self.branch.addItem("Experimental", EXPERIMENTAL)
+        self.branch = ComboBox()
+        self.branch.addItem("Stable", userData=STABLE)
+        self.branch.addItem("Experimental", userData=EXPERIMENTAL)
         self.branch.setCurrentIndex(0 if preset.branch == STABLE else 1)
         form.addRow(tr("preset.branch", "Ветка по умолчанию"), self.branch)
 
-        self.client_diag = QCheckBox(tr("preset.client_diag",
-                                        "Подключать клиентом DayZDiag_x64 (для dedicated-режима)"))
+        self.client_diag = CheckBox(tr("preset.client_diag",
+                                       "Подключать клиентом DayZDiag_x64 (для dedicated-режима)"))
         self.client_diag.setChecked(preset.client_use_diag)
         form.addRow("", self.client_diag)
 
@@ -104,12 +110,11 @@ class AdvancedPresetDialog(QDialog):
         form.addRow(tr("preset.config", "Серверный конфиг (serverDZ.cfg)"), self.p_config)
         form.addRow(tr("preset.mission", "Папка миссии"), self.p_mission)
         form.addRow(tr("preset.profiles", "Папка профиля"), self.p_profiles)
-        hint = QLabel(tr("preset.path_hint",
-                         "Пути можно указывать относительно корня клиента или абсолютные."))
-        hint.setStyleSheet("color:#888;")
+        hint = CaptionLabel(tr("preset.path_hint",
+                               "Пути можно указывать относительно корня клиента или абсолютные."))
         form.addRow("", hint)
 
-        self.port = QSpinBox()
+        self.port = SpinBox()
         self.port.setRange(1024, 65535)
         self.port.setValue(preset.port)
         form.addRow(tr("preset.port", "Порт"), self.port)
@@ -121,20 +126,26 @@ class AdvancedPresetDialog(QDialog):
         self._rebuild_params()
 
         form2 = QFormLayout()
-        self.extra_server = QLineEdit(preset.extra_server)
+        self.extra_server = LineEdit()
+        self.extra_server.setText(preset.extra_server)
         self.extra_server.setToolTip(tr("preset.extra_tip",
                                         "Любые дополнительные аргументы командной строки."))
-        self.extra_client = QLineEdit(preset.extra_client)
+        self.extra_client = LineEdit()
+        self.extra_client.setText(preset.extra_client)
         self.extra_client.setToolTip(self.extra_server.toolTip())
         form2.addRow(tr("preset.extra_server", "Доп. аргументы сервера"), self.extra_server)
         form2.addRow(tr("preset.extra_client", "Доп. аргументы клиента"), self.extra_client)
         layout.addLayout(form2)
 
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
-                              | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(self._save)
-        bb.rejected.connect(self.reject)
-        layout.addWidget(bb)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        b_cancel = PushButton(tr("preset.cancel", "Отмена"))
+        b_cancel.clicked.connect(self.reject)
+        b_save = PrimaryPushButton(FIF.SAVE, tr("preset.save", "Сохранить"))
+        b_save.clicked.connect(self._save)
+        btns.addWidget(b_cancel)
+        btns.addWidget(b_save)
+        layout.addLayout(btns)
 
     # Параметры: FLAG -> чекбокс; SWITCH -> комбо (—/вкл/выкл); INT/STR -> строка
     def _rebuild_params(self) -> None:
@@ -153,21 +164,22 @@ class AdvancedPresetDialog(QDialog):
             for spec in specs_for(target, diag):
                 w: QWidget
                 if spec.ptype == FLAG:
-                    w = QCheckBox()
+                    w = CheckBox()
                     w.setChecked(bool(values.get(spec.name, False)))
                 elif spec.ptype == SWITCH:
-                    w = QComboBox()
-                    w.addItem("—", None)
-                    w.addItem(tr("preset.sw_on", "включено (=1)"), True)
-                    w.addItem(tr("preset.sw_off", "выключено (=0)"), False)
+                    w = ComboBox()
+                    w.addItem("—", userData=None)
+                    w.addItem(tr("preset.sw_on", "включено (=1)"), userData=True)
+                    w.addItem(tr("preset.sw_off", "выключено (=0)"), userData=False)
                     cur = values.get(spec.name, None)
                     w.setCurrentIndex(0 if cur is None else (1 if cur else 2))
                 else:
-                    w = QLineEdit(str(values.get(spec.name, "")))
+                    w = LineEdit()
+                    w.setText(str(values.get(spec.name, "")))
                     if spec.ptype == INT:
                         w.setPlaceholderText(tr("preset.int_ph", "число или пусто"))
                 w.setToolTip(spec.tooltip())
-                label = QLabel(f"-{spec.name}")
+                label = BodyLabel(f"-{spec.name}")
                 label.setToolTip(spec.tooltip())
                 f.addRow(label, w)
                 self._param_widgets[(target, spec.name)] = w
@@ -234,16 +246,16 @@ class LazyPresetWizard(QWizard):
         p1 = QWizardPage()
         p1.setTitle(tr("preset.lazy_p1", "Название и режим"))
         l1 = QVBoxLayout(p1)
-        self.name = QLineEdit()
+        self.name = LineEdit()
         self.name.setPlaceholderText(tr("preset.lazy_name_ph", "Например: Мой сервер Черноруси"))
-        l1.addWidget(QLabel(tr("preset.name", "Название")))
+        l1.addWidget(BodyLabel(tr("preset.name", "Название")))
         l1.addWidget(self.name)
-        self.rb_diag = QRadioButton(tr("preset.lazy_diag",
-                                       "Отладка модов (Diag) — рекомендуется для разработки.\n"
-                                       "Игра запускается в диагностическом режиме, работает filepatching."))
-        self.rb_dedicated = QRadioButton(tr("preset.lazy_dedicated",
-                                            "Обычный сервер (Dedicated) — как «настоящий» сервер.\n"
-                                            "Отдельная серверная программа + обычный клиент."))
+        self.rb_diag = RadioButton(tr("preset.lazy_diag",
+                                      "Отладка модов (Diag) — рекомендуется для разработки.\n"
+                                      "Игра запускается в диагностическом режиме, работает filepatching."))
+        self.rb_dedicated = RadioButton(tr("preset.lazy_dedicated",
+                                           "Обычный сервер (Dedicated) — как «настоящий» сервер.\n"
+                                           "Отдельная серверная программа + обычный клиент."))
         self.rb_diag.setChecked(True)
         l1.addWidget(self.rb_diag)
         l1.addWidget(self.rb_dedicated)
@@ -261,9 +273,8 @@ class LazyPresetWizard(QWizard):
         l2.addRow(tr("preset.lazy_config", "Конфиг сервера (serverDZ.cfg)"), self.p_config)
         l2.addRow(tr("preset.lazy_mission", "Папка миссии (например dayzOffline.chernarusplus)"), self.p_mission)
         l2.addRow(tr("preset.lazy_profiles", "Папка профиля (логи и настройки сервера)"), self.p_profiles)
-        note = QLabel(tr("preset.lazy_p2_hint",
-                         "Профиль можно указать в любую пустую папку — сервер сам её заполнит."))
-        note.setStyleSheet("color:#888;")
+        note = CaptionLabel(tr("preset.lazy_p2_hint",
+                               "Профиль можно указать в любую пустую папку — сервер сам её заполнит."))
         l2.addRow("", note)
         self.addPage(p2)
 
@@ -271,7 +282,7 @@ class LazyPresetWizard(QWizard):
         p3 = QWizardPage()
         p3.setTitle(tr("preset.lazy_p3", "Готово"))
         l3 = QVBoxLayout(p3)
-        l3.addWidget(QLabel(tr("preset.lazy_done",
+        l3.addWidget(BodyLabel(tr("preset.lazy_done",
                                "Пресет будет создан с разумными настройками по умолчанию.\n"
                                "Моды подключаются на вкладке «Моды», параметры — в «Расширенном» редакторе.")))
         self.addPage(p3)

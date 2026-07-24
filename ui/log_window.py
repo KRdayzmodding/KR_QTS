@@ -8,9 +8,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton,
-    QLineEdit, QRadioButton, QLabel, QMessageBox,
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit
+from qfluentwidgets import (
+    PushButton, RadioButton, SearchLineEdit, CaptionLabel, MessageBox,
+    FluentIcon as FIF,
 )
 
 from core.i18n import tr
@@ -31,15 +32,17 @@ class LogWindow(QWidget):
         self.tailer: logsource.LogTailer | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
 
         top = QHBoxLayout()
-        self.search_edit = QLineEdit()
+        self.search_edit = SearchLineEdit()
         self.search_edit.setPlaceholderText(tr("log.search_ph", "Поиск по логам…"))
         self.search_edit.returnPressed.connect(self._search)
-        self.rb_current = QRadioButton(tr("log.search_current", "Только в этом файле"))
-        self.rb_all = QRadioButton(tr("log.search_all", "Во всех файлах"))
+        self.search_edit.searchSignal.connect(lambda _t: self._search())
+        self.rb_current = RadioButton(tr("log.search_current", "Только в этом файле"))
+        self.rb_all = RadioButton(tr("log.search_all", "Во всех файлах"))
         self.rb_current.setChecked(True)
-        btn_search = QPushButton(tr("log.search", "Найти"))
+        btn_search = PushButton(FIF.SEARCH, tr("log.search", "Найти"))
         btn_search.clicked.connect(self._search)
         top.addWidget(self.search_edit, 1)
         top.addWidget(self.rb_current)
@@ -51,19 +54,19 @@ class LogWindow(QWidget):
         self.view.setReadOnly(True)
         self.view.setMaximumBlockCount(_MAX_BLOCKS)
         self.view.setFont(QFont("Consolas", 9))
-        self.view.setStyleSheet("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;}")
+        self.view.setStyleSheet("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
+                                "border:1px solid #333;border-radius:6px;padding:4px;}")
         layout.addWidget(self.view, 1)
 
         bottom = QHBoxLayout()
-        self.path_label = QLabel("")
-        self.path_label.setStyleSheet("color:#888;")
-        btn_clear = QPushButton(tr("log.clear", "Очистить"))
+        self.path_label = CaptionLabel("")
+        btn_clear = PushButton(FIF.ERASE_TOOL, tr("log.clear", "Очистить"))
         btn_clear.setToolTip(tr("log.clear_tip",
                                 "Очищает окно, файлы логов не трогает."))
         btn_clear.clicked.connect(self.view.clear)
-        btn_open = QPushButton(tr("log.open_dir", "Открыть папку с логами"))
+        btn_open = PushButton(FIF.FOLDER, tr("log.open_dir", "Открыть папку"))
         btn_open.clicked.connect(self._open_dir)
-        btn_delete = QPushButton(tr("log.delete_files", "Удалить файлы логов"))
+        btn_delete = PushButton(FIF.DELETE, tr("log.delete_files", "Удалить файлы логов"))
         btn_delete.setToolTip(tr("log.delete_tip",
                                  "Удаляет все файлы логов в папке. Окно не очищается."))
         btn_delete.clicked.connect(self._delete_files)
@@ -111,11 +114,12 @@ class LogWindow(QWidget):
     def _delete_files(self) -> None:
         if not self.directory:
             return
-        ret = QMessageBox.question(
-            self, tr("log.delete_title", "Удаление логов"),
+        box = MessageBox(
+            tr("log.delete_title", "Удаление логов"),
             tr("log.delete_confirm", "Удалить все файлы логов в {p}?", p=self.directory),
+            self,
         )
-        if ret == QMessageBox.StandardButton.Yes:
+        if box.exec():
             if self.tailer:
                 self.tailer.current = None
                 self.tailer._pos = 0

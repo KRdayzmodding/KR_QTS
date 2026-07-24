@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMenu, QInputDialog, QMessageBox, QDialog, QListWidget,
-    QFileDialog, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidgetItem, QHeaderView, QMenu,
+    QInputDialog, QDialog, QFileDialog, QTableWidget,
+)
+from qfluentwidgets import (
+    PushButton, PrimaryPushButton, TransparentToolButton, TableWidget, ListWidget,
+    SearchLineEdit, BodyLabel, CaptionLabel, InfoBar, InfoBarPosition,
+    FluentIcon as FIF,
 )
 
 from core.i18n import tr
@@ -23,15 +27,17 @@ class SourcesDialog(QDialog):
         self.setWindowTitle(tr("mods.sources_title", "Сорсы мода {m}", m=mod.name))
         self.resize(560, 300)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(tr("mods.sources_hint",
-                                   "Одна папка сорсов = один PBO в addons. Запаковщик сравнивает даты файлов сорсов с датой PBO.")))
-        self.lst = QListWidget()
+        hint = BodyLabel(tr("mods.sources_hint",
+                            "Одна папка сорсов = один PBO в addons. Запаковщик сравнивает даты файлов сорсов с датой PBO."))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.lst = ListWidget()
         self.lst.addItems(mod.sources)
         layout.addWidget(self.lst, 1)
         btns = QHBoxLayout()
-        b_add = QPushButton(tr("mods.sources_add", "Добавить папку…"))
-        b_del = QPushButton(tr("mods.sources_del", "Убрать выбранную"))
-        b_ok = QPushButton("OK")
+        b_add = PushButton(FIF.ADD, tr("mods.sources_add", "Добавить папку…"))
+        b_del = PushButton(FIF.REMOVE, tr("mods.sources_del", "Убрать выбранную"))
+        b_ok = PrimaryPushButton("OK")
         b_add.clicked.connect(self._add)
         b_del.clicked.connect(lambda: self.lst.takeItem(self.lst.currentRow()))
         b_ok.clicked.connect(self.accept)
@@ -57,29 +63,36 @@ class ModsPanel(QWidget):
         self.preset: ServerPreset | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
         top = QHBoxLayout()
-        b_refresh = QPushButton(tr("mods.refresh", "Обновить список"))
+        b_refresh = PushButton(FIF.SYNC, tr("mods.refresh", "Обновить"))
         b_refresh.clicked.connect(self.refresh)
-        b_all = QPushButton(tr("mods.enable_all", "Включить все"))
+        b_all = PushButton(tr("mods.enable_all", "Включить все"))
         b_all.clicked.connect(lambda: self._set_all(True))
-        b_none = QPushButton(tr("mods.disable_all", "Выключить все"))
+        b_none = PushButton(tr("mods.disable_all", "Выключить все"))
         b_none.clicked.connect(lambda: self._set_all(False))
-        b_up = QPushButton("↑")
+        b_up = TransparentToolButton(FIF.UP)
         b_up.setToolTip(tr("mods.up", "Выше в порядке загрузки"))
         b_up.clicked.connect(lambda: self._move(-1))
-        b_down = QPushButton("↓")
+        b_down = TransparentToolButton(FIF.DOWN)
         b_down.setToolTip(tr("mods.down", "Ниже в порядке загрузки"))
         b_down.clicked.connect(lambda: self._move(1))
-        b_save_set = QPushButton(tr("mods.save_set", "Сохранить как набор…"))
+        b_save_set = PushButton(FIF.SAVE_AS, tr("mods.save_set", "Сохранить как набор…"))
         b_save_set.clicked.connect(self._save_set)
-        self.b_apply_set = QPushButton(tr("mods.apply_set", "Применить набор"))
+        self.b_apply_set = PushButton(FIF.CHECKBOX, tr("mods.apply_set", "Применить набор"))
         self.b_apply_set.clicked.connect(self._apply_set_menu)
         for b in (b_refresh, b_all, b_none, b_up, b_down, b_save_set, self.b_apply_set):
             top.addWidget(b)
         top.addStretch(1)
         layout.addLayout(top)
 
-        self.table = QTableWidget(0, 5)
+        self.search = SearchLineEdit()
+        self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
+        self.search.textChanged.connect(self._apply_filter)
+        layout.addWidget(self.search)
+
+        self.table = TableWidget(self)
+        self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels([
             tr("mods.col_on", "Вкл"), tr("mods.col_name", "Мод"),
             tr("mods.col_src", "Источник"), tr("mods.col_server", "Серверный"),
@@ -94,11 +107,10 @@ class ModsPanel(QWidget):
         self.table.itemChanged.connect(lambda _i: self.apply_to_preset())
         layout.addWidget(self.table, 1)
 
-        hint = QLabel(tr("mods.hint",
+        hint = CaptionLabel(tr("mods.hint",
                          "Галка «Вкл» подключает мод. «Серверный» — мод пойдёт в -serverMod (только сервер). "
                          "Порядок строк = порядок загрузки. Двойной клик по «Сорсы» — привязать сорсы локального мода."))
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#888;")
         layout.addWidget(hint)
 
     # ---------------------------------------------------------------- контекст
@@ -133,6 +145,13 @@ class ModsPanel(QWidget):
         for mod in sorted(self.registry.all(), key=sort_key):
             self._add_row(mod)
         self.table.blockSignals(False)
+        self._apply_filter(self.search.text())
+
+    def _apply_filter(self, text: str) -> None:
+        q = text.strip().lower()
+        for row in range(self.table.rowCount()):
+            name = self.table.item(row, COL_NAME).text().lower()
+            self.table.setRowHidden(row, bool(q) and q not in name)
 
     def _add_row(self, mod: ModInfo) -> None:
         preset = self.preset
@@ -255,14 +274,16 @@ class ModsPanel(QWidget):
             return
         ModPreset(name=name.strip(), mods=list(self.preset.mods),
                   server_mods=list(self.preset.server_mods)).save()
-        QMessageBox.information(self, tr("mods.set_title", "Набор модов"),
-                                tr("mods.set_saved", "Набор «{n}» сохранён.", n=name.strip()))
+        InfoBar.success(title=tr("mods.set_saved", "Набор «{n}» сохранён.", n=name.strip()),
+                        content="", parent=self, duration=3000,
+                        position=InfoBarPosition.TOP_RIGHT)
 
     def _apply_set_menu(self) -> None:
         sets = ModPreset.load_all()
         if not sets:
-            QMessageBox.information(self, tr("mods.set_title", "Набор модов"),
-                                    tr("mods.no_sets", "Сохранённых наборов пока нет."))
+            InfoBar.info(title=tr("mods.no_sets", "Сохранённых наборов пока нет."),
+                         content="", parent=self, duration=3000,
+                         position=InfoBarPosition.TOP_RIGHT)
             return
         menu = QMenu(self)
         for mp in sets:

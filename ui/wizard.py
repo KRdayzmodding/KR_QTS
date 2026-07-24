@@ -4,11 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QWizard, QWizardPage, QVBoxLayout, QFormLayout, QComboBox, QLabel,
-    QLineEdit, QPushButton, QHBoxLayout, QFileDialog, QListWidget,
-    QListWidgetItem, QCheckBox,
+    QWizard, QWizardPage, QVBoxLayout, QFormLayout, QHBoxLayout, QFileDialog,
+    QListWidgetItem,
 )
 from PySide6.QtCore import Qt
+from qfluentwidgets import (
+    ComboBox, LineEdit, PushButton, ToolButton, ListWidget, BodyLabel,
+    CaptionLabel, FluentIcon as FIF,
+)
 
 from core import autodetect, i18n
 from core.i18n import tr, AVAILABLE
@@ -28,9 +31,9 @@ class FirstRunWizard(QWizard):
         p1 = QWizardPage()
         p1.setTitle(tr("wizard.lang_title", "Язык / Language / Sprache"))
         l1 = QVBoxLayout(p1)
-        self.lang = QComboBox()
+        self.lang = ComboBox()
         for code, label in AVAILABLE.items():
-            self.lang.addItem(label, code)
+            self.lang.addItem(label, userData=code)
         idx = list(AVAILABLE).index(settings.language) if settings.language in AVAILABLE else 0
         self.lang.setCurrentIndex(idx)
         l1.addWidget(self.lang)
@@ -44,13 +47,13 @@ class FirstRunWizard(QWizard):
                           "Пути найдены автоматически по реестру Steam. Проверьте и поправьте при необходимости."))
         l2 = QFormLayout(p2)
         det = autodetect.detect_all()
-        self.paths: dict[str, QLineEdit] = {}
+        self.paths: dict[str, LineEdit] = {}
 
         def row(key: str, label: str, value: str):
             h = QHBoxLayout()
-            edit = QLineEdit(value)
-            btn = QPushButton("…")
-            btn.setFixedWidth(30)
+            edit = LineEdit()
+            edit.setText(value)
+            btn = ToolButton(FIF.FOLDER)
             btn.clicked.connect(lambda _=False, e=edit: self._browse(e))
             h.addWidget(edit, 1)
             h.addWidget(btn)
@@ -70,9 +73,8 @@ class FirstRunWizard(QWizard):
         row("dayz_tools", tr("settings.dayz_tools", "DayZ Tools"),
             settings.dayz_tools or det["dayz_tools"])
         self._workshop_dirs = settings.workshop_dirs or det["workshop_dirs"]
-        ws_label = QLabel("\n".join(self._workshop_dirs) or
-                          tr("wizard.no_workshop", "Workshop не найден (можно указать в настройках)"))
-        ws_label.setStyleSheet("color:#888;")
+        ws_label = CaptionLabel("\n".join(self._workshop_dirs) or
+                                tr("wizard.no_workshop", "Workshop не найден (можно указать в настройках)"))
         l2.addRow(tr("settings.workshop", "Папки Steam Workshop"), ws_label)
         self.addPage(p2)
 
@@ -84,17 +86,16 @@ class FirstRunWizard(QWizard):
                           "Работает не со всеми батниками — проверьте, что распозналось, и снимите галки с ненужного."))
         l3 = QVBoxLayout(p3)
         h = QHBoxLayout()
-        self.bat_dir = QLineEdit()
-        btn_dir = QPushButton("…")
-        btn_dir.setFixedWidth(30)
+        self.bat_dir = LineEdit()
+        btn_dir = ToolButton(FIF.FOLDER)
         btn_dir.clicked.connect(lambda: self._browse(self.bat_dir))
-        btn_scan = QPushButton(tr("wizard.scan", "Найти батники"))
+        btn_scan = PushButton(FIF.SEARCH, tr("wizard.scan", "Найти батники"))
         btn_scan.clicked.connect(self._scan_bats)
         h.addWidget(self.bat_dir, 1)
         h.addWidget(btn_dir)
         h.addWidget(btn_scan)
         l3.addLayout(h)
-        self.bat_list = QListWidget()
+        self.bat_list = ListWidget()
         l3.addWidget(self.bat_list, 1)
         self.addPage(p3)
         self._p3 = p3
@@ -103,7 +104,7 @@ class FirstRunWizard(QWizard):
         p4 = QWizardPage()
         p4.setTitle(tr("wizard.done_title", "Готово"))
         l4 = QVBoxLayout(p4)
-        l4.addWidget(QLabel(tr("wizard.done_text",
+        l4.addWidget(BodyLabel(tr("wizard.done_text",
                                "Настройка завершена. Всё можно изменить позже в «Настройках».\n\n"
                                "Дальше: создайте или выберите пресет, подключите моды на вкладке «Моды»\n"
                                "и нажмите «Запустить».")))
