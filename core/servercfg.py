@@ -32,6 +32,20 @@ KNOWN_VARS: dict[str, str] = {
     "networkRangeNear": "int", "networkRangeFar": "int",
     "networkRangeDistantEffect": "int", "defaultVisibility": "int",
     "defaultObjectViewDistance": "int",
+    # по официальной вики (community.bistudio.com/wiki/DayZ:Server_Configuration)
+    "description": "str", "enableWhitelist": "int", "disableBanlist": "str",
+    "disablePrioritylist": "str", "disableMultiAccountMitigation": "str",
+    "pingWarning": "int", "pingCritical": "int", "MaxPing": "int",
+    "serverFpsWarning": "int", "shotValidation": "int", "clientPort": "int",
+    "template": "str",
+    "networkObjectBatchLogSlow": "int",
+    "networkObjectBatchEnforceBandwidthLimits": "int",
+    "networkObjectBatchUseEstimatedBandwidth": "int",
+    "networkObjectBatchUseDynamicMaximumBandwidth": "int",
+    "networkObjectBatchBandwidthLimit": "str",
+    "networkObjectBatchCompute": "int",
+    "networkObjectBatchSendCreate": "int",
+    "networkObjectBatchSendDelete": "int",
 }
 
 _VAR_RE = re.compile(r'^(\s*)([A-Za-z_]\w*)\s*=\s*(".*?"|[^;/]*?)\s*;', re.MULTILINE)
