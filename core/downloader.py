@@ -22,7 +22,7 @@ class MissionDownloadWorker(QThread):
     replace=True — обновление существующей папки; keep_storage управляет
     судьбой storage_* (персистентность) при обновлении.
     """
-    progress = Signal(int, int, float)   # скачано байт, всего (-1 если неизвестно), секунд прошло
+    progress = Signal(int, int, float, bool)  # байт скачано, всего, секунд, total оценочный?
     status = Signal(str)
     done = Signal(bool, str)             # ok, целевой путь или текст ошибки
 
@@ -55,6 +55,13 @@ class MissionDownloadWorker(QThread):
         self.status.emit(tr("dl.resolving", "Определение версии…"))
         sub_path = missions.resolve_entry_path(entry)
         sha = missions.latest_sha(entry, sub_path)
+        # GitHub отдаёт zip потоком без Content-Length; оцениваем объём по размеру репозитория
+        estimated = 0
+        try:
+            info = missions._api_json(f"https://api.github.com/repos/{entry.repo}")
+            estimated = int(info.get("size", 0)) * 1024
+        except Exception:  # noqa: BLE001 — оценка не обязательна
+            pass
         if self._cancel:
             self.done.emit(False, tr("dl.cancelled", "Отменено"))
             return
@@ -68,7 +75,10 @@ class MissionDownloadWorker(QThread):
             t0 = time.monotonic()
             got = 0
             with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_zip, "wb") as f:
-                total = int(resp.headers.get("Content-Length") or -1)
+                total = int(resp.headers.get("Content-Length") or 0)
+                is_estimate = total <= 0
+                if is_estimate:
+                    total = estimated
                 while True:
                     if self._cancel:
                         self.done.emit(False, tr("dl.cancelled", "Отменено"))
@@ -78,7 +88,7 @@ class MissionDownloadWorker(QThread):
                         break
                     f.write(chunk)
                     got += len(chunk)
-                    self.progress.emit(got, total, time.monotonic() - t0)
+                    self.progress.emit(got, total, time.monotonic() - t0, is_estimate)
 
             self.status.emit(tr("dl.extracting", "Распаковка…"))
             with zipfile.ZipFile(tmp_zip) as zf:
