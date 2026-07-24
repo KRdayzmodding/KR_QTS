@@ -4,7 +4,8 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog, QScrollArea,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox, CheckBox,
     PushButton, PrimaryPushButton, ToolButton, BodyLabel, CaptionLabel,
@@ -81,6 +82,12 @@ class SettingsPage(QScrollArea):
         self.workshop.setToolTip(tr("settings.workshop_tip",
                                     "Папки steamapps/workshop/content/221100 — по одной на строку."))
         form.addRow(BodyLabel(tr("settings.workshop", "Папки Steam Workshop")), self.workshop)
+        local_mods_hint = CaptionLabel(tr(
+            "settings.local_mods_moved",
+            "Папки локальных модов настраиваются на вкладке «Моды» "
+            "(кнопка «Добавить локальные моды»)."))
+        form.addRow(BodyLabel(tr("settings.local_mods", "Папки локальных модов")),
+                   local_mods_hint)
 
         self.admin_ids = PlainTextEdit()
         self.admin_ids.setPlainText("\n".join(settings.admin_steamids))
@@ -92,6 +99,33 @@ class SettingsPage(QScrollArea):
         self.admin_pass = PasswordLineEdit()
         self.admin_pass.setText(settings.admin_password)
         form.addRow(BodyLabel(tr("settings.admin_pass", "Пароль модов-админок")), self.admin_pass)
+
+        steam_row = QHBoxLayout()
+        self.steam_key = PasswordLineEdit()
+        self.steam_key.setText(settings.steam_api_key)
+        btn_get_key = PushButton(FIF.LINK, tr("settings.steam_key_get", "Получить"))
+        btn_get_key.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://steamcommunity.com/dev/apikey")))
+        steam_row.addWidget(self.steam_key, 1)
+        steam_row.addWidget(btn_get_key)
+        form.addRow(BodyLabel(tr("settings.steam_key", "Steam API-ключ")), steam_row)
+        steam_hint = CaptionLabel(tr(
+            "settings.steam_key_hint",
+            "Нужен для определения зависимостей стим-модов через официальный API. "
+            "Как получить: нажмите «Получить», войдите в Steam, в поле «Domain Name» "
+            "впишите что угодно (например, localhost), согласитесь с условиями и "
+            "скопируйте ключ сюда. Без ключа зависимости читаются со страницы "
+            "воркшопа — работает, но менее надёжно."))
+        steam_hint.setWordWrap(True)
+        form.addRow("", steam_hint)
+
+        self.p_downloads = PathRow(settings.downloads_dir, self)
+        self.p_downloads.edit.setPlaceholderText(tr("settings.downloads_ph",
+                                                    "<папка программы>\\downloads"))
+        self.p_downloads.edit.setToolTip(tr("settings.downloads_tip",
+                                            "Общее хранилище скачанных модов карт; во все корни "
+                                            "они подключаются junction-ссылками."))
+        form.addRow(BodyLabel(tr("settings.downloads", "Папка загрузок")), self.p_downloads)
 
         self.pack_flags = LineEdit()
         self.pack_flags.setText(settings.pack_flags)
@@ -147,8 +181,12 @@ class SettingsPage(QScrollArea):
         s.mikero_tools = self.p_mikero.text()
         s.dayz_tools = self.p_tools.text()
         s.workshop_dirs = [x.strip() for x in self.workshop.toPlainText().splitlines() if x.strip()]
+        # local_mods_dirs больше не редактируется на этой странице — управляется
+        # с вкладки «Моды» (кнопка «Добавить локальные моды»), не перезаписываем
         s.admin_steamids = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
         s.admin_password = self.admin_pass.text()
+        s.steam_api_key = self.steam_key.text().strip()
+        s.downloads_dir = self.p_downloads.text()
         s.pack_flags = self.pack_flags.text().strip() or "-P -K"
         s.clean_meta = self.clean_meta.isChecked()
         s.save()

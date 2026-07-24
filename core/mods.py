@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,17 +13,30 @@ from .settings import Settings, MOD_SOURCES_FILE
 
 SOURCE_STEAM = "steam"
 SOURCE_LOCAL = "local"
+SOURCE_GITHUB = "github"  # скачан приложением в KR_Debug/mods_dl
 
 
 @dataclass
 class ModInfo:
     name: str                 # отображаемое имя, оно же имя @папки при подключении
     path: str                 # реальная папка мода
-    source: str               # steam | local
+    source: str               # steam | local | github
+    group: str = ""           # группа в дереве: Steam / GitHub / имя папки
     workshop_id: str = ""
     has_keys: bool = False
     duplicate_of_steam: str = ""   # id, если локальный мод дублирует воркшопный
     sources: list[str] = field(default_factory=list)  # папки сорсов (для запаковки)
+    problem: str = ""          # причина невалидности (нет addons/.pbo и т.п.), пусто — всё ок
+    size_bytes: int = 0        # суммарный размер папки мода на диске
+    pbo_names: list[str] = field(default_factory=list)  # имена .pbo в addons
+
+    @property
+    def valid(self) -> bool:
+        return not self.problem
+
+    @property
+    def pbo_count(self) -> int:
+        return len(self.pbo_names)
 
     @property
     def folder_name(self) -> str:
@@ -43,6 +57,62 @@ def _read_meta_name(mod_dir: Path) -> str:
                     return m.group(1).strip()
             except OSError:
                 pass
+    return ""
+
+
+def format_size(n: int) -> str:
+    size = float(n)
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if size < 1024 or unit == "ГБ":
+            return f"{size:.0f} {unit}" if unit == "Б" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} ГБ"
+
+
+def scan_mod_stats(mod_dir: Path) -> tuple[list[str], int]:
+    """Имена .pbo в addons (топ-уровень) и суммарный размер всей папки мода."""
+    pbo_names: list[str] = []
+    try:
+        for child in mod_dir.iterdir():
+            if child.is_dir() and child.name.lower() == "addons":
+                pbo_names = sorted(f.name for f in child.iterdir()
+                                   if f.is_file() and f.suffix.lower() == ".pbo")
+                break
+    except OSError:
+        pass
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(mod_dir):
+            for fn in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return pbo_names, total
+
+
+def validate_mod_dir(p: Path) -> str:
+    """Проверка правил локального мода. Возвращает текст проблемы или пустую строку.
+
+    Правила: имя с @, внутри папка addons с .pbo, никаких не-ASCII символов.
+    """
+    from .i18n import tr
+    if not p.name.startswith("@"):
+        return tr("mods.val_at", "{n}: имя папки должно начинаться с @", n=p.name)
+    if not all(ord(c) < 128 for c in p.name):
+        return tr("mods.val_ascii",
+                  "{n}: в имени папки недопустимы русские символы", n=p.name)
+    addons = None
+    for child in p.iterdir() if p.is_dir() else []:
+        if child.is_dir() and child.name.lower() == "addons":
+            addons = child
+            break
+    if addons is None:
+        return tr("mods.val_addons", "{n}: внутри нет папки addons", n=p.name)
+    if not any(f.suffix.lower() == ".pbo" for f in addons.iterdir() if f.is_file()):
+        return tr("mods.val_pbo", "{n}: в addons нет ни одного .pbo", n=p.name)
     return ""
 
 
@@ -77,33 +147,63 @@ class ModRegistry:
                 if not item.is_dir():
                     continue
                 name = _read_meta_name(item) or item.name
+                pbo_names, size_bytes = scan_mod_stats(item)
                 mod = ModInfo(
-                    name=name, path=str(item), source=SOURCE_STEAM,
+                    name=name, path=str(item), source=SOURCE_STEAM, group="Steam",
                     workshop_id=item.name, has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
+                    pbo_names=pbo_names, size_bytes=size_bytes,
                 )
                 self.mods[mod.folder_name.lower()] = mod
 
         # 2. Локальные @папки в корнях клиента и сервера (junction пропускаем —
-        #    это наши же ссылки на воркшоп или на другие локальные моды)
+        #    это наши же ссылки на воркшоп или на другие локальные моды),
+        #    настроенные папки локальных модов и скачанные с GitHub
+        from .layout import mods_dl_dir
         roots = [self.settings.client_stable, self.settings.client_exp,
                  self.settings.server_stable, self.settings.server_exp]
+        scan_dirs: list[tuple[Path, str, str]] = []   # (папка, источник, группа)
         for root in roots:
-            rpath = Path(root) if root else None
-            if not rpath or not rpath.is_dir():
+            if root and Path(root).is_dir():
+                scan_dirs.append((Path(root), SOURCE_LOCAL, Path(root).name))
+        singles: list[tuple[Path, str, str]] = []     # одиночные @папки-моды
+        for d in self.settings.local_mods_dirs:
+            p = Path(d) if d else None
+            if not p or not p.is_dir():
                 continue
+            if p.name.startswith("@"):
+                singles.append((p, SOURCE_LOCAL, p.parent.name))
+            else:
+                scan_dirs.append((p, SOURCE_LOCAL, p.name))
+        dl = mods_dl_dir(self.settings)
+        if dl.is_dir():
+            scan_dirs.append((dl, SOURCE_GITHUB, "GitHub"))
+
+        def _add_local(item: Path, source: str, group: str) -> None:
+            key = item.name.lower()
+            dup = ""
+            if key in self.mods and self.mods[key].source == SOURCE_STEAM:
+                dup = self.mods[key].workshop_id  # локальный приоритетнее, помечаем дубль
+            pbo_names, size_bytes = scan_mod_stats(item)
+            self.mods[key] = ModInfo(
+                name=item.name.lstrip("@"), path=str(item), source=source, group=group,
+                has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
+                duplicate_of_steam=dup,
+                problem=validate_mod_dir(item),  # проверяется при каждом скане
+                pbo_names=pbo_names, size_bytes=size_bytes,
+            )
+
+        for rpath, source, group in scan_dirs:
             for item in rpath.iterdir():
-                if not item.name.startswith("@") or not item.is_dir() or _is_link(item):
+                # is_dir() уже возвращает False для битых ссылок — отдельно
+                # проверять _is_link не нужно, а рабочие junction-ссылки на
+                # реальные сборки (частый способ организовать локальные моды)
+                # пропускать не должны
+                if not item.name.startswith("@") or not item.is_dir():
                     continue
-                key = item.name.lower()
-                dup = ""
-                if key in self.mods and self.mods[key].source == SOURCE_STEAM:
-                    dup = self.mods[key].workshop_id  # локальный приоритетнее, помечаем дубль
-                mod = ModInfo(
-                    name=item.name.lstrip("@"), path=str(item), source=SOURCE_LOCAL,
-                    has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
-                    duplicate_of_steam=dup,
-                )
-                self.mods[key] = mod
+                _add_local(item, source, group)
+        for item, source, group in singles:
+            if item.is_dir():
+                _add_local(item, source, group)
 
         # 3. Привязка сорсов
         for key, mod in self.mods.items():
@@ -139,12 +239,18 @@ class ModRegistry:
     # ------------------------------------------------------------- подключение
 
     def ensure_available(self, mod: ModInfo, root: str) -> tuple[bool, str]:
-        """Гарантирует, что мод доступен из корня root под именем @Имя.
+        """Гарантирует junction на мод в <root>/KR_Debug/MODS/@Имя.
 
-        Если мод лежит в другом месте — создаёт junction. Возвращает (ok, сообщение).
+        Все моды (и Steam, и локальные) подключаются через эту папку,
+        чтобы не захламлять корень игры/сервера. Возвращает (ok, сообщение).
         """
-        rpath = Path(root)
-        link = rpath / mod.folder_name
+        from .layout import mods_link_dir
+        link_dir = mods_link_dir(root)
+        try:
+            link_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return False, str(e)
+        link = link_dir / mod.folder_name
         target = Path(mod.path)
 
         if link.exists():
