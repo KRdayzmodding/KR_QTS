@@ -381,14 +381,22 @@ class MainWindow(FluentWindow):
         self._notify("success", tr("settings.saved", "Настройки сохранены."))
 
     def _about(self) -> None:
-        box = MessageBox("KR Server Manager",
-                         tr("main.about",
-                            "Утилита для запуска тестовой среды DayZ Standalone "
-                            "и отладки модов.\n\n"
-                            "Лицензия GPLv3 — бесплатно навсегда.\n"
-                            "https://github.com/KRdayzmodding/KR_ServerManager\n\n"
-                            "by [Kramtsov Arms]"),
-                         self)
+        import re
+        from PySide6.QtCore import Qt as _Qt
+        text = tr("main.about",
+                  "Утилита для запуска тестовой среды DayZ Standalone "
+                  "и отладки модов.\n\n"
+                  "Лицензия GPLv3 — бесплатно навсегда.\n"
+                  "https://github.com/KRdayzmodding/KR_ServerManager\n\n"
+                  "by [Kramtsov Arms]")
+        # ссылки — кликабельными
+        rich = re.sub(r"(https?://\S+)", r'<a href="\1">\1</a>',
+                      html.escape(text)).replace("\n", "<br>")
+        box = MessageBox("KR Server Manager", text, self)  # сначала plain — для расчёта размеров
+        box.contentLabel.setTextFormat(_Qt.TextFormat.RichText)
+        box.contentLabel.setTextInteractionFlags(_Qt.TextInteractionFlag.TextBrowserInteraction)
+        box.contentLabel.setOpenExternalLinks(True)
+        box.contentLabel.setText(rich)
         box.cancelButton.hide()
         box.buttonLayout.insertStretch(1)
         box.exec()
