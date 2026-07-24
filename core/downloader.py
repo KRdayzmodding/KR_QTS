@@ -1,6 +1,7 @@
 """Фоновая загрузка миссии: zip ветки с GitHub -> распаковка подпапки -> установка."""
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import time
@@ -35,9 +36,15 @@ class MissionDownloadWorker(QThread):
         self.replace = replace
         self.keep_storage = keep_storage
         self._cancel = False
+        self._done_emitted = False
 
     def cancel(self) -> None:
         self._cancel = True
+
+    def _emit_done(self, ok: bool, message: str) -> None:
+        if not self._done_emitted:
+            self._done_emitted = True
+            self.done.emit(ok, message)
 
     # ------------------------------------------------------------------
 
@@ -45,7 +52,7 @@ class MissionDownloadWorker(QThread):
         try:
             self._run()
         except Exception as e:  # noqa: BLE001 — всё в UI
-            self.done.emit(False, str(e))
+            self._emit_done(False, str(e))
 
     def _run(self) -> None:
         from .i18n import tr
@@ -63,12 +70,14 @@ class MissionDownloadWorker(QThread):
         except Exception:  # noqa: BLE001 — оценка не обязательна
             pass
         if self._cancel:
-            self.done.emit(False, tr("dl.cancelled", "Отменено"))
+            self._emit_done(False, tr("dl.cancelled", "Отменено"))
             return
 
         url = missions.zip_url(entry)
         self.status.emit(tr("dl.downloading", "Скачивание {repo}…", repo=entry.repo))
-        tmp_zip = Path(tempfile.mkstemp(suffix=".zip", prefix="krsm_")[1])
+        fd, tmp_name = tempfile.mkstemp(suffix=".zip", prefix="krsm_")
+        os.close(fd)  # mkstemp держит файл открытым — иначе Windows не даст его удалить
+        tmp_zip = Path(tmp_name)
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": "KR-ServerManager (github.com/KRdayzmodding/KR_ServerManager)"})
@@ -81,7 +90,7 @@ class MissionDownloadWorker(QThread):
                     total = estimated
                 while True:
                     if self._cancel:
-                        self.done.emit(False, tr("dl.cancelled", "Отменено"))
+                        self._emit_done(False, tr("dl.cancelled", "Отменено"))
                         return
                     chunk = resp.read(_CHUNK)
                     if not chunk:
@@ -91,7 +100,20 @@ class MissionDownloadWorker(QThread):
                     self.progress.emit(got, total, time.monotonic() - t0, is_estimate)
 
             self.status.emit(tr("dl.extracting", "Распаковка…"))
-            with zipfile.ZipFile(tmp_zip) as zf:
+            # свежий большой zip может держать антивирус — пробуем открыть с паузами
+            zf = None
+            for attempt in range(10):
+                try:
+                    zf = zipfile.ZipFile(tmp_zip)
+                    break
+                except (OSError, PermissionError) as e:
+                    if attempt == 9:
+                        raise
+                    self.status.emit(tr("dl.locked",
+                                        "Файл занят (антивирус?) — повтор {n}/10…",
+                                        n=attempt + 2))
+                    time.sleep(1.5)
+            with zf:
                 names = zf.namelist()
                 if not names:
                     raise RuntimeError("Пустой архив")
@@ -133,6 +155,9 @@ class MissionDownloadWorker(QThread):
                 shutil.move(str(bak), str(dest))
 
             missions.write_meta(target, entry, sha, sub_path)
-            self.done.emit(True, str(target))
+            self._emit_done(True, str(target))
         finally:
-            tmp_zip.unlink(missing_ok=True)
+            try:
+                tmp_zip.unlink(missing_ok=True)
+            except OSError:
+                pass  # неудачная уборка temp-файла не должна выглядеть ошибкой загрузки

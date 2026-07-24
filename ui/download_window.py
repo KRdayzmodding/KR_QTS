@@ -70,6 +70,7 @@ class DownloadWindow(QDialog):
         self.worker.start()
 
     def _progress(self, got: int, total: int, elapsed: float, is_estimate: bool) -> None:
+        self._last = (got, elapsed)
         speed = got / elapsed / (1024 * 1024) if elapsed > 0 else 0
         if total > 0:
             # оценочный объём не даём доползти до конца — 100% только по факту
@@ -91,6 +92,10 @@ class DownloadWindow(QDialog):
         if ok:
             self.bar.setValue(100)
             self.status.setText(tr("dl.done", "Готово: {p}", p=result))
+            if getattr(self, "_last", None):
+                got, elapsed = self._last
+                self.stats.setText(tr("dl.stats_final", "Скачано {got} за {t}",
+                                      got=_fmt_size(got), t=_fmt_time(elapsed)))
             self.finished_ok.emit(result)
         else:
             self.bar.error()
