@@ -42,6 +42,16 @@ class Settings:
     pack_flags: str = "-P -K"   # доп. флаги pboProject
     clean_meta: bool = True     # удалять *.meta в сорсах перед сборкой
 
+    # Общая папка загрузок (моды карт с GitHub); пусто — <папка программы>/downloads
+    downloads_dir: str = ""
+
+    # Папки с локальными модами (@папки собственных сборок)
+    local_mods_dirs: list[str] = field(default_factory=list)
+
+    # Steam Web API ключ (steamcommunity.com/dev/apikey) — для зависимостей модов;
+    # пусто — зависимости читаются со страницы воркшопа
+    steam_api_key: str = ""
+
     def client_root(self, branch: str) -> str:
         return self.client_exp if branch == EXPERIMENTAL else self.client_stable
 

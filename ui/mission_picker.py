@@ -1,86 +1,76 @@
-"""Выбор миссии: выпадающий список mpmissions + «+» (новая миссия из каталога) + обновление."""
+"""Выбор карты для пресета.
+
+Имя миссии не вводится: оно всегда <имя пресета>.<карта>. Пользователь
+выбирает карту из каталога; если миссии ещё нет в KR_Debug/mpmissions —
+она скачивается с официального GitHub карты.
+"""
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
-from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QDialog,
-)
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QDialog
 from qfluentwidgets import (
-    EditableComboBox, ComboBox, LineEdit, ToolButton, PushButton,
-    PrimaryPushButton, CheckBox, BodyLabel, CaptionLabel, MessageBox,
-    FluentIcon as FIF, InfoBar, InfoBarPosition,
+    ComboBox, ToolButton, PushButton, PrimaryPushButton, CheckBox,
+    BodyLabel, CaptionLabel, IndeterminateProgressBar, FluentIcon as FIF,
 )
 
 from core import missions
+from core.downloader import MissionCopyWorker
 from core.i18n import tr
-from core.missions import CatalogEntry, InstalledMission
+from core.missions import CatalogEntry, template_name
 from core.settings import Settings
 from ui.download_window import DownloadWindow
 
 
-class NewMissionDialog(QDialog):
-    """Имя миссии слева, карта из каталога справа."""
+class CopyDialog(QDialog):
+    """Модальное окошко локального копирования шаблона в миссию пресета."""
 
-    def __init__(self, catalog: list[CatalogEntry], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("mission.new_title", "Новая миссия"))
-        self.resize(520, 200)
+    def __init__(self, src, dst, replace: bool = False, keep_storage: bool = True,
+                 parent=None):
+        super().__init__(parent, Qt.WindowType.Dialog
+                         | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setWindowTitle(tr("mission.copy_title", "Создание миссии"))
+        self.resize(440, 130)
         layout = QVBoxLayout(self)
+        self.status = BodyLabel(tr("mission.copying", "Копирование {s} → {d}…",
+                                   s=src.name, d=dst.name))
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.bar = IndeterminateProgressBar()
+        self.bar.start()
+        layout.addWidget(self.bar)
+        self.btn = PushButton(tr("dl.close", "Закрыть"))
+        self.btn.setEnabled(False)
+        self.btn.clicked.connect(self.close)
+        layout.addWidget(self.btn)
 
-        form = QFormLayout()
-        self.name = LineEdit()
-        self.name.setPlaceholderText(tr("mission.name_ph", "например: myserver"))
-        self.map_combo = ComboBox()
-        for e in catalog:
-            self.map_combo.addItem(f"{e.title}  (.{e.world})", userData=e)
-        form.addRow(BodyLabel(tr("mission.name", "Название миссии")), self.name)
-        form.addRow(BodyLabel(tr("mission.map", "Карта")), self.map_combo)
-        layout.addLayout(form)
+        self.worker = MissionCopyWorker(src, dst, replace=replace,
+                                        keep_storage=keep_storage)
+        self.worker.done.connect(self._done)
+        self.worker.start()
 
-        self.hint = CaptionLabel(tr("mission.new_hint",
-                                    "Папка миссии получит имя <название>.<карта>. "
-                                    "Файлы будут скачаны с официального GitHub карты."))
-        self.hint.setWordWrap(True)
-        layout.addWidget(self.hint)
+    def _done(self, ok: bool, result: str) -> None:
+        self.bar.stop()
+        if ok:
+            self.status.setText(tr("mission.copied", "Готово: {p}", p=result))
+        else:
+            self.status.setText(result)
+        self.btn.setEnabled(True)
 
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        b_cancel = PushButton(tr("common.cancel", "Отмена"))
-        b_cancel.clicked.connect(self.reject)
-        b_ok = PrimaryPushButton(FIF.DOWNLOAD, tr("mission.download", "Скачать"))
-        b_ok.clicked.connect(self._ok)
-        btns.addWidget(b_cancel)
-        btns.addWidget(b_ok)
-        layout.addLayout(btns)
-
-    def _ok(self) -> None:
-        name = self.name.text().strip()
-        if not re.fullmatch(r"[A-Za-z0-9_\-]+", name or ""):
-            self.hint.setText(tr("mission.bad_name",
-                                 "Название: только латиница, цифры, - и _ (без точек)."))
-            return
-        self.accept()
-
-    def result_name(self) -> str:
-        entry: CatalogEntry = self.map_combo.currentData()
-        return f"{self.name.text().strip()}.{entry.world}"
-
-    def result_entry(self) -> CatalogEntry:
-        return self.map_combo.currentData()
+_LEGACY = "legacy"
+_CATALOG = "cat"
 
 
 class UpdateMissionDialog(QDialog):
-    """Подтверждение обновления с вопросом про storage."""
+    """Подтверждение пересоздания миссии из шаблона + вопрос про storage."""
 
     def __init__(self, mission_name: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(tr("mission.upd_title", "Обновление миссии"))
+        self.setWindowTitle(tr("mission.recreate_title", "Пересоздание миссии"))
         self.resize(480, 170)
         layout = QVBoxLayout(self)
-        warn = BodyLabel(tr("mission.upd_warn",
-                            "«{n}» будет перезаписана свежей версией с GitHub.\n"
+        warn = BodyLabel(tr("mission.recreate_warn",
+                            "«{n}» будет пересоздана из шаблона actual.<карта>.\n"
                             "Ваши правки файлов миссии будут потеряны.", n=mission_name))
         warn.setWordWrap(True)
         layout.addWidget(warn)
@@ -93,134 +83,202 @@ class UpdateMissionDialog(QDialog):
         btns.addStretch(1)
         b_cancel = PushButton(tr("common.cancel", "Отмена"))
         b_cancel.clicked.connect(self.reject)
-        b_ok = PrimaryPushButton(FIF.SYNC, tr("mission.update", "Обновить"))
+        b_ok = PrimaryPushButton(FIF.COPY, tr("mission.recreate", "Пересоздать"))
         b_ok.clicked.connect(self.accept)
         btns.addWidget(b_cancel)
         btns.addWidget(b_ok)
         layout.addLayout(btns)
 
 
-class MissionPicker(QWidget):
-    """Комбо с миссиями из mpmissions, «+» для новой, «обновить» для каталожных."""
+class MapPicker(QWidget):
+    """Комбо карт из каталога + статус миссии + кнопка обновления."""
+
+    changed = Signal()  # смена карты/имени — редакторы обновляют подсказки
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings: Settings | None = None
         self.branch = "stable"
         self.mode = "diag"
+        self.preset_name = ""
         self._windows: list[DownloadWindow] = []
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        self.combo = EditableComboBox()
-        self.combo.setPlaceholderText(tr("mission.pick_ph", "Выберите или введите миссию…"))
-        self.combo.currentIndexChanged.connect(lambda _i: self._update_buttons())
-        self.b_add = ToolButton(FIF.ADD)
-        self.b_add.setToolTip(tr("mission.add_tip", "Новая миссия из каталога карт"))
-        self.b_add.clicked.connect(self._new_mission)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        row = QHBoxLayout()
+        self.combo = ComboBox()
+        self.combo.currentIndexChanged.connect(lambda _i: self._update_status())
         self.b_upd = ToolButton(FIF.SYNC)
         self.b_upd.setToolTip(tr("mission.upd_tip",
-                                 "Обновить миссию до последней версии с GitHub"))
-        self.b_upd.clicked.connect(self._update_mission)
+                                 "Обновить шаблон actual.<карта> с GitHub"))
+        self.b_upd.clicked.connect(self._update_template)
+        self.b_recreate = ToolButton(FIF.COPY)
+        self.b_recreate.setToolTip(tr("mission.recreate_tip",
+                                      "Пересоздать миссию пресета из шаблона"))
+        self.b_recreate.clicked.connect(self._recreate_mission)
         row.addWidget(self.combo, 1)
-        row.addWidget(self.b_add)
         row.addWidget(self.b_upd)
+        row.addWidget(self.b_recreate)
+        col.addLayout(row)
+        self.status = CaptionLabel("")
+        col.addWidget(self.status)
 
     # ------------------------------------------------------------------
 
     def set_context(self, settings: Settings, branch: str, mode: str,
-                    current: str = "") -> None:
+                    preset_name: str, current_mission: str = "") -> None:
         self.settings = settings
         self.branch = branch
         self.mode = mode
-        self.refresh(select=current)
+        self.preset_name = preset_name
+        current_world = current_mission.rsplit(".", 1)[1] if "." in current_mission else ""
 
-    def refresh(self, select: str | None = None) -> None:
-        if select is None:
-            select = self.combo.currentText()
+        self.combo.blockSignals(True)
         self.combo.clear()
-        self._installed: dict[str, InstalledMission] = {}
-        if self.settings:
-            directory = missions.mpmissions_dir(self.settings, self.branch, self.mode)
-            for m in missions.installed_missions(directory):
-                self._installed[m.name] = m
-                self.combo.addItem(m.name)
-        if select:
-            idx = self.combo.findText(select)
-            if idx >= 0:
-                self.combo.setCurrentIndex(idx)
-            else:
-                self.combo.setCurrentText(select)
-        self._update_buttons()
+        select = 0
+        # Старый пресет с миссией, не подчиняющейся правилу имён — не ломаем его
+        derived_names = {f"{preset_name}.{e.world}" for e in missions.load_catalog()}
+        if current_mission and current_mission not in derived_names:
+            self.combo.addItem(tr("mission.keep_current", "Текущая миссия: {m}",
+                                  m=current_mission),
+                               userData=(_LEGACY, current_mission))
+        for entry in missions.load_catalog():
+            self.combo.addItem(f"{entry.title}  (.{entry.world})",
+                               userData=(_CATALOG, entry))
+            if current_mission in derived_names and entry.world == current_world \
+                    and select == 0:
+                select = self.combo.count() - 1
+        self.combo.setCurrentIndex(select)
+        self.combo.blockSignals(False)
+        self._update_status()
 
-    def value(self) -> str:
-        return self.combo.currentText().strip()
-
-    def _current_installed(self) -> InstalledMission | None:
-        return self._installed.get(self.value())
-
-    def _update_buttons(self) -> None:
-        m = self._current_installed()
-        self.b_upd.setEnabled(bool(m and m.from_catalog))
-        if m and m.from_catalog:
-            self.b_upd.setToolTip(tr("mission.upd_tip_src",
-                                     "Обновить с {repo}", repo=m.meta.get("repo", "")))
+    def set_preset_name(self, name: str) -> None:
+        self.preset_name = name
+        self._update_status()
 
     # ------------------------------------------------------------------
 
-    def _new_mission(self) -> None:
+    def _data(self):
+        return self.combo.currentData() or (None, None)
+
+    def mission_name(self) -> str:
+        kind, val = self._data()
+        if kind == _LEGACY:
+            return val
+        if kind == _CATALOG and self.preset_name:
+            return f"{self.preset_name}.{val.world}"
+        return ""
+
+    def world(self) -> str:
+        """Имя мира выбранной карты (для схемы имён <пресет>_<карта>)."""
+        kind, val = self._data()
+        if kind == _CATALOG:
+            return val.world
+        if kind == _LEGACY and "." in val:
+            return val.rsplit(".", 1)[1]
+        return ""
+
+    def catalog_entry(self) -> CatalogEntry | None:
+        kind, val = self._data()
+        return val if kind == _CATALOG else None
+
+    def _missions_base(self):
         if not self.settings:
-            return
-        catalog = missions.load_catalog()
-        if not catalog:
-            InfoBar.error(title=tr("mission.no_catalog", "Каталог миссий не найден."),
-                          content="", parent=self.window(), duration=4000,
-                          position=InfoBarPosition.TOP_RIGHT)
-            return
-        dlg = NewMissionDialog(catalog, self.window())
-        if not dlg.exec():
-            return
-        name = dlg.result_name()
-        entry = dlg.result_entry()
-        directory = missions.mpmissions_dir(self.settings, self.branch, self.mode)
-        if not str(directory):
-            InfoBar.error(title=tr("mission.no_root",
-                                   "Не задан корень игры/сервера в настройках."),
-                          content="", parent=self.window(), duration=4000,
-                          position=InfoBarPosition.TOP_RIGHT)
-            return
-        if (directory / name).exists():
-            box = MessageBox(tr("mission.exists_title", "Миссия уже есть"),
-                             tr("mission.exists", "Папка {n} уже существует. Перезаписать?",
-                                n=name), self.window())
-            if not box.exec():
-                return
-            self._start_download(entry, directory, name, replace=True, keep_storage=False)
-            return
-        self._start_download(entry, directory, name)
+            return None
+        base = missions.mpmissions_dir(self.settings, self.branch, self.mode)
+        return base if str(base) else None
 
-    def _update_mission(self) -> None:
-        m = self._current_installed()
-        if not m or not self.settings:
-            return
-        entry = None
-        for e in missions.load_catalog():
-            if e.id == m.meta.get("catalog_id"):
-                entry = e
-                break
-        if entry is None:
-            return
-        dlg = UpdateMissionDialog(m.name, self.window())
-        if not dlg.exec():
-            return
-        directory = missions.mpmissions_dir(self.settings, self.branch, self.mode)
-        self._start_download(entry, directory, m.name, replace=True,
-                             keep_storage=dlg.keep_storage.isChecked())
+    def _mission_dir(self):
+        base = self._missions_base()
+        name = self.mission_name()
+        return (base / name) if (base and name) else None
 
-    def _start_download(self, entry: CatalogEntry, directory: Path, name: str,
-                        replace: bool = False, keep_storage: bool = True) -> None:
-        win = DownloadWindow(entry, directory, name, replace=replace,
-                             keep_storage=keep_storage)
-        win.finished_ok.connect(lambda _p, n=name: self.refresh(select=n))
+    def _template_dir(self):
+        from core.layout import templates_dir
+        world = self.world()
+        if not self.settings or not world:
+            return None
+        return templates_dir(self.settings) / template_name(world)
+
+    def _update_status(self) -> None:
+        kind, _val = self._data()
+        d = self._mission_dir()
+        t = self._template_dir()
+        installed = bool(d and d.is_dir())
+        template_ok = bool(t and t.is_dir())
+        if kind == _LEGACY:
+            self.status.setText(tr("mission.st_legacy", "Используется как есть."))
+            self.b_upd.setEnabled(False)
+            self.b_recreate.setEnabled(False)
+            self.changed.emit()
+            return
+        entry = self.catalog_entry()
+        if not self.preset_name:
+            self.status.setText("")
+        elif installed:
+            self.status.setText(tr("mission.st_ok", "✓ {n} — установлена", n=d.name))
+        elif template_ok:
+            self.status.setText(tr("mission.st_copy",
+                                   "{n} — будет создана из шаблона {t} (без скачивания)",
+                                   n=d.name if d else "?", t=t.name))
+        else:
+            self.status.setText(tr("mission.st_dl_tpl",
+                                   "Шаблон {t} будет скачан с github.com/{repo}, "
+                                   "миссия {n} — его локальная копия",
+                                   t=t.name if t else "?", n=d.name if d else "?",
+                                   repo=entry.repo if entry else "?"))
+        self.b_upd.setEnabled(template_ok and bool(entry))
+        self.b_recreate.setEnabled(installed and template_ok)
+        self.changed.emit()
+
+    # ------------------------------------------------------------------
+
+    def _mods_dl_dir(self):
+        from core.layout import mods_dl_dir
+        return mods_dl_dir(self.settings) if self.settings else None
+
+    def ensure_mission(self) -> None:
+        """Миссии нет — создаёт её из шаблона; нет шаблона — сначала качает его."""
+        entry = self.catalog_entry()
+        d = self._mission_dir()
+        t = self._template_dir()
+        if not entry or not d or not t or d.is_dir():
+            return
+        if t.is_dir():
+            self._start_copy(t, d)
+            return
+        win = DownloadWindow(entry, t.parent, t.name, mods_dir=self._mods_dl_dir())
+        win.finished_ok.connect(lambda _p, s=t, dst=d: self._start_copy(s, dst))
         win.show()
         self._windows.append(win)  # держим ссылку, иначе окно соберёт GC
+
+    def _start_copy(self, src, dst, replace: bool = False,
+                    keep_storage: bool = True) -> None:
+        dlg = CopyDialog(src, dst, replace=replace, keep_storage=keep_storage,
+                         parent=self.window())
+        dlg.worker.done.connect(lambda _ok, _p: self._update_status())
+        dlg.show()
+        self._windows.append(dlg)
+
+    def _update_template(self) -> None:
+        t = self._template_dir()
+        entry = self.catalog_entry()
+        if not t or not entry:
+            return
+        win = DownloadWindow(entry, t.parent, t.name, replace=True,
+                             keep_storage=False, mods_dir=self._mods_dl_dir())
+        win.finished_ok.connect(lambda _p: self._update_status())
+        win.show()
+        self._windows.append(win)
+
+    def _recreate_mission(self) -> None:
+        d = self._mission_dir()
+        t = self._template_dir()
+        if not d or not t or not t.is_dir():
+            return
+        dlg = UpdateMissionDialog(d.name, self.window())
+        if not dlg.exec():
+            return
+        self._start_copy(t, d, replace=True,
+                         keep_storage=dlg.keep_storage.isChecked())

@@ -29,7 +29,8 @@ class DownloadWindow(QDialog):
     finished_ok = Signal(str)  # путь установленной миссии
 
     def __init__(self, entry: CatalogEntry, target_dir: Path, target_name: str,
-                 replace: bool = False, keep_storage: bool = True, parent=None):
+                 replace: bool = False, keep_storage: bool = True,
+                 mods_dir: Path | None = None, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog
                          | Qt.WindowType.WindowStaysOnTopHint)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -63,7 +64,8 @@ class DownloadWindow(QDialog):
         layout.addLayout(row)
 
         self.worker = MissionDownloadWorker(entry, target_dir, target_name,
-                                            replace=replace, keep_storage=keep_storage)
+                                            replace=replace, keep_storage=keep_storage,
+                                            mods_dir=mods_dir)
         self.worker.status.connect(self.status.setText)
         self.worker.progress.connect(self._progress)
         self.worker.done.connect(self._done)

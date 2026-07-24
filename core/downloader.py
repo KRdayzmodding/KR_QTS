@@ -17,6 +17,46 @@ from .missions import CatalogEntry
 _CHUNK = 256 * 1024
 
 
+class MissionCopyWorker(QThread):
+    """Локальное создание миссии из шаблона actual.<world> (без сети)."""
+    done = Signal(bool, str)  # ok, целевой путь или ошибка
+
+    def __init__(self, src: Path, dst: Path, replace: bool = False,
+                 keep_storage: bool = True, parent=None):
+        super().__init__(parent)
+        self.src = src
+        self.dst = dst
+        self.replace = replace
+        self.keep_storage = keep_storage
+
+    def run(self) -> None:
+        from .i18n import tr
+        from .missions import META_NAME
+        try:
+            storage_backup: list[tuple[Path, Path]] = []
+            if self.dst.exists():
+                if not self.replace:
+                    raise RuntimeError(tr("dl.exists", "Папка уже существует: {p}",
+                                          p=self.dst))
+                if self.keep_storage:
+                    import tempfile
+                    for st in self.dst.glob("storage_*"):
+                        bak = Path(tempfile.mkdtemp(prefix="krsm_storage_")) / st.name
+                        shutil.move(str(st), str(bak))
+                        storage_backup.append((bak, self.dst / st.name))
+                shutil.rmtree(self.dst)
+            shutil.copytree(self.src, self.dst)
+            # копия — рабочая миссия пресета, метка шаблона ей не принадлежит
+            (self.dst / META_NAME).unlink(missing_ok=True)
+            for bak, dest in storage_backup:
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.move(str(bak), str(dest))
+            self.done.emit(True, str(self.dst))
+        except Exception as e:  # noqa: BLE001 — всё в UI
+            self.done.emit(False, str(e))
+
+
 class MissionDownloadWorker(QThread):
     """Скачивает и устанавливает миссию из каталога.
 
@@ -28,15 +68,36 @@ class MissionDownloadWorker(QThread):
     done = Signal(bool, str)             # ok, целевой путь или текст ошибки
 
     def __init__(self, entry: CatalogEntry, target_dir: Path, target_name: str,
-                 replace: bool = False, keep_storage: bool = True, parent=None):
+                 replace: bool = False, keep_storage: bool = True,
+                 mods_dir: Path | None = None, parent=None):
         super().__init__(parent)
         self.entry = entry
         self.target_dir = target_dir
         self.target_name = target_name
         self.replace = replace
         self.keep_storage = keep_storage
+        self.mods_dir = mods_dir  # куда класть моды карты из того же репозитория
         self._cancel = False
         self._done_emitted = False
+
+    @staticmethod
+    def _extract_subtree(zf: zipfile.ZipFile, names: list[str], prefix: str,
+                         tmp_prefix: str) -> Path:
+        extract_tmp = Path(tempfile.mkdtemp(prefix=tmp_prefix))
+        for n in names:
+            if not n.startswith(prefix):
+                continue
+            rel = n[len(prefix):]
+            if not rel:
+                continue
+            dest = extract_tmp / rel
+            if n.endswith("/"):
+                dest.mkdir(parents=True, exist_ok=True)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(n) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+        return extract_tmp
 
     def cancel(self) -> None:
         self._cancel = True
@@ -113,28 +174,30 @@ class MissionDownloadWorker(QThread):
                                         "Файл занят (антивирус?) — повтор {n}/10…",
                                         n=attempt + 2))
                     time.sleep(1.5)
+            mods_tmp: list[tuple[str, Path]] = []  # (имя @папки, temp-каталог)
             with zf:
                 names = zf.namelist()
                 if not names:
                     raise RuntimeError("Пустой архив")
                 root = names[0].split("/", 1)[0]           # <repo>-<ветка>
                 prefix = f"{root}/{sub_path}/"
-                members = [n for n in names if n.startswith(prefix)]
-                if not members:
+                if not any(n.startswith(prefix) for n in names):
                     raise RuntimeError(
                         tr("dl.no_path", "В архиве нет пути {p}", p=sub_path))
-                extract_tmp = Path(tempfile.mkdtemp(prefix="krsm_mission_"))
-                for n in members:
-                    rel = n[len(prefix):]
-                    if not rel:
-                        continue
-                    dest = extract_tmp / rel
-                    if n.endswith("/"):
-                        dest.mkdir(parents=True, exist_ok=True)
-                    else:
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(n) as src, open(dest, "wb") as out:
-                            shutil.copyfileobj(src, out)
+                extract_tmp = self._extract_subtree(zf, names, prefix, "krsm_mission_")
+
+                # моды карты из того же архива (например @KR_BlankMap)
+                if self.mods_dir:
+                    for spec in getattr(entry, "mods", []):
+                        mpath = spec.get("path", "")
+                        mprefix = f"{root}/{mpath}/"
+                        if not mpath or not any(n.startswith(mprefix) for n in names):
+                            continue
+                        self.status.emit(tr("dl.mod_extract",
+                                            "Распаковка мода {m}…", m=Path(mpath).name))
+                        mods_tmp.append((Path(mpath).name,
+                                         self._extract_subtree(zf, names, mprefix,
+                                                               "krsm_mod_")))
 
             self.status.emit(tr("dl.installing", "Установка…"))
             self.target_dir.mkdir(parents=True, exist_ok=True)
@@ -155,6 +218,21 @@ class MissionDownloadWorker(QThread):
                 shutil.move(str(bak), str(dest))
 
             missions.write_meta(target, entry, sha, sub_path)
+
+            # установка модов карты в KR_Debug/mods_dl (перезаписываются целиком)
+            for mod_name, tmp_dir in mods_tmp:
+                self.status.emit(tr("dl.mod_install", "Установка мода {m}…", m=mod_name))
+                self.mods_dir.mkdir(parents=True, exist_ok=True)
+                mod_target = self.mods_dir / mod_name
+                if mod_target.exists():
+                    shutil.rmtree(mod_target)
+                shutil.move(str(tmp_dir), str(mod_target))
+                import json
+                (mod_target / ".krsm_mod.json").write_text(json.dumps({
+                    "repo": entry.repo, "branch": entry.branch,
+                    "sha": sha or "",
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+
             self._emit_done(True, str(target))
         finally:
             try:

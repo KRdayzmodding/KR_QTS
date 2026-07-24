@@ -29,6 +29,7 @@ class ServerPreset:
     mission: str = ""
     profiles: str = ""
     port: int = 2302
+    time_login: int = -1   # TimeLogin в db/globals.xml миссии; -1 — не трогать
 
     # Параметры запуска: имя -> значение (только явно выставленные)
     params_server: dict = field(default_factory=dict)
@@ -44,18 +45,35 @@ class ServerPreset:
     launch_server: bool = True
     launch_client: bool = True
 
+    @property
+    def world(self) -> str:
+        return self.mission.rsplit(".", 1)[1] if "." in self.mission else ""
+
+    def file_stem(self) -> str:
+        """Имя файла пресета: <имя>_<карта> — одно имя допустимо на разных картах."""
+        return _slug(f"{self.name}_{self.world}" if self.world else self.name)
+
     def path(self) -> Path:
-        return PRESETS_DIR / f"{_slug(self.name)}.json"
+        return PRESETS_DIR / f"{self.file_stem()}.json"
 
     def save(self) -> None:
         PRESETS_DIR.mkdir(parents=True, exist_ok=True)
-        self.path().write_text(
+        new_path = self.path()
+        new_path.write_text(
             json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # имя или карта изменились — файл переехал, старый убираем
+        src = getattr(self, "_src", None)
+        if src and Path(src) != new_path:
+            try:
+                Path(src).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._src = new_path
 
     def delete(self) -> None:
         try:
-            self.path().unlink(missing_ok=True)
+            Path(getattr(self, "_src", self.path())).unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -70,7 +88,9 @@ class ServerPreset:
         if PRESETS_DIR.is_dir():
             for f in sorted(PRESETS_DIR.glob("*.json")):
                 try:
-                    out.append(cls.from_dict(json.loads(f.read_text(encoding="utf-8"))))
+                    p = cls.from_dict(json.loads(f.read_text(encoding="utf-8")))
+                    p._src = f  # откуда загружен — для переезда файла при переименовании
+                    out.append(p)
                 except (OSError, json.JSONDecodeError, TypeError):
                     continue
         return out

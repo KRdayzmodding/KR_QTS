@@ -14,7 +14,7 @@ from core.i18n import tr
 from core.params import specs_for, FLAG, SWITCH, INT, STR, SERVER, CLIENT
 from core.presets import ServerPreset, MODE_DIAG, MODE_DEDICATED
 from core.settings import Settings, STABLE, EXPERIMENTAL
-from ui.mission_picker import MissionPicker
+from ui.mission_picker import MapPicker
 
 
 def choose_creation_mode(parent) -> str | None:
@@ -65,6 +65,18 @@ class _PathField(QHBoxLayout):
         return self.edit.text().strip()
 
 
+def _attach_map_mods(preset: ServerPreset, picker: "MapPicker") -> None:
+    """Моды карты (из репозитория миссии) автоматически включаются в пресет."""
+    from pathlib import Path as _P
+    entry = picker.catalog_entry()
+    if not entry:
+        return
+    for spec in getattr(entry, "mods", []):
+        mod_name = _P(spec.get("path", "")).name.lstrip("@")
+        if mod_name and mod_name not in preset.mods:
+            preset.mods.append(mod_name)
+
+
 # ---------------------------------------------------------------- Расширенный
 
 class AdvancedPresetDialog(QDialog):
@@ -72,6 +84,10 @@ class AdvancedPresetDialog(QDialog):
         super().__init__(parent)
         self.preset = preset
         self.settings = settings
+        # пара имя+карта на момент открытия: совпадение с самим собой — не конфликт
+        from core.layout import preset_key
+        self._original_key = (preset_key(preset.name, preset.world)
+                              if preset.path().exists() else "")
         self.setWindowTitle(tr("preset.edit_title", "Пресет: {n}", n=preset.name))
         self.resize(760, 680)
         root_hint = settings.client_root(preset.branch)
@@ -82,6 +98,10 @@ class AdvancedPresetDialog(QDialog):
         self.name = LineEdit()
         self.name.setText(preset.name)
         form.addRow(tr("preset.name", "Название"), self.name)
+        self.name_error = CaptionLabel("")
+        self.name_error.setStyleSheet("color:#d32f2f;")
+        self.name_error.setWordWrap(True)
+        form.addRow("", self.name_error)
 
         self.mode = ComboBox()
         self.mode.addItem(tr("preset.mode_diag",
@@ -100,29 +120,47 @@ class AdvancedPresetDialog(QDialog):
         self.branch.setCurrentIndex(0 if preset.branch == STABLE else 1)
         form.addRow(tr("preset.branch", "Ветка по умолчанию"), self.branch)
 
-        self.client_diag = CheckBox(tr("preset.client_diag",
-                                       "Подключать клиентом DayZDiag_x64 (для dedicated-режима)"))
-        self.client_diag.setChecked(preset.client_use_diag)
-        form.addRow("", self.client_diag)
-
-        self.p_config = _PathField(self, preset.server_config, False, root_hint)
-        self.p_mission = MissionPicker(self)
-        self.p_mission.set_context(settings, preset.branch, preset.mode,
-                                   current=preset.mission)
+        self.map_picker = MapPicker(self)
+        self.map_picker.set_context(settings, preset.branch, preset.mode,
+                                    preset.name, current_mission=preset.mission)
         self.mode.currentIndexChanged.connect(self._mission_ctx)
         self.branch.currentIndexChanged.connect(self._mission_ctx)
-        self.p_profiles = _PathField(self, preset.profiles, True, root_hint)
-        form.addRow(tr("preset.config", "Серверный конфиг (serverDZ.cfg)"), self.p_config)
-        form.addRow(tr("preset.mission", "Миссия"), self.p_mission)
-        form.addRow(tr("preset.profiles", "Папка профиля"), self.p_profiles)
-        hint = CaptionLabel(tr("preset.path_hint",
-                               "Пути можно указывать относительно корня клиента или абсолютные."))
-        form.addRow("", hint)
+        self.name.textChanged.connect(self._name_changed)
+        self.map_picker.changed.connect(self._files_hint_update)
+        form.addRow(tr("preset.map", "Карта"), self.map_picker)
+        self.files_hint = CaptionLabel("")
+        self.files_hint.setWordWrap(True)
+        form.addRow("", self.files_hint)
+        self._name_changed(preset.name)
 
         self.port = SpinBox()
         self.port.setRange(1024, 65535)
         self.port.setValue(preset.port)
         form.addRow(tr("preset.port", "Порт"), self.port)
+
+        self.time_login = SpinBox()
+        self.time_login.setRange(0, 3600)
+        self.time_login.setToolTip(tr("preset.time_login_tip",
+                                      "TimeLogin и TimeLogout в db\\globals.xml миссии — "
+                                      "таймеры ожидания при входе и выходе. Задаются одним "
+                                      "значением; для отладки удобно 0."))
+        self.time_login.setValue(self._read_time_login())
+        form.addRow(tr("preset.time_login", "Время на вход/выход (секунды)"), self.time_login)
+
+        clean_row = QHBoxLayout()
+        b_clear_db = PushButton(FIF.DELETE, tr("preset.clear_db", "Очистить БД"))
+        b_clear_db.setToolTip(tr("preset.clear_db_tip",
+                                 "Удаляет папки storage_* в миссии пресета — обнуление "
+                                 "персистентности (лут, персонажи, постройки)."))
+        b_clear_db.clicked.connect(self._clear_storage)
+        b_clear_prof = PushButton(FIF.BROOM, tr("preset.clear_prof", "Очистить профайл"))
+        b_clear_prof.setToolTip(tr("preset.clear_prof_tip",
+                                   "Полностью чистит папку профиля сервера (логи, настройки модов)."))
+        b_clear_prof.clicked.connect(self._clear_profile)
+        clean_row.addWidget(b_clear_db)
+        clean_row.addWidget(b_clear_prof)
+        clean_row.addStretch(1)
+        form.addRow("", clean_row)
         layout.addLayout(form)
 
         self.params_box = QHBoxLayout()
@@ -152,10 +190,75 @@ class AdvancedPresetDialog(QDialog):
         btns.addWidget(b_save)
         layout.addLayout(btns)
 
+    def _clear_storage(self) -> None:
+        from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
+        from core.layout import clear_mission_storage
+        mission = self.map_picker.mission_name()
+        box = MessageBox(tr("preset.clear_db", "Очистить БД"),
+                         tr("preset.clear_db_confirm",
+                            "Удалить storage_* в миссии «{m}»?\nЛут, персонажи и постройки "
+                            "будут сброшены.", m=mission or "?"), self)
+        if not box.exec():
+            return
+        n = clear_mission_storage(self.settings, self.branch.currentData(),
+                                  self.mode.currentData(), mission)
+        InfoBar.success(title=tr("preset.cleared_db", "Удалено storage-папок: {n}", n=n),
+                        content="", parent=self, duration=3000,
+                        position=InfoBarPosition.TOP_RIGHT)
+
+    def _clear_profile(self) -> None:
+        from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
+        from core.layout import clear_profile, preset_base_name
+        profiles = self.preset.profiles or preset_base_name(
+            self.name.text().strip(), self.map_picker.mission_name())
+        box = MessageBox(tr("preset.clear_prof", "Очистить профайл"),
+                         tr("preset.clear_prof_confirm",
+                            "Полностью очистить папку профиля «{p}»?", p=profiles or "?"),
+                         self)
+        if not box.exec():
+            return
+        n = clear_profile(self.settings, self.branch.currentData(),
+                          self.mode.currentData(), profiles)
+        InfoBar.success(title=tr("preset.cleared_prof", "Удалено элементов: {n}", n=n),
+                        content="", parent=self, duration=3000,
+                        position=InfoBarPosition.TOP_RIGHT)
+
+    def _read_time_login(self) -> int:
+        """Актуальное значение из globals.xml миссии; иначе из пресета; иначе 15."""
+        from pathlib import Path as _P
+        from core.layout import resolve_mission
+        from core.missions import read_global_var
+        p = self.preset
+        mission = resolve_mission(p.mission, self.settings, p.branch, p.mode)
+        if mission:
+            val = read_global_var(_P(mission), "TimeLogin")
+            if val is not None:
+                try:
+                    return int(float(val))
+                except ValueError:
+                    pass
+        return p.time_login if p.time_login >= 0 else 15
+
     def _mission_ctx(self) -> None:
-        self.p_mission.set_context(self.settings, self.branch.currentData(),
-                                   self.mode.currentData(),
-                                   current=self.p_mission.value())
+        self.map_picker.set_context(self.settings, self.branch.currentData(),
+                                    self.mode.currentData(),
+                                    self.name.text().strip(),
+                                    current_mission=self.map_picker.mission_name())
+
+    def _name_changed(self, name: str) -> None:
+        self.name.setError(False)
+        self.name_error.setText("")
+        self.map_picker.set_preset_name(name.strip())
+
+    def _files_hint_update(self) -> None:
+        from core.layout import DEBUG_DIR, PROFILE_SUBDIR
+        name = self.name.text().strip() or "?"
+        world = self.map_picker.world()
+        fname = f"{name}_{world}" if world else name
+        self.files_hint.setText(tr(
+            "preset.files_hint",
+            "Файлы пресета: {d}\\{f}.cfg,  {d}\\{p}\\{f},  миссия — см. выше.",
+            d=DEBUG_DIR, p=PROFILE_SUBDIR, f=fname))
 
     # Параметры: FLAG -> чекбокс; SWITCH -> комбо (—/вкл/выкл); INT/STR -> строка
     def _rebuild_params(self) -> None:
@@ -222,23 +325,57 @@ class AdvancedPresetDialog(QDialog):
         return out
 
     def _save(self) -> None:
+        from core.layout import (valid_name, name_conflict, create_preset_files,
+                                 rename_preset_files)
         p = self.preset
         new_name = self.name.text().strip() or p.name
+        if not valid_name(new_name):
+            problem = tr("preset.bad_name_full",
+                         "Недопустимое название. Разрешены только латинские буквы, "
+                         "цифры, «-» и «_» — без кириллицы и пробелов. "
+                         "Например: my_test_server")
+            self.name.setError(True)
+            self.name.setToolTip(problem)
+            self.name_error.setText(problem)
+            return
+        world = self.map_picker.world()
+        conflict = name_conflict(new_name, world, current_key=self._original_key)
+        if conflict:
+            self.name.setError(True)
+            self.name.setToolTip(conflict)
+            self.name_error.setText(conflict)
+            return
         if new_name != p.name:
-            p.delete()  # имя = имя файла, старый убираем
-            p.name = new_name
+            rename_preset_files(self.settings, self.branch.currentData(),
+                                self.mode.currentData(), p.name, new_name, world)
+            p.name = new_name  # save() сам уберёт старый файл пресета
+            self.map_picker.set_preset_name(new_name)
         p.mode = self.mode.currentData()
         p.branch = self.branch.currentData()
-        p.client_use_diag = self.client_diag.isChecked()
-        p.server_config = self.p_config.text()
-        p.mission = self.p_mission.value()
-        p.profiles = self.p_profiles.text()
+        p.mission = self.map_picker.mission_name()
+        # конфиг и профиль всегда следуют имени пресета
+        try:
+            p.server_config, p.profiles = create_preset_files(
+                self.settings, p.branch, p.mode, p.name, p.mission)
+        except RuntimeError:
+            pass  # корень не задан — предстартовая проверка подскажет
+        _attach_map_mods(p, self.map_picker)
         p.port = self.port.value()
+        p.time_login = self.time_login.value()
+        # применяем сразу, если миссия уже на диске (иначе — перед запуском)
+        from pathlib import Path as _P
+        from core.layout import resolve_mission
+        from core.missions import set_global_var
+        mission_path = resolve_mission(p.mission, self.settings, p.branch, p.mode)
+        if mission_path and _P(mission_path).is_dir():
+            set_global_var(_P(mission_path), "TimeLogin", str(p.time_login))
+            set_global_var(_P(mission_path), "TimeLogout", str(p.time_login))
         p.params_server = self._collect_params(SERVER)
         p.params_client = self._collect_params(CLIENT)
         p.extra_server = self.extra_server.text().strip()
         p.extra_client = self.extra_client.text().strip()
         p.save()
+        self.map_picker.ensure_mission()  # миссии нет — стартует модальная загрузка
         self.accept()
 
 
@@ -257,9 +394,14 @@ class LazyPresetWizard(QWizard):
         p1.setTitle(tr("preset.lazy_p1", "Название и режим"))
         l1 = QVBoxLayout(p1)
         self.name = LineEdit()
-        self.name.setPlaceholderText(tr("preset.lazy_name_ph", "Например: Мой сервер Черноруси"))
+        self.name.setPlaceholderText(tr("preset.lazy_name_ph", "Например: my_test_server"))
+        self.name.textChanged.connect(lambda _t: self._clear_name_error())
         l1.addWidget(BodyLabel(tr("preset.name", "Название")))
         l1.addWidget(self.name)
+        self.name_error = CaptionLabel("")
+        self.name_error.setStyleSheet("color:#d32f2f;")
+        self.name_error.setWordWrap(True)
+        l1.addWidget(self.name_error)
         l1.addSpacing(12)
         self.rb_diag = RadioButton(tr("preset.lazy_diag",
                                       "Отладка модов (Diag) — рекомендуется для разработки"))
@@ -281,27 +423,19 @@ class LazyPresetWizard(QWizard):
         p1.registerField("name*", self.name)
         self.addPage(p1)
 
-        # Шаг 2: пути
+        # Шаг 2: карта (имена конфига/профиля/миссии следуют имени пресета)
         p2 = QWizardPage()
-        p2.setTitle(tr("preset.lazy_p2", "Файлы сервера"))
+        p2.setTitle(tr("preset.lazy_p2", "Карта"))
         l2 = QFormLayout(p2)
-        root = settings.client_stable
-        self.p_config = _PathField(p2, "", False, root)
-        self.p_mission = MissionPicker(p2)
-        self.p_mission.set_context(settings, STABLE, MODE_DIAG)
-        self.rb_diag.toggled.connect(
-            lambda _on: self.p_mission.set_context(
-                settings, STABLE,
-                MODE_DIAG if self.rb_diag.isChecked() else MODE_DEDICATED,
-                current=self.p_mission.value()))
-        self.p_profiles = _PathField(p2, "", True, root)
-        l2.addRow(tr("preset.lazy_config", "Конфиг сервера (serverDZ.cfg)"), self.p_config)
-        l2.addRow(tr("preset.mission", "Миссия"), self.p_mission)
-        l2.addRow(tr("preset.lazy_profiles", "Папка профиля (логи и настройки сервера)"), self.p_profiles)
-        note = CaptionLabel(tr("preset.lazy_p2_hint",
-                               "Профиль можно указать в любую пустую папку — сервер сам её заполнит."))
-        l2.addRow("", note)
+        self.map_picker = MapPicker(p2)
+        self.rb_diag.toggled.connect(lambda _on: self._sync_map_ctx())
+        self.map_picker.changed.connect(self._update_note)
+        l2.addRow(tr("preset.map", "Карта"), self.map_picker)
+        self.auto_note = CaptionLabel("")
+        self.auto_note.setWordWrap(True)
+        l2.addRow("", self.auto_note)
         self.addPage(p2)
+        self._p2 = p2
 
         # Шаг 3: финиш
         p3 = QWizardPage()
@@ -312,15 +446,69 @@ class LazyPresetWizard(QWizard):
                                "Моды подключаются на вкладке «Моды», параметры — в «Расширенном» редакторе.")))
         self.addPage(p3)
 
+        self.currentIdChanged.connect(self._page_changed)
+
+    def _sync_map_ctx(self) -> None:
+        mode = MODE_DIAG if self.rb_diag.isChecked() else MODE_DEDICATED
+        self.map_picker.set_context(self.settings, STABLE, mode,
+                                    self.name.text().strip())
+
+    def _page_changed(self, _id: int) -> None:
+        if self.currentPage() is self._p2:
+            self._sync_map_ctx()
+            self._update_note()
+
+    def _update_note(self) -> None:
+        from core.layout import DEBUG_DIR, PROFILE_SUBDIR
+        name = self.name.text().strip()
+        world = self.map_picker.world()
+        fname = f"{name}_{world}" if world else name
+        self.auto_note.setText(tr(
+            "preset.lazy_auto",
+            "Конфиг и профиль будут созданы автоматически:\n"
+            "{d}\\{f}.cfg  и  {d}\\{p}\\{f}", d=DEBUG_DIR, p=PROFILE_SUBDIR, f=fname))
+
+    def _clear_name_error(self) -> None:
+        self.name.setError(False)
+        self.name_error.setText("")
+
+    def validateCurrentPage(self) -> bool:  # noqa: N802 — API Qt
+        from core.layout import valid_name, name_conflict
+        if self.currentId() == 0:
+            name = self.name.text().strip()
+            problem = ""
+            if not valid_name(name):
+                problem = tr("preset.bad_name_full",
+                             "Недопустимое название. Разрешены только латинские буквы, "
+                             "цифры, «-» и «_» — без кириллицы и пробелов. "
+                             "Например: my_test_server")
+            else:
+                problem = name_conflict(name)
+            if problem:
+                self.name.setError(True)
+                self.name.setToolTip(problem)
+                self.name_error.setText(problem)
+                return False
+        return super().validateCurrentPage()
+
     def accept(self) -> None:
+        from core.layout import create_preset_files, name_conflict
         diag = self.rb_diag.isChecked()
-        preset = ServerPreset(
-            name=self.name.text().strip() or "Новый пресет",
-            mode=MODE_DIAG if diag else MODE_DEDICATED,
-            server_config=self.p_config.text(),
-            mission=self.p_mission.value(),
-            profiles=self.p_profiles.text(),
-        )
+        name = self.name.text().strip()
+        mode = MODE_DIAG if diag else MODE_DEDICATED
+        mission = self.map_picker.mission_name()
+        conflict = name_conflict(name, self.map_picker.world())
+        if conflict:
+            self.auto_note.setText(conflict)
+            return
+        try:
+            config, profiles = create_preset_files(self.settings, STABLE, mode,
+                                                   name, mission)
+        except RuntimeError as e:
+            self.auto_note.setText(str(e))
+            return
+        preset = ServerPreset(name=name, mode=mode, server_config=config,
+                              mission=mission, profiles=profiles)
         preset.params_server = {"doLogs": True, "noPause": True}
         preset.params_client = {"noPause": True}
         if diag:
@@ -328,6 +516,8 @@ class LazyPresetWizard(QWizard):
                                          "newErrorsAreWarnings": True})
             preset.params_client.update({"filePatching": True, "battleye": False,
                                          "newErrorsAreWarnings": True})
+        _attach_map_mods(preset, self.map_picker)
         preset.save()
         self.result_preset = preset
+        self.map_picker.ensure_mission()  # миссии нет — стартует модальная загрузка
         super().accept()

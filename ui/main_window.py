@@ -16,7 +16,7 @@ from qfluentwidgets import (
 
 from core import logsource
 from core.i18n import tr
-from core.launcher import LaunchWorker, kill_all, resolve_path
+from core.launcher import LaunchWorker, kill_all
 from core.mods import ModRegistry
 from core.preflight import run_checks
 from core.presets import ServerPreset
@@ -167,11 +167,21 @@ class MainWindow(FluentWindow):
 
     def _reload_presets(self, select: str | None = None) -> None:
         combo = self.launch_page.preset_combo
+        self.registry.scan()  # редакторы могли докачать моды карт (mods_dl)
         combo.blockSignals(True)
         combo.clear()
         self.presets = ServerPreset.load_all()
+        from core.presets import MODE_DIAG
         for p in self.presets:
-            combo.addItem(p.name)
+            tags = ""
+            if p.branch == EXPERIMENTAL:
+                tags += "[Exp]"
+            if p.mode == MODE_DIAG:
+                tags += "[Diag]"
+            label = (tags + " " if tags else "") + p.name
+            if p.world:
+                label += f" ({p.world.capitalize()})"
+            combo.addItem(label)
         combo.blockSignals(False)
         if not self.presets:
             self.current = None
@@ -180,7 +190,7 @@ class MainWindow(FluentWindow):
         idx = 0
         if select:
             for i, p in enumerate(self.presets):
-                if p.name == select:
+                if p.file_stem() == select:
                     idx = i
                     break
         combo.setCurrentIndex(idx)
@@ -204,14 +214,15 @@ class MainWindow(FluentWindow):
             lp.branch_combo.blockSignals(True)
             lp.branch_combo.setCurrentIndex(0 if p.branch == STABLE else 1)
             lp.branch_combo.blockSignals(False)
-        self.mods_panel.set_context(self.registry, p)
+        self.mods_panel.set_context(self.registry, p, self.settings)
         self._bind_cfg()
         self._bind_log_dirs()
 
     def _bind_cfg(self) -> None:
         p = self.current
         if p and p.server_config:
-            path = resolve_path(p.server_config, self.settings.client_root(self._branch()))
+            from core.layout import resolve_config
+            path = resolve_config(p.server_config, self.settings, self._branch(), p.mode)
             self.cfg_editor.set_path(Path(path))
         else:
             self.cfg_editor.set_path(None)
@@ -244,29 +255,60 @@ class MainWindow(FluentWindow):
         if mode == "lazy":
             wiz = LazyPresetWizard(self.settings, self)
             if wiz.exec() and wiz.result_preset:
-                self._reload_presets(select=wiz.result_preset.name)
+                self._reload_presets(select=wiz.result_preset.file_stem())
         elif mode == "advanced":
             preset = ServerPreset()
             dlg = AdvancedPresetDialog(preset, self.settings, self)
             if dlg.exec():
-                self._reload_presets(select=preset.name)
+                self._reload_presets(select=preset.file_stem())
 
     def _edit_preset(self) -> None:
         if not self.current:
             return
         dlg = AdvancedPresetDialog(self.current, self.settings, self)
         if dlg.exec():
-            self._reload_presets(select=self.current.name)
+            self._reload_presets(select=self.current.file_stem())
 
     def _delete_preset(self) -> None:
-        if not self.current:
+        p = self.current
+        if not p:
             return
-        box = MessageBox(tr("main.del_title", "Удаление пресета"),
-                         tr("main.del_confirm", "Удалить пресет «{n}»?", n=self.current.name),
-                         self)
-        if box.exec():
-            self.current.delete()
-            self._reload_presets()
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout
+        from qfluentwidgets import BodyLabel
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("main.del_title", "Удаление пресета"))
+        dlg.resize(460, 170)
+        lay = QVBoxLayout(dlg)
+        text = BodyLabel(tr("main.del_confirm", "Удалить пресет «{n}»?", n=p.name))
+        text.setWordWrap(True)
+        lay.addWidget(text)
+        chk = CheckBox(tr("main.del_files",
+                          "Удалить также файлы пресета: конфиг, профиль и миссию "
+                          "(вместе со storage)"))
+        chk.setChecked(True)
+        lay.addWidget(chk)
+        lay.addStretch(1)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
+        b_cancel.clicked.connect(dlg.reject)
+        b_ok = PrimaryPushButton(FIF.DELETE, tr("main.preset_del", "Удалить"))
+        b_ok.clicked.connect(dlg.accept)
+        btns.addWidget(b_cancel)
+        btns.addWidget(b_ok)
+        lay.addLayout(btns)
+        if not dlg.exec():
+            return
+
+        if chk.isChecked():
+            from core.layout import delete_preset_files
+            removed = delete_preset_files(self.settings, self._branch(), p.mode,
+                                          p.server_config, p.profiles, p.mission)
+            for r in removed:
+                self._append_log(tr("main.del_removed", "Удалено: {p}", p=r))
+        p.delete()
+        self._reload_presets()
 
     # ------------------------------------------------------------------ запуск
 
@@ -303,7 +345,8 @@ class MainWindow(FluentWindow):
             self.ignored_checks |= dlg.ignore_ids
 
         # Автоисправление кодировки конфига перед запуском
-        cfg_path = resolve_path(p.server_config, self.settings.client_root(branch))
+        from core.layout import resolve_config, resolve_profiles
+        cfg_path = resolve_config(p.server_config, self.settings, branch, p.mode)
         if cfg_path and Path(cfg_path).is_file():
             from core.servercfg import ServerCfg, needs_reencode
             if needs_reencode(Path(cfg_path)):
@@ -315,7 +358,7 @@ class MainWindow(FluentWindow):
                     self._append_log(str(e), "error")
 
         # Профиль создаём заранее, чтобы тейлер логов сразу видел папку
-        prof = resolve_path(p.profiles, self.settings.client_root(branch))
+        prof = resolve_profiles(p.profiles, self.settings, branch, p.mode)
         if prof:
             Path(prof).mkdir(parents=True, exist_ok=True)
 

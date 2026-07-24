@@ -26,7 +26,8 @@ def classify(line: str) -> str:
 
 
 def server_log_dir(preset: ServerPreset, settings: Settings, branch: str) -> Path | None:
-    p = resolve_path(preset.profiles, settings.client_root(branch))
+    from .layout import resolve_profiles
+    p = resolve_profiles(preset.profiles, settings, branch, preset.mode)
     return Path(p) if p else None
 
 

@@ -64,6 +64,15 @@
       "repo": "CypeR79/DayZ-Projects",
       "branch": "main",
       "path": "TakistanPlus/mission"
+    },
+    {
+      "id": "dayzOffline.kot_map",
+      "title": "KR Test Map",
+      "world": "kot_map",
+      "repo": "KRdayzmodding/KR_TestMap",
+      "branch": "main",
+      "path": "dayzOffline.kot_map",
+      "mods": [{ "path": "@KR_BlankMap" }]
     }
   ]
 }

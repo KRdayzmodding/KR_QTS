@@ -86,7 +86,9 @@ class LogWindow(QWidget):
         self.directory = directory
         self.path_label.setText(str(directory) if directory else
                                 tr("log.no_dir", "Папка логов не определена"))
-        self.tailer = logsource.LogTailer(directory) if directory else None
+        # живой хвост — только скрипт-логи; RPT и прочее доступны через поиск
+        self.tailer = (logsource.LogTailer(directory, pattern_filter="script_*.log")
+                       if directory else None)
         if self.tailer:
             self.timer.start()
         else:

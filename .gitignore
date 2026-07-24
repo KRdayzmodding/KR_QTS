@@ -9,6 +9,7 @@ config/settings.json
 config/presets/
 config/mod_presets/
 config/mod_sources.json
+downloads/
 
 # IDE
 .vscode/

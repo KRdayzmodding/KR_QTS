@@ -12,6 +12,49 @@ from .settings import Settings, APP_DIR
 
 CATALOG_FILE = APP_DIR / "data" / "missions_catalog.json"
 META_NAME = ".krsm_mission.json"
+TEMPLATE_PREFIX = "actual"  # actual.<world> — скачанный шаблон карты
+
+
+def template_name(world: str) -> str:
+    return f"{TEMPLATE_PREFIX}.{world}"
+
+
+# ------------------------------------------------------- db/globals.xml миссии
+
+def _globals_xml(mission_dir: Path) -> Path:
+    return Path(mission_dir) / "db" / "globals.xml"
+
+
+def read_global_var(mission_dir: Path, name: str) -> str | None:
+    """Значение <var name="..." value="..."/> из db/globals.xml (None — нет файла/переменной)."""
+    f = _globals_xml(mission_dir)
+    if not f.is_file():
+        return None
+    try:
+        m = re.search(rf'<var\s+name="{re.escape(name)}"[^>]*\bvalue="([^"]*)"',
+                      f.read_text(encoding="utf-8", errors="replace"))
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def set_global_var(mission_dir: Path, name: str, value: str) -> bool:
+    """Точечно меняет value переменной в db/globals.xml. True — записано."""
+    f = _globals_xml(mission_dir)
+    if not f.is_file():
+        return False
+    try:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        new_text, n = re.subn(
+            rf'(<var\s+name="{re.escape(name)}"[^>]*\bvalue=")[^"]*(")',
+            lambda m: m.group(1) + str(value) + m.group(2), text, count=1)
+        if n == 0:
+            return False
+        if new_text != text:
+            f.write_bytes(new_text.encode("utf-8"))
+        return True
+    except OSError:
+        return False
 _UA = {"User-Agent": "KR-ServerManager (github.com/KRdayzmodding/KR_ServerManager)"}
 
 
@@ -23,6 +66,8 @@ class CatalogEntry:
     repo: str
     branch: str
     path: str
+    # моды карты из того же репозитория: [{"path": "@ModFolder"}]
+    mods: list = field(default_factory=list)
 
 
 @dataclass
@@ -41,33 +86,24 @@ def load_catalog() -> list[CatalogEntry]:
     try:
         data = json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
         return [CatalogEntry(**{k: m[k] for k in
-                                ("id", "title", "world", "repo", "branch", "path")})
+                                ("id", "title", "world", "repo", "branch", "path")},
+                             mods=m.get("mods", []))
                 for m in data.get("missions", [])]
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return []
 
 
 def mpmissions_dir(settings: Settings, branch: str, mode: str) -> Path:
-    """Папка миссий: корень клиента для diag, корень сервера для dedicated."""
-    root = settings.client_root(branch) if mode == MODE_DIAG else settings.server_root(branch)
-    return Path(root) / "mpmissions" if root else Path("")
+    """Папка миссий: <корень режима>/KR_Debug/mpmissions."""
+    from .layout import debug_dir, MISSIONS_SUBDIR
+    base = debug_dir(settings, branch, mode)
+    return base / MISSIONS_SUBDIR if str(base) else Path("")
 
 
 def resolve_mission(value: str, settings: Settings, branch: str, mode: str) -> str:
-    """Значение миссии из пресета -> абсолютный путь.
-
-    Голое имя папки -> <корень режима>/mpmissions/<имя>;
-    относительный путь -> от корня клиента (совместимость со старыми пресетами).
-    """
-    if not value:
-        return ""
-    p = Path(value)
-    if p.is_absolute():
-        return str(p)
-    if len(p.parts) == 1:
-        base = mpmissions_dir(settings, branch, mode)
-        return str(base / value) if str(base) else value
-    return str(Path(settings.client_root(branch)) / p)
+    """Значение миссии из пресета -> абсолютный путь (см. layout._resolve)."""
+    from .layout import resolve_mission as _rm
+    return _rm(value, settings, branch, mode)
 
 
 def installed_missions(directory: Path) -> list[InstalledMission]:

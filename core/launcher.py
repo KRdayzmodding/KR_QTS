@@ -58,11 +58,15 @@ def _params_args(preset: ServerPreset, target: str) -> list[str]:
     return args
 
 
-def _mods_arg(names: list[str], registry: ModRegistry) -> str:
+def _mods_arg(names: list[str], registry: ModRegistry, root: str) -> str:
+    """Абсолютные пути junction-ссылок в <root>/KR_Debug/MODS."""
+    from .layout import mods_link_dir
+    base = mods_link_dir(root)
     folders = []
     for n in names:
         mod = registry.get(n)
-        folders.append(mod.folder_name if mod else (n if n.startswith("@") else "@" + n))
+        folder = mod.folder_name if mod else (n if n.startswith("@") else "@" + n)
+        folders.append(str(base / folder))
     return ";".join(folders)
 
 
@@ -79,17 +83,17 @@ def build_server_command(preset: ServerPreset, settings: Settings, branch: str,
         exe = str(Path(cwd) / "DayZServer_x64.exe")
         args = []
 
-    from .missions import resolve_mission
+    from .layout import resolve_config, resolve_profiles, resolve_mission
     args += [
-        f"-config={resolve_path(preset.server_config, client_root)}",
+        f"-config={resolve_config(preset.server_config, settings, branch, preset.mode)}",
         f"-mission={resolve_mission(preset.mission, settings, branch, preset.mode)}",
-        f"-profiles={resolve_path(preset.profiles, client_root)}",
+        f"-profiles={resolve_profiles(preset.profiles, settings, branch, preset.mode)}",
         f"-port={preset.port}",
     ]
     if preset.mods:
-        args.append(f"-mod={_mods_arg(preset.mods, registry)}")
+        args.append(f"-mod={_mods_arg(preset.mods, registry, cwd)}")
     if preset.server_mods:
-        args.append(f"-serverMod={_mods_arg(preset.server_mods, registry)}")
+        args.append(f"-serverMod={_mods_arg(preset.server_mods, registry, cwd)}")
     args += _params_args(preset, SERVER)
     args += preset.extra_server.split()
     return exe, args, cwd
@@ -103,7 +107,7 @@ def build_client_command(preset: ServerPreset, settings: Settings, branch: str,
     exe = str(Path(client_root) / ("DayZDiag_x64.exe" if use_diag else "DayZ_x64.exe"))
     args = [f"-connect=127.0.0.1:{preset.port}"]
     if preset.mods:
-        args.append(f"-mod={_mods_arg(preset.mods, registry)}")
+        args.append(f"-mod={_mods_arg(preset.mods, registry, client_root)}")
     args += _params_args(preset, CLIENT)
     args += preset.extra_client.split()
     return exe, args, client_root
@@ -200,6 +204,21 @@ class LaunchWorker(QThread):
         if p.mode != MODE_DIAG:
             for mod in selected:
                 reg.copy_keys(mod, s.server_root(self.branch))
+
+        # 4.5. TimeLogin/TimeLogout в db/globals.xml миссии — общее значение
+        #      (применяется перед запуском, переживает пересоздание миссии)
+        if p.time_login >= 0:
+            from pathlib import Path as _P
+            from .layout import resolve_mission
+            from .missions import set_global_var
+            mission_path = resolve_mission(p.mission, s, self.branch, p.mode)
+            if mission_path and _P(mission_path).is_dir():
+                ok1 = set_global_var(_P(mission_path), "TimeLogin", str(p.time_login))
+                ok2 = set_global_var(_P(mission_path), "TimeLogout", str(p.time_login))
+                if ok1 or ok2:
+                    self.log.emit(tr("launch.time_login",
+                                     "TimeLogin/TimeLogout = {v} с (db/globals.xml)",
+                                     v=p.time_login), "info")
 
         # 5. Сервер
         server_proc = None

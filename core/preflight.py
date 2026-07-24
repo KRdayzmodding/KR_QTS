@@ -62,7 +62,8 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
                  "{exe} не найден в {p}", exe=exe, p=client_root))
 
     # Пути пресета
-    cfg = resolve_path(preset.server_config, client_root)
+    from .layout import resolve_config, resolve_profiles
+    cfg = resolve_config(preset.server_config, settings, branch, preset.mode)
     if not cfg or not Path(cfg).is_file():
         crit("config", tr("check.config", "Серверный конфиг не найден: {p}", p=cfg or "—"))
     elif needs_reencode(Path(cfg)):
@@ -74,7 +75,7 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
     if not mission or not Path(mission).is_dir():
         crit("mission", tr("check.mission", "Папка миссии не найдена: {p}", p=mission or "—"))
 
-    profiles = resolve_path(preset.profiles, client_root)
+    profiles = resolve_profiles(preset.profiles, settings, branch, preset.mode)
     if not profiles:
         warn("profiles", tr("check.profiles_empty",
              "Папка профиля не указана — сервер будет писать логи в папку по умолчанию."))
