@@ -73,7 +73,7 @@
   "log.search_end": "=== Ende der Suche ===",
   "log.search_header": "=== Suche \"{q}\": {n} Treffer ===",
   "log.search_ph": "Logs durchsuchen…",
-  "main.about": "Der Arbeitsplatz des DayZ-Modders: Test-Server und -Client per Preset starten (Diag oder Dedicated), Workshop- und lokale Mods anhängen, geänderte Mods automatisch neu packen, serverDZ.cfg bearbeiten und Live-Logs mit Fehlerhervorhebung verfolgen.\n\nGPLv3-Lizenz — für immer kostenlos.\nhttps://github.com/KRdayzmodding/KR_ServerManager",
+  "main.about": "Ein Werkzeug zum Starten einer DayZ-Standalone-Testumgebung und zum Debuggen von Mods.\n\nGPLv3-Lizenz — für immer kostenlos.\nhttps://github.com/KRdayzmodding/KR_ServerManager\n\nby [Kramtsov Arms]",
   "main.branch": "Zweig:",
   "main.cfg_fixed": "Kodierung der Konfiguration auf UTF-8 ohne BOM korrigiert.",
   "main.chk_client": "Client",
