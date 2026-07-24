@@ -109,7 +109,7 @@ class SettingsPage(QScrollArea):
         btn_detect = PushButton(FIF.SEARCH, tr("settings.autodetect",
                                                "Автопоиск незаполненных путей"))
         btn_detect.clicked.connect(self._autodetect)
-        btn_save = PrimaryPushButton(FIF.SAVE, tr("settings.save", "Сохранить"))
+        btn_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
         btn_save.clicked.connect(self._save)
         btns.addWidget(btn_detect)
         btns.addStretch(1)

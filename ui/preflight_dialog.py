@@ -47,7 +47,7 @@ class PreflightDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        btn_cancel = PushButton(tr("preflight.cancel", "Отмена"))
+        btn_cancel = PushButton(tr("common.cancel", "Отмена"))
         btn_cancel.clicked.connect(self.reject)
         btn_skip = PrimaryPushButton(tr("preflight.skip", "Пропустить и запустить"))
         btn_skip.setEnabled(not critical)

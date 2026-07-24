@@ -49,7 +49,7 @@ class DownloadWindow(QWidget):
 
         row = QHBoxLayout()
         self.stats = CaptionLabel("")
-        self.btn_cancel = PushButton(tr("dl.cancel", "Отмена"))
+        self.btn_cancel = PushButton(tr("common.cancel", "Отмена"))
         self.btn_cancel.clicked.connect(self._cancel)
         row.addWidget(self.stats, 1)
         row.addWidget(self.btn_cancel)

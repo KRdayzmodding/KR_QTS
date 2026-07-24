@@ -47,7 +47,7 @@ class NewMissionDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        b_cancel = PushButton(tr("preset.cancel", "Отмена"))
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
         b_cancel.clicked.connect(self.reject)
         b_ok = PrimaryPushButton(FIF.DOWNLOAD, tr("mission.download", "Скачать"))
         b_ok.clicked.connect(self._ok)
@@ -91,7 +91,7 @@ class UpdateMissionDialog(QDialog):
         layout.addStretch(1)
         btns = QHBoxLayout()
         btns.addStretch(1)
-        b_cancel = PushButton(tr("preset.cancel", "Отмена"))
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
         b_cancel.clicked.connect(self.reject)
         b_ok = PrimaryPushButton(FIF.SYNC, tr("mission.update", "Обновить"))
         b_ok.clicked.connect(self.accept)

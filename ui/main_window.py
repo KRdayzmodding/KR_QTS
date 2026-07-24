@@ -74,8 +74,8 @@ class LaunchInterface(QWidget):
         cl = QVBoxLayout(card)
         cl.setContentsMargins(16, 12, 16, 12)
         row = QHBoxLayout()
-        self.chk_server = CheckBox(tr("main.chk_server", "Сервер"))
-        self.chk_client = CheckBox(tr("main.chk_client", "Клиент"))
+        self.chk_server = CheckBox(tr("common.server", "Сервер"))
+        self.chk_client = CheckBox(tr("common.client", "Клиент"))
         row.addWidget(self.chk_server)
         row.addWidget(self.chk_client)
         row.addStretch(1)
@@ -370,8 +370,8 @@ class MainWindow(FluentWindow):
                     + tr("main.st_off", "{n}: не запущен", n=name))
 
         self.launch_page.status_label.setText(
-            state(self.server_pid, tr("main.server", "Сервер"), "#4caf50") + "  "
-            + state(self.client_pid, tr("main.client", "Клиент"), "#4caf50"))
+            state(self.server_pid, tr("common.server", "Сервер"), "#4caf50") + "  "
+            + state(self.client_pid, tr("common.client", "Клиент"), "#4caf50"))
         self.launch_page.status_label.setTextFormat(Qt.TextFormat.RichText)
 
     # ------------------------------------------------------------------ прочее

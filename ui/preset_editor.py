@@ -144,9 +144,9 @@ class AdvancedPresetDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        b_cancel = PushButton(tr("preset.cancel", "Отмена"))
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
         b_cancel.clicked.connect(self.reject)
-        b_save = PrimaryPushButton(FIF.SAVE, tr("preset.save", "Сохранить"))
+        b_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
         b_save.clicked.connect(self._save)
         btns.addWidget(b_cancel)
         btns.addWidget(b_save)
@@ -296,7 +296,7 @@ class LazyPresetWizard(QWizard):
                 current=self.p_mission.value()))
         self.p_profiles = _PathField(p2, "", True, root)
         l2.addRow(tr("preset.lazy_config", "Конфиг сервера (serverDZ.cfg)"), self.p_config)
-        l2.addRow(tr("preset.lazy_mission", "Миссия"), self.p_mission)
+        l2.addRow(tr("preset.mission", "Миссия"), self.p_mission)
         l2.addRow(tr("preset.lazy_profiles", "Папка профиля (логи и настройки сервера)"), self.p_profiles)
         note = CaptionLabel(tr("preset.lazy_p2_hint",
                                "Профиль можно указать в любую пустую папку — сервер сам её заполнит."))
@@ -305,7 +305,7 @@ class LazyPresetWizard(QWizard):
 
         # Шаг 3: финиш
         p3 = QWizardPage()
-        p3.setTitle(tr("preset.lazy_p3", "Готово"))
+        p3.setTitle(tr("common.done", "Готово"))
         l3 = QVBoxLayout(p3)
         l3.addWidget(BodyLabel(tr("preset.lazy_done",
                                "Пресет будет создан с разумными настройками по умолчанию.\n"

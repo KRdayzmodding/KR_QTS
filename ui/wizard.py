@@ -102,7 +102,7 @@ class FirstRunWizard(QWizard):
 
         # --- Шаг 4: финиш
         p4 = QWizardPage()
-        p4.setTitle(tr("wizard.done_title", "Готово"))
+        p4.setTitle(tr("common.done", "Готово"))
         l4 = QVBoxLayout(p4)
         l4.addWidget(BodyLabel(tr("wizard.done_text",
                                "Настройка завершена. Всё можно изменить позже в «Настройках».\n\n"
