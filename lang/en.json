@@ -73,7 +73,7 @@
   "log.search_end": "=== End of search ===",
   "log.search_header": "=== Search \"{q}\": {n} matches ===",
   "log.search_ph": "Search logs…",
-  "main.about": "KR Server Manager\n\nLauncher and mod manager for DayZ development.\nGPLv3 license — free forever.\nhttps://github.com/KRdayzmodding/KR_ServerManager",
+  "main.about": "A DayZ modder's workbench: launch a test server and client from presets (Diag or Dedicated), attach Workshop and local mods, automatically repack changed mods, edit serverDZ.cfg and watch live logs with error highlighting.\n\nGPLv3 license — free forever.\nhttps://github.com/KRdayzmodding/KR_ServerManager",
   "main.branch": "Branch:",
   "main.cfg_fixed": "Config encoding fixed to UTF-8 without BOM.",
   "main.chk_client": "Client",

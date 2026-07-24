@@ -383,7 +383,10 @@ class MainWindow(FluentWindow):
     def _about(self) -> None:
         box = MessageBox("KR Server Manager",
                          tr("main.about",
-                            "Лаунчер и менеджер модов для DayZ-разработки.\n"
+                            "Рабочее место DayZ-мододела: запуск тестового сервера и клиента "
+                            "по пресетам (Diag или Dedicated), подключение модов из Workshop "
+                            "и локальных, автоматическая перепаковка изменённых модов, "
+                            "редактор serverDZ.cfg и живые логи с подсветкой ошибок.\n\n"
                             "Лицензия GPLv3 — бесплатно навсегда.\n"
                             "https://github.com/KRdayzmodding/KR_ServerManager"),
                          self)
