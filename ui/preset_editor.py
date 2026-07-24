@@ -14,6 +14,7 @@ from core.i18n import tr
 from core.params import specs_for, FLAG, SWITCH, INT, STR, SERVER, CLIENT
 from core.presets import ServerPreset, MODE_DIAG, MODE_DEDICATED
 from core.settings import Settings, STABLE, EXPERIMENTAL
+from ui.mission_picker import MissionPicker
 
 
 def choose_creation_mode(parent) -> str | None:
@@ -105,10 +106,14 @@ class AdvancedPresetDialog(QDialog):
         form.addRow("", self.client_diag)
 
         self.p_config = _PathField(self, preset.server_config, False, root_hint)
-        self.p_mission = _PathField(self, preset.mission, True, root_hint)
+        self.p_mission = MissionPicker(self)
+        self.p_mission.set_context(settings, preset.branch, preset.mode,
+                                   current=preset.mission)
+        self.mode.currentIndexChanged.connect(self._mission_ctx)
+        self.branch.currentIndexChanged.connect(self._mission_ctx)
         self.p_profiles = _PathField(self, preset.profiles, True, root_hint)
         form.addRow(tr("preset.config", "Серверный конфиг (serverDZ.cfg)"), self.p_config)
-        form.addRow(tr("preset.mission", "Папка миссии"), self.p_mission)
+        form.addRow(tr("preset.mission", "Миссия"), self.p_mission)
         form.addRow(tr("preset.profiles", "Папка профиля"), self.p_profiles)
         hint = CaptionLabel(tr("preset.path_hint",
                                "Пути можно указывать относительно корня клиента или абсолютные."))
@@ -146,6 +151,11 @@ class AdvancedPresetDialog(QDialog):
         btns.addWidget(b_cancel)
         btns.addWidget(b_save)
         layout.addLayout(btns)
+
+    def _mission_ctx(self) -> None:
+        self.p_mission.set_context(self.settings, self.branch.currentData(),
+                                   self.mode.currentData(),
+                                   current=self.p_mission.value())
 
     # Параметры: FLAG -> чекбокс; SWITCH -> комбо (—/вкл/выкл); INT/STR -> строка
     def _rebuild_params(self) -> None:
@@ -221,7 +231,7 @@ class AdvancedPresetDialog(QDialog):
         p.branch = self.branch.currentData()
         p.client_use_diag = self.client_diag.isChecked()
         p.server_config = self.p_config.text()
-        p.mission = self.p_mission.text()
+        p.mission = self.p_mission.value()
         p.profiles = self.p_profiles.text()
         p.port = self.port.value()
         p.params_server = self._collect_params(SERVER)
@@ -250,15 +260,24 @@ class LazyPresetWizard(QWizard):
         self.name.setPlaceholderText(tr("preset.lazy_name_ph", "Например: Мой сервер Черноруси"))
         l1.addWidget(BodyLabel(tr("preset.name", "Название")))
         l1.addWidget(self.name)
+        l1.addSpacing(12)
         self.rb_diag = RadioButton(tr("preset.lazy_diag",
-                                      "Отладка модов (Diag) — рекомендуется для разработки.\n"
-                                      "Игра запускается в диагностическом режиме, работает filepatching."))
+                                      "Отладка модов (Diag) — рекомендуется для разработки"))
+        diag_desc = CaptionLabel(tr("preset.lazy_diag_desc",
+                                    "Игра запускается в диагностическом режиме, работает filepatching."))
+        diag_desc.setContentsMargins(28, 0, 0, 0)
         self.rb_dedicated = RadioButton(tr("preset.lazy_dedicated",
-                                           "Обычный сервер (Dedicated) — как «настоящий» сервер.\n"
-                                           "Отдельная серверная программа + обычный клиент."))
+                                           "Обычный сервер (Dedicated) — как «настоящий» сервер"))
+        ded_desc = CaptionLabel(tr("preset.lazy_dedicated_desc",
+                                   "Отдельная серверная программа + обычный клиент."))
+        ded_desc.setContentsMargins(28, 0, 0, 0)
         self.rb_diag.setChecked(True)
         l1.addWidget(self.rb_diag)
+        l1.addWidget(diag_desc)
+        l1.addSpacing(8)
         l1.addWidget(self.rb_dedicated)
+        l1.addWidget(ded_desc)
+        l1.addStretch(1)
         p1.registerField("name*", self.name)
         self.addPage(p1)
 
@@ -268,10 +287,16 @@ class LazyPresetWizard(QWizard):
         l2 = QFormLayout(p2)
         root = settings.client_stable
         self.p_config = _PathField(p2, "", False, root)
-        self.p_mission = _PathField(p2, "", True, root)
+        self.p_mission = MissionPicker(p2)
+        self.p_mission.set_context(settings, STABLE, MODE_DIAG)
+        self.rb_diag.toggled.connect(
+            lambda _on: self.p_mission.set_context(
+                settings, STABLE,
+                MODE_DIAG if self.rb_diag.isChecked() else MODE_DEDICATED,
+                current=self.p_mission.value()))
         self.p_profiles = _PathField(p2, "", True, root)
         l2.addRow(tr("preset.lazy_config", "Конфиг сервера (serverDZ.cfg)"), self.p_config)
-        l2.addRow(tr("preset.lazy_mission", "Папка миссии (например dayzOffline.chernarusplus)"), self.p_mission)
+        l2.addRow(tr("preset.lazy_mission", "Миссия"), self.p_mission)
         l2.addRow(tr("preset.lazy_profiles", "Папка профиля (логи и настройки сервера)"), self.p_profiles)
         note = CaptionLabel(tr("preset.lazy_p2_hint",
                                "Профиль можно указать в любую пустую папку — сервер сам её заполнит."))
@@ -293,7 +318,7 @@ class LazyPresetWizard(QWizard):
             name=self.name.text().strip() or "Новый пресет",
             mode=MODE_DIAG if diag else MODE_DEDICATED,
             server_config=self.p_config.text(),
-            mission=self.p_mission.text(),
+            mission=self.p_mission.value(),
             profiles=self.p_profiles.text(),
         )
         preset.params_server = {"doLogs": True, "noPause": True}

@@ -193,6 +193,8 @@ class MainWindow(FluentWindow):
     def _bind_preset(self) -> None:
         p = self.current
         lp = self.launch_page
+        lp.b_edit.setEnabled(p is not None)
+        lp.b_del.setEnabled(p is not None)
         for chk, val in ((lp.chk_server, p.launch_server if p else True),
                          (lp.chk_client, p.launch_client if p else True)):
             chk.blockSignals(True)

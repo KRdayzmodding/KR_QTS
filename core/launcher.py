@@ -79,9 +79,10 @@ def build_server_command(preset: ServerPreset, settings: Settings, branch: str,
         exe = str(Path(cwd) / "DayZServer_x64.exe")
         args = []
 
+    from .missions import resolve_mission
     args += [
         f"-config={resolve_path(preset.server_config, client_root)}",
-        f"-mission={resolve_path(preset.mission, client_root)}",
+        f"-mission={resolve_mission(preset.mission, settings, branch, preset.mode)}",
         f"-profiles={resolve_path(preset.profiles, client_root)}",
         f"-port={preset.port}",
     ]

@@ -69,7 +69,8 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
         warn("config_enc", tr("check.config_enc",
              "Кодировка конфига не UTF-8 без BOM — будет исправлена автоматически."))
 
-    mission = resolve_path(preset.mission, client_root)
+    from .missions import resolve_mission
+    mission = resolve_mission(preset.mission, settings, branch, preset.mode)
     if not mission or not Path(mission).is_dir():
         crit("mission", tr("check.mission", "Папка миссии не найдена: {p}", p=mission or "—"))
 

@@ -1,0 +1,69 @@
+{
+  "comment": "Каталог официальных/комьюнити миссий. path может содержать {latestV} — подставляется старшая папка V* репозитория.",
+  "missions": [
+    {
+      "id": "dayzOffline.chernarusplus",
+      "title": "Chernarus (официальная)",
+      "world": "chernarusplus",
+      "repo": "BohemiaInteractive/DayZ-Central-Economy",
+      "branch": "master",
+      "path": "dayzOffline.chernarusplus"
+    },
+    {
+      "id": "dayzOffline.enoch",
+      "title": "Livonia / Enoch (официальная)",
+      "world": "enoch",
+      "repo": "BohemiaInteractive/DayZ-Central-Economy",
+      "branch": "master",
+      "path": "dayzOffline.enoch"
+    },
+    {
+      "id": "dayzOffline.sakhal",
+      "title": "Sakhal (официальная)",
+      "world": "sakhal",
+      "repo": "BohemiaInteractive/DayZ-Central-Economy",
+      "branch": "master",
+      "path": "dayzOffline.sakhal"
+    },
+    {
+      "id": "regular.namalsk",
+      "title": "Namalsk Regular",
+      "world": "namalsk",
+      "repo": "SumrakDZN/Namalsk-Server",
+      "branch": "main",
+      "path": "Mission Files/regular.namalsk"
+    },
+    {
+      "id": "hardcore.namalsk",
+      "title": "Namalsk Hardcore",
+      "world": "namalsk",
+      "repo": "SumrakDZN/Namalsk-Server",
+      "branch": "main",
+      "path": "Mission Files/hardcore.namalsk"
+    },
+    {
+      "id": "empty.deerisle",
+      "title": "Deer Isle",
+      "world": "deerisle",
+      "repo": "johnmclane666/Deerisle-Stable",
+      "branch": "master",
+      "path": "{latestV}/empty.deerisle"
+    },
+    {
+      "id": "dayzOffline.banov",
+      "title": "Banov",
+      "world": "banov",
+      "repo": "KubeloLive/Banov-Central-Economy",
+      "branch": "main",
+      "path": "dayzOffline.banov"
+    },
+    {
+      "id": "mission.takistanplus",
+      "title": "Takistan Plus",
+      "world": "takistanplus",
+      "repo": "CypeR79/DayZ-Projects",
+      "branch": "main",
+      "path": "TakistanPlus/mission"
+    }
+  ]
+}
