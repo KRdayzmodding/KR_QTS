@@ -9,11 +9,85 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .settings import Settings, MOD_SOURCES_FILE
+from .settings import (
+    Settings, MOD_SOURCES_FILE, MOD_DEPENDENCIES_FILE, MOD_FLAGS_FILE, MOD_FLAG_DEFS_FILE,
+)
 
 SOURCE_STEAM = "steam"
 SOURCE_LOCAL = "local"
 SOURCE_GITHUB = "github"  # скачан приложением в KR_Debug/mods_dl
+
+_DEFAULT_FLAG_COLOR = "#c9a227"
+
+
+@dataclass
+class ModFlagDef:
+    """Пользовательский флаг мода — название, цвет, начертание текста и
+    иконка, которыми отмечается имя мода в списках (см. ModsPanel/
+    ConnectModsDialog). icon — имя константы qfluentwidgets.FluentIcon,
+    пусто — без иконки."""
+    id: str
+    name: str
+    color: str = _DEFAULT_FLAG_COLOR
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    icon: str = ""
+
+
+def _default_flag_defs() -> list[ModFlagDef]:
+    """Флаги, с которыми приложение поставляется «из коробки»."""
+    return [
+        ModFlagDef(id="framework", name="Framework", color="#ffaa00",
+                  bold=True, underline=True, icon="COMMAND_PROMPT"),
+        ModFlagDef(id="map", name="Map", color="#00aa00", bold=True, icon="PHOTO"),
+        ModFlagDef(id="admintools", name="AdminTools", color="#55aaff",
+                  bold=True, icon="MIX_VOLUMES"),
+        ModFlagDef(id="exp", name="EXP", color="#55007f", italic=True, icon="SPEED_HIGH"),
+    ]
+
+
+def load_flag_defs() -> list[ModFlagDef]:
+    if MOD_FLAG_DEFS_FILE.is_file():
+        try:
+            data = json.loads(MOD_FLAG_DEFS_FILE.read_text(encoding="utf-8"))
+            return [ModFlagDef(id=d["id"], name=d["name"],
+                               color=d.get("color", _DEFAULT_FLAG_COLOR),
+                               bold=bool(d.get("bold")), italic=bool(d.get("italic")),
+                               underline=bool(d.get("underline")), icon=d.get("icon", ""))
+                   for d in data]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            pass
+    return _default_flag_defs()
+
+
+# Автоопределение флагов по известным Steam Workshop id — имена флагов (не id:
+# у пользователя они могут отличаться, если флаг создан/переименован вручную).
+# Применяется один раз при первом обнаружении мода (см. ModRegistry.scan) —
+# дальше пользователь волен снять флаг, повторно он не навяжется.
+_AUTO_FLAG_WORKSHOP_MAP: dict[str, tuple[str, ...]] = {
+    "1559212036": ("Framework",),
+    "2545327648": ("Framework",),
+    "1625463737": ("Framework", "EXP"),
+    "1828439124": ("AdminTools",),
+    "2968284194": ("AdminTools",),
+    "2829480906": ("Map",),
+    "2469798930": ("Map",),
+    "3101918894": ("Map",),
+    "2289456201": ("Map",),
+    "2153795105": ("Map",),
+    "2941620614": ("Map",),
+    "2727569951": ("Map",),
+    "1602372402": ("Map",),
+    "2415195639": ("Map",),
+}
+
+
+def save_flag_defs(defs: list[ModFlagDef]) -> None:
+    MOD_FLAG_DEFS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = [{"id": d.id, "name": d.name, "color": d.color, "bold": d.bold,
+            "italic": d.italic, "underline": d.underline, "icon": d.icon} for d in defs]
+    MOD_FLAG_DEFS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 @dataclass
@@ -26,9 +100,16 @@ class ModInfo:
     has_keys: bool = False
     duplicate_of_steam: str = ""   # id, если локальный мод дублирует воркшопный
     sources: list[str] = field(default_factory=list)  # папки сорсов (для запаковки)
+    dependencies: list[str] = field(default_factory=list)  # ключи модов (folder_name.lower()),
+    # от которых зависит этот — задаётся вручную для локальных модов (у Steam-модов
+    # зависимости вместо этого разрешаются на лету через steam_api, см. mods_panel.py)
+    is_server: bool = False   # по умолчанию подключать в -serverMod, а не в -mod
+    flags: list[str] = field(default_factory=list)  # id пользовательских флагов (ModFlagDef.id)
     problem: str = ""          # причина невалидности (нет addons/.pbo и т.п.), пусто — всё ок
     size_bytes: int = 0        # суммарный размер папки мода на диске
     pbo_names: list[str] = field(default_factory=list)  # имена .pbo в addons
+    mtime: float = 0.0         # дата последнего изменения файлов мода (эпоха, локально на диске)
+    outdated: bool = False     # для Steam: в Workshop есть более новая версия (см. steam_api)
 
     @property
     def valid(self) -> bool:
@@ -69,8 +150,9 @@ def format_size(n: int) -> str:
     return f"{size:.1f} ГБ"
 
 
-def scan_mod_stats(mod_dir: Path) -> tuple[list[str], int]:
-    """Имена .pbo в addons (топ-уровень) и суммарный размер всей папки мода."""
+def scan_mod_stats(mod_dir: Path) -> tuple[list[str], int, float]:
+    """Имена .pbo в addons (топ-уровень), суммарный размер и дата последнего
+    изменения (самый свежий mtime файла) всей папки мода."""
     pbo_names: list[str] = []
     try:
         for child in mod_dir.iterdir():
@@ -81,16 +163,21 @@ def scan_mod_stats(mod_dir: Path) -> tuple[list[str], int]:
     except OSError:
         pass
     total = 0
+    newest = 0.0
     try:
         for root, _dirs, files in os.walk(mod_dir):
             for fn in files:
+                fp = os.path.join(root, fn)
                 try:
-                    total += os.path.getsize(os.path.join(root, fn))
+                    total += os.path.getsize(fp)
+                    mt = os.path.getmtime(fp)
+                    if mt > newest:
+                        newest = mt
                 except OSError:
                     pass
     except OSError:
         pass
-    return pbo_names, total
+    return pbo_names, total, newest
 
 
 def validate_mod_dir(p: Path) -> str:
@@ -131,6 +218,8 @@ class ModRegistry:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.mods: dict[str, ModInfo] = {}   # ключ — folder_name без учёта регистра
+        self.hidden: dict[str, ModInfo] = {}  # скрытые вручную — для HiddenModsDialog
+        # (показать реальное имя, а не голый ключ), см. п.4 scan()
 
     # ------------------------------------------------------------- сканирование
 
@@ -147,11 +236,11 @@ class ModRegistry:
                 if not item.is_dir():
                     continue
                 name = _read_meta_name(item) or item.name
-                pbo_names, size_bytes = scan_mod_stats(item)
+                pbo_names, size_bytes, mtime = scan_mod_stats(item)
                 mod = ModInfo(
                     name=name, path=str(item), source=SOURCE_STEAM, group="Steam",
                     workshop_id=item.name, has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
-                    pbo_names=pbo_names, size_bytes=size_bytes,
+                    pbo_names=pbo_names, size_bytes=size_bytes, mtime=mtime,
                 )
                 self.mods[mod.folder_name.lower()] = mod
 
@@ -183,13 +272,13 @@ class ModRegistry:
             dup = ""
             if key in self.mods and self.mods[key].source == SOURCE_STEAM:
                 dup = self.mods[key].workshop_id  # локальный приоритетнее, помечаем дубль
-            pbo_names, size_bytes = scan_mod_stats(item)
+            pbo_names, size_bytes, mtime = scan_mod_stats(item)
             self.mods[key] = ModInfo(
                 name=item.name.lstrip("@"), path=str(item), source=source, group=group,
                 has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
                 duplicate_of_steam=dup,
                 problem=validate_mod_dir(item),  # проверяется при каждом скане
-                pbo_names=pbo_names, size_bytes=size_bytes,
+                pbo_names=pbo_names, size_bytes=size_bytes, mtime=mtime,
             )
 
         for rpath, source, group in scan_dirs:
@@ -205,10 +294,49 @@ class ModRegistry:
             if item.is_dir():
                 _add_local(item, source, group)
 
-        # 3. Привязка сорсов
+        # 3. Привязка сорсов, зависимостей и флагов (сервер/пользовательские)
+        deps_map = self._load_dependencies_map()
+        flags_map = self._load_flags_map()
         for key, mod in self.mods.items():
             if key in sources_map:
                 mod.sources = sources_map[key]
+            if key in deps_map:
+                mod.dependencies = deps_map[key]
+            if key in flags_map:
+                entry = flags_map[key]
+                mod.is_server = bool(entry.get("server"))
+                # "library" — старый формат (bool) до введения пользовательских
+                # флагов; переносим как обычный флаг с id "library"
+                flags = list(entry.get("flags", []))
+                if entry.get("library") and "library" not in flags:
+                    flags.append("library")
+                mod.flags = flags
+
+        # 3б. Автоопределение флагов по известным Steam id — только для
+        # модов, у которых ещё вообще нет своей записи в mod_flags.json
+        # (иначе повторно навязывали бы флаг, который пользователь снял)
+        name_to_flag_id = {d.name.lower(): d.id for d in load_flag_defs()}
+        auto_dirty = False
+        for key, mod in self.mods.items():
+            if mod.source != SOURCE_STEAM or not mod.workshop_id or key in flags_map:
+                continue
+            tag_names = _AUTO_FLAG_WORKSHOP_MAP.get(mod.workshop_id)
+            if not tag_names:
+                continue
+            for tname in tag_names:
+                fid = name_to_flag_id.get(tname.lower())
+                if fid and fid not in mod.flags:
+                    mod.flags.append(fid)
+                    auto_dirty = True
+        if auto_dirty:
+            self.save_flags()
+
+        # 4. Моды, скрытые вручную (папка/подписка остаётся — просто не показываем)
+        self.hidden = {}
+        for key in self.settings.excluded_mods:
+            m = self.mods.pop(key, None)
+            if m:
+                self.hidden[key] = m
 
         return self.all()
 
@@ -218,6 +346,15 @@ class ModRegistry:
     def get(self, name: str) -> ModInfo | None:
         n = name if name.startswith("@") else "@" + name
         return self.mods.get(n.lower())
+
+    def index_of(self, mod: ModInfo, names: list[str]) -> int | None:
+        """Позиция мода в списке имён пресета (mods/server_mods) — сравнение
+        по folder_name, а не по имени из списка (могло устареть)."""
+        for i, n in enumerate(names):
+            got = self.get(n)
+            if got and got.folder_name == mod.folder_name:
+                return i
+        return None
 
     # ------------------------------------------------------------- сорсы модов
 
@@ -233,6 +370,41 @@ class ModRegistry:
         MOD_SOURCES_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {k: m.sources for k, m in self.mods.items() if m.sources}
         MOD_SOURCES_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    # ------------------------------------------------------- зависимости модов
+
+    def _load_dependencies_map(self) -> dict[str, list[str]]:
+        if MOD_DEPENDENCIES_FILE.is_file():
+            try:
+                return json.loads(MOD_DEPENDENCIES_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {}
+
+    def save_dependencies(self) -> None:
+        MOD_DEPENDENCIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: m.dependencies for k, m in self.mods.items() if m.dependencies}
+        MOD_DEPENDENCIES_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    # ------------------------------------------------------- флаги модов (сервер/библиотека)
+
+    def _load_flags_map(self) -> dict[str, dict]:
+        if MOD_FLAGS_FILE.is_file():
+            try:
+                return json.loads(MOD_FLAGS_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {}
+
+    def save_flags(self) -> None:
+        MOD_FLAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: {"server": m.is_server, "flags": m.flags}
+               for k, m in self.mods.items() if m.is_server or m.flags}
+        MOD_FLAGS_FILE.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 

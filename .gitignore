@@ -14,3 +14,15 @@ downloads/
 # IDE
 .vscode/
 *.code-workspace
+
+# Личные метки/зависимости модов (генерируются приложением по месту)
+config/mod_flags.json
+config/mod_flag_defs.json
+config/mod_dependencies.json
+
+# Claude Code — локальные права/настройки этого пользователя
+.claude/
+
+# Временные бэкапы конфига при тестировании чистой установки
+config_backup_*/
+config_test_*/

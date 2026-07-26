@@ -1,7 +1,9 @@
 """Запаковка модов через Mikero pboProject + проверка актуальности по таймштампам."""
 from __future__ import annotations
 
+import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 from .mods import ModInfo
@@ -73,34 +75,101 @@ def clean_meta(source_dir: Path) -> int:
     return n
 
 
-def pack_source(settings: Settings, mod: ModInfo, source_dir: str,
-                log_cb=None) -> tuple[bool, str]:
-    """Собирает один PBO. Возвращает (успех, вывод pboProject)."""
+def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+    """Собирает один PBO. Возвращает (успех, вывод pboProject).
+
+    Вывод самого pboProject в лог не транслируется построчно — он либо пуст,
+    либо состоит из служебного шума pboProject; вызывающий код показывает
+    только краткий статус по каждому сорсу (см. ui/mods_panel.py, core/launcher.py),
+    а этот полный текст — только при ошибке, для диагностики.
+    """
     exe = settings.pbo_project_exe()
     if not Path(exe).is_file():
         return False, f"pboProject не найден: {exe}"
 
     if settings.clean_meta:
-        removed = clean_meta(Path(source_dir))
-        if removed and log_cb:
-            log_cb(f"Удалено .meta файлов: {removed}")
+        clean_meta(Path(source_dir))
 
     args = [exe, str(source_dir)]
-    args += settings.pack_flags.split()
-    args += [f"-M={mod.path}"]
-
-    if log_cb:
-        log_cb(" ".join(args))
+    # shlex (posix=True) — значения в кавычках с пробелами (пути, списки масок
+    # исключений) остаются одним аргументом, а не рвутся построчным .split()
     try:
-        res = subprocess.run(
-            args, capture_output=True, text=True, errors="replace",
-            timeout=600, creationflags=subprocess.CREATE_NO_WINDOW,
+        args += shlex.split(settings.pack_flags, posix=True)
+    except ValueError:
+        args += settings.pack_flags.split()  # незакрытая кавычка и т.п.
+    # движок задаём явно: иначе используется то, что осталось в реестре
+    # с прошлой GUI-сессии pboProject (могло быть Arma3/OFP от другого проекта)
+    args += ["-E=dayz", f"-M={mod.path}"]
+
+    try:
+        proc = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace", bufsize=1,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-    except subprocess.TimeoutExpired:
-        return False, "pboProject: превышено время сборки (10 минут)"
     except OSError as e:
         return False, str(e)
 
-    output = (res.stdout or "") + (res.stderr or "")
-    ok = res.returncode == 0 and pbo_for_source(mod, source_dir).is_file()
+    # построчное чтение (не capture_output после завершения) — нужно, чтобы
+    # сторожевой таймер мог убить зависший процесс, не дожидаясь общего wait()
+    lines: list[str] = []
+    timed_out = False
+
+    def _kill_on_timeout() -> None:
+        nonlocal timed_out
+        timed_out = True
+        proc.kill()
+
+    watchdog = threading.Timer(600, _kill_on_timeout)
+    watchdog.start()
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            lines.append(line.rstrip("\n"))
+        returncode = proc.wait()
+    finally:
+        watchdog.cancel()
+        proc.stdout.close()
+
+    output = "\n".join(lines)
+    if timed_out:
+        return False, "pboProject: превышено время сборки (10 минут)\n" + output[-2000:]
+    ok = returncode == 0 and pbo_for_source(mod, source_dir).is_file()
     return ok, output.strip()
+
+
+def pack_source_fast(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+    """Быстрая запаковка через входящий в комплект pbo_packer.exe.
+
+    Не подписывает pbo и не делает проверок ошибок pboProject — только для
+    локальной отладки (verifySignatures=0). Возвращает (успех, вывод)."""
+    exe = settings.pbo_packer_exe()
+    if not Path(exe).is_file():
+        return False, f"pbo_packer не найден: {exe}"
+
+    if settings.clean_meta:
+        clean_meta(Path(source_dir))
+
+    output = pbo_for_source(mod, source_dir)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    args = [exe, "pack", "-s", str(source_dir), "-o", str(output)]
+
+    try:
+        res = subprocess.run(
+            args, capture_output=True, text=True, errors="replace",
+            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "pbo_packer: превышено время сборки (2 минуты)"
+    except OSError as e:
+        return False, str(e)
+
+    out = ((res.stdout or "") + (res.stderr or "")).strip()
+    ok = res.returncode == 0 and output.is_file()
+    return ok, out
+
+
+def pack_source_auto(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+    """Выбирает движок запаковки по settings.pack_engine ('fast' | 'full')."""
+    if settings.pack_engine == "fast":
+        return pack_source_fast(settings, mod, source_dir)
+    return pack_source(settings, mod, source_dir)
