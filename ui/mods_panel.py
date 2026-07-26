@@ -1,61 +1,427 @@
-"""Вкладка модов: дерево по источникам (Steam / GitHub / локальные папки).
+"""Вкладка модов: общие настройки модов (не привязана к конкретному пресету).
 
-Колонки: Вкл (галка) | Название мода | @папка (серым) | Размер | PBO | Порядок |
-Серверный | Сорсы. Порядок загрузки хранится в пресете; галка добавляет мод
-в конец списка, стрелки двигают внутри списка.
+Дерево по источникам (Steam / GitHub / локальные папки) либо плоский
+сортируемый список — переключается кнопкой «Вид».
+
+Колонки: Название мода | @папка (серым) | Размер | PBO | Серверный | Сорсы |
+Изменён | Ребилд. «Серверный» — глобальный признак мода (подсказка при
+подключении, см. ui/connect_mods_dialog.py), а не состояние в конкретном
+пресете — выбор модов для пресета теперь делается отдельным окном
+«Подключить моды» с главной страницы. Свои флаги (название + цвет, см.
+ui/mod_flags_dialog.py) назначаются через ПКМ по моду и красят имя мода в
+списках. В списочном режиме клик по заголовку колонки сортирует по ней.
 """
 from __future__ import annotations
 
+import os
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QSize, QStandardPaths, QDir
+from PySide6.QtGui import QColor, QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem, QHeaderView, QMenu,
-    QInputDialog, QDialog, QFileDialog, QListView, QTreeView, QAbstractItemView,
+    QFileDialog, QListView, QTreeView, QAbstractItemView,
+    QListWidgetItem,
 )
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, TransparentToolButton, TreeWidget, ListWidget,
-    SearchLineEdit, BodyLabel, CaptionLabel, InfoBar, InfoBarPosition,
+    PushButton, PrimaryPushButton, TransparentToolButton, TreeWidget, ListWidget, ComboBox,
+    SearchLineEdit, BodyLabel, CaptionLabel, CheckBox, HyperlinkLabel,
+    InfoBar, InfoBarPosition, IndeterminateProgressRing, MessageBox,
     FluentIcon as FIF,
 )
 
+from core import packer, steam_api
+from core import i18n
 from core.i18n import tr
 from core.mods import (
-    ModRegistry, ModInfo, SOURCE_STEAM, SOURCE_GITHUB, validate_mod_dir, format_size,
+    ModRegistry, ModInfo, SOURCE_STEAM, SOURCE_LOCAL, SOURCE_GITHUB,
+    validate_mod_dir, format_size, load_flag_defs,
 )
-from core.presets import ServerPreset, ModPreset
+from ui.mod_flags_dialog import (
+    ModFlagsDialog, FlagAssignDialog, flag_icon, style_checkbox_by_flags, style_list_item_by_flags,
+    _swatch_icon,
+)
+from ui.theme import ThemedDialog
+from core.presets import ModPreset
 from core.settings import Settings
 
-(COL_NAME, COL_FOLDER, COL_SIZE, COL_PBO, COL_ORDER, COL_SERVER,
- COL_SOURCES) = range(7)
+(COL_NAME, COL_FOLDER, COL_SIZE, COL_PBO, COL_SERVER,
+ COL_SOURCES, COL_MODIFIED, COL_REBUILD) = range(8)
 _GREY = QColor("#888888")
+_ORANGE = QColor("#e08f00")
+_GREEN = QColor("#2e7d32")
+# колонки, у которых сортировка идёт не по тексту ячейки, а по значению,
+# сохранённому в UserRole+1 (числа для Размер/PBO/Дата изменения, bool-int
+# для Серверный, а для Мод — пара (не библиотека?, имя), чтобы библиотеки по
+# умолчанию (сортировка по Мод, по умолчанию восходящая) шли первыми)
+_KEYED_COLS = (COL_NAME, COL_SIZE, COL_PBO, COL_SERVER, COL_MODIFIED)
 
 
-def pick_multiple_directories(parent, caption: str) -> list[str]:
+class ModTreeItem(QTreeWidgetItem):
+    """Сортирует колонки из _KEYED_COLS по значению из UserRole+1, а не по тексту."""
+
+    def __lt__(self, other: QTreeWidgetItem) -> bool:
+        tree = self.treeWidget()
+        col = tree.sortColumn() if tree else 0
+        if col in _KEYED_COLS:
+            a = self.data(col, Qt.ItemDataRole.UserRole + 1)
+            b = other.data(col, Qt.ItemDataRole.UserRole + 1)
+            if a is not None and b is not None:
+                return a < b
+        return self.text(col).lower() < other.text(col).lower()
+
+
+class RebuildWorker(QThread):
+    """Пересборка всех сорсов мода по кнопке «Ребилд» (не только устаревших)."""
+    done = Signal(bool, str)
+    source_done = Signal(str, bool)   # имя папки сорса, успех — для краткого лога
+
+    def __init__(self, settings: Settings, mod: ModInfo, sources: list[str], parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.mod = mod
+        self.sources = sources
+
+    def run(self) -> None:
+        for src in self.sources:
+            ok, output = packer.pack_source_auto(self.settings, self.mod, src)
+            self.source_done.emit(Path(src).name, ok)
+            if not ok:
+                self.done.emit(False, output[-2000:])
+                return
+        self.done.emit(True, "")
+
+
+class StaleCheckWorker(QThread):
+    """Проверка актуальности Steam-модов: сравнивает time_updated в Workshop
+    с локальной датой изменения файлов мода. Публичный эндпоинт, ключ не нужен."""
+    checked = Signal(object, bool)  # mod, outdated
+
+    def __init__(self, mods: list[ModInfo], parent=None):
+        super().__init__(parent)
+        self.mods = mods
+
+    def run(self) -> None:
+        for mod in self.mods:
+            try:
+                remote = steam_api.get_time_updated(mod.workshop_id)
+            except Exception:  # noqa: BLE001 — сеть недоступна и т.п.: пропускаем
+                continue
+            # запас 60с на расхождение часов/времени записи на диск
+            outdated = bool(remote) and remote > mod.mtime + 60
+            self.checked.emit(mod, outdated)
+
+
+class DependencyCheckWorker(QThread):
+    """Проверка зависимостей Steam-мода через steam_api (в фоне, не блокирует UI)."""
+    done = Signal(object, list)
+
+    def __init__(self, mod: ModInfo, api_key: str, parent=None):
+        super().__init__(parent)
+        self.mod = mod
+        self.api_key = api_key
+
+    def run(self) -> None:
+        try:
+            deps = steam_api.resolve_dependencies_deep(self.mod.workshop_id, self.api_key)
+        except Exception:
+            deps = []
+        self.done.emit(self.mod, deps)
+
+
+class DependencyDialog(ThemedDialog):
+    """Список зависимостей подключаемого мода. Установленные — отмечены и включаемы,
+    не установленные (нет в реестре) — серые, со ссылкой на страницу Workshop
+    для ручной подписки (автоматически скачать через Steam API нельзя, это
+    делает только сам клиент Steam). «Игнорировать» — мод всё равно подключается,
+    недостающее не считается блокером (уже подключён к этому моменту)."""
+
+    def __init__(self, mod: ModInfo, dep_ids: list[str], registry: ModRegistry, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("mods.deps_title", "Зависимости мода «{m}»", m=mod.name))
+        self.resize(480, 320)
+        self._rows: list[tuple[ModInfo | None, CheckBox]] = []
+
+        layout = QVBoxLayout(self)
+        hint = BodyLabel(tr("mods.deps_hint",
+                            "Для работы «{m}» также необходимо следующее:", m=mod.name))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        flag_defs = {d.id: d for d in load_flag_defs()}
+        for dep_id in dep_ids:
+            found = next((m for m in registry.all() if m.workshop_id == dep_id), None)
+            row = QHBoxLayout()
+            if found:
+                cb = CheckBox(found.name)
+                cb.setChecked(True)
+                style_checkbox_by_flags(cb, found, flag_defs)
+            else:
+                cb = CheckBox(tr("mods.deps_missing", "{id} — не подписан", id=dep_id))
+                cb.setChecked(False)
+                cb.setEnabled(False)
+            row.addWidget(cb, 1)
+            if not found:
+                link = HyperlinkLabel(parent=self)
+                link.setUrl(QUrl(f"https://steamcommunity.com/sharedfiles/filedetails/?id={dep_id}"))
+                link.setText(tr("mods.deps_open_workshop", "Открыть в Workshop"))
+                row.addWidget(link)
+            layout.addLayout(row)
+            self._rows.append((found, cb))
+
+        note = CaptionLabel(tr("mods.deps_note",
+                               "Не подписанные моды нужно сначала подписать в Steam — "
+                               "ссылка откроет страницу мода. После подписки и скачивания "
+                               "нажмите «Обновить» на вкладке модов, чтобы подключить их."))
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        btns = QHBoxLayout()
+        b_ignore = PushButton(tr("mods.deps_ignore", "Игнорировать"))
+        b_ignore.clicked.connect(self.reject)
+        b_connect = PrimaryPushButton(FIF.LINK, tr("mods.deps_connect", "Подключить"))
+        b_connect.clicked.connect(self.accept)
+        btns.addStretch(1)
+        btns.addWidget(b_ignore)
+        btns.addWidget(b_connect)
+        layout.addLayout(btns)
+
+    def selected_mods(self) -> list[ModInfo]:
+        return [m for m, cb in self._rows if m is not None and cb.isChecked()]
+
+
+class LocalDependencyDialog(ThemedDialog):
+    """Зависимости локального мода — уже подключаемые (есть в реестре, чек-бокс)
+    и полностью отсутствующие (их когда-то выбрали через «Зависимости…», но
+    мода с таким ключом сейчас нет ни на диске, ни в реестре — серые, без
+    ссылки, метаданных о них не сохраняется). «Игнорировать» — мод всё равно
+    подключается, недостающее не считается блокером."""
+
+    def __init__(self, mod: ModInfo, dep_mods: list[ModInfo], missing_keys: list[str],
+                parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("mods.deps_title", "Зависимости мода «{m}»", m=mod.name))
+        self.resize(420, 320)
+        self._rows: list[tuple[ModInfo, CheckBox]] = []
+
+        layout = QVBoxLayout(self)
+        hint = BodyLabel(tr("mods.deps_hint",
+                            "Для работы «{m}» также необходимо следующее:", m=mod.name))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        flag_defs = {d.id: d for d in load_flag_defs()}
+        for dep_mod in dep_mods:
+            cb = CheckBox(dep_mod.name)
+            cb.setChecked(True)
+            style_checkbox_by_flags(cb, dep_mod, flag_defs)
+            layout.addWidget(cb)
+            self._rows.append((dep_mod, cb))
+        for key in missing_keys:
+            cb = CheckBox(tr("mods.deps_local_missing", "{k} — не найден", k=key))
+            cb.setChecked(False)
+            cb.setEnabled(False)
+            layout.addWidget(cb)
+
+        btns = QHBoxLayout()
+        b_ignore = PushButton(tr("mods.deps_ignore", "Игнорировать"))
+        b_ignore.clicked.connect(self.reject)
+        b_connect = PrimaryPushButton(FIF.LINK, tr("mods.deps_connect", "Подключить"))
+        b_connect.clicked.connect(self.accept)
+        btns.addStretch(1)
+        btns.addWidget(b_ignore)
+        btns.addWidget(b_connect)
+        layout.addLayout(btns)
+
+    def selected_mods(self) -> list[ModInfo]:
+        return [m for m, cb in self._rows if cb.isChecked()]
+
+
+class DependencyPickerDialog(ThemedDialog):
+    """Ручной выбор зависимостей локального мода — из какого чек-листа при
+    подключении мода в пресет будут предложены недостающие (см.
+    ModsPanel._check_local_dependencies)."""
+
+    def __init__(self, mod: ModInfo, registry: ModRegistry, parent=None):
+        super().__init__(parent)
+        self.mod = mod
+        self.setWindowTitle(tr("mods.deps_edit_title", "Зависимости мода «{m}»", m=mod.name))
+        self.resize(420, 520)
+
+        layout = QVBoxLayout(self)
+        hint = BodyLabel(tr("mods.deps_edit_hint",
+                            "Отметьте моды, без которых «{m}» не должен подключаться. "
+                            "При добавлении «{m}» в пресет их предложат подключить "
+                            "автоматически.", m=mod.name))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._flag_defs = {d.id: d for d in load_flag_defs()}
+        own_key = mod.folder_name.lower()
+        self._checked: set[str] = set(mod.dependencies)
+        self._all_mods = [m for m in registry.all() if m.folder_name.lower() != own_key]
+
+        filter_row = QHBoxLayout()
+        self.search = SearchLineEdit()
+        self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
+        self.search.textChanged.connect(lambda _t: self._rebuild_list())
+        filter_row.addWidget(self.search, 1)
+        self.tag_combo = ComboBox()
+        self.tag_combo.addItem(tr("connect.tag_all", "Все теги"), userData="")
+        for d in self._flag_defs.values():
+            icon = flag_icon(d) or _swatch_icon(d.color)
+            self.tag_combo.addItem(d.name, icon=icon, userData=d.id)
+        self.tag_combo.currentIndexChanged.connect(lambda _i: self._rebuild_list())
+        filter_row.addWidget(self.tag_combo)
+        layout.addLayout(filter_row)
+
+        self.sort_combo = ComboBox()
+        self.sort_combo.addItem(tr("mods.sort_name", "Сортировка: по имени"), userData="name")
+        self.sort_combo.addItem(tr("mods.sort_tag", "Сортировка: по тегу"), userData="tag")
+        self.sort_combo.currentIndexChanged.connect(lambda _i: self._rebuild_list())
+        layout.addWidget(self.sort_combo)
+
+        self.lst = ListWidget()
+        layout.addWidget(self.lst, 1)
+        self._rebuild_list()
+
+        btns = QHBoxLayout()
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
+        b_cancel.clicked.connect(self.reject)
+        b_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
+        b_save.clicked.connect(self.accept)
+        btns.addStretch(1)
+        btns.addWidget(b_cancel)
+        btns.addWidget(b_save)
+        layout.addLayout(btns)
+
+    def _rebuild_list(self) -> None:
+        # запоминаем текущие галки (в т.ч. по скрытым сейчас фильтром строкам) —
+        # чтобы поиск/тег/сортировка не теряли уже отмеченное
+        for i in range(self.lst.count()):
+            item = self.lst.item(i)
+            key = item.data(Qt.ItemDataRole.UserRole)
+            if item.checkState() == Qt.CheckState.Checked:
+                self._checked.add(key)
+            else:
+                self._checked.discard(key)
+
+        q = self.search.text().strip().lower()
+        tag = self.tag_combo.currentData()
+        mods = [m for m in self._all_mods if not q or q in m.name.lower()]
+        if tag:
+            mods = [m for m in mods if tag in m.flags]
+        if self.sort_combo.currentData() == "tag":
+            def sort_key(m):
+                ids = [f for f in m.flags if f in self._flag_defs]
+                return (0, self._flag_defs[ids[0]].name.lower(), m.name.lower()) if ids \
+                    else (1, "", m.name.lower())
+            mods = sorted(mods, key=sort_key)
+
+        self.lst.clear()
+        for other in mods:
+            key = other.folder_name.lower()
+            item = QListWidgetItem(other.name)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if key in self._checked
+                               else Qt.CheckState.Unchecked)
+            style_list_item_by_flags(item, other, self._flag_defs)
+            self.lst.addItem(item)
+
+    def selected_keys(self) -> list[str]:
+        for i in range(self.lst.count()):
+            item = self.lst.item(i)
+            key = item.data(Qt.ItemDataRole.UserRole)
+            if item.checkState() == Qt.CheckState.Checked:
+                self._checked.add(key)
+            else:
+                self._checked.discard(key)
+        return list(self._checked)
+
+
+_SIDEBAR_LOCATIONS = (
+    QStandardPaths.StandardLocation.DesktopLocation,
+    QStandardPaths.StandardLocation.DocumentsLocation,
+    QStandardPaths.StandardLocation.DownloadLocation,
+    QStandardPaths.StandardLocation.HomeLocation,
+)
+_MAX_RECENT_DIRS = 8
+
+
+def _sidebar_urls(settings: Settings | None) -> list[QUrl]:
+    """Стандартные папки + диски (включая subst, напр. P:) + недавно
+    выбранные сорсы — недативный Qt-диалог, в отличие от нативного, не
+    получает эту боковую панель от системы автоматически."""
+    urls: list[QUrl] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        if path and path not in seen and Path(path).is_dir():
+            seen.add(path)
+            urls.append(QUrl.fromLocalFile(path))
+
+    for loc in _SIDEBAR_LOCATIONS:
+        add(QStandardPaths.writableLocation(loc))
+    for fi in QDir.drives():
+        add(fi.absoluteFilePath())
+    if settings:
+        for p in settings.recent_source_dirs:
+            add(p)
+    return urls
+
+
+def _remember_recent_dirs(settings: Settings | None, picked: list[str]) -> None:
+    if not settings or not picked:
+        return
+    parents = [str(Path(p).parent) for p in picked]
+    settings.recent_source_dirs = (parents + settings.recent_source_dirs)
+    # без дублей, сохраняя порядок (последние выбранные — впереди)
+    seen: set[str] = set()
+    deduped = []
+    for d in settings.recent_source_dirs:
+        if d not in seen:
+            seen.add(d)
+            deduped.append(d)
+    settings.recent_source_dirs = deduped[:_MAX_RECENT_DIRS]
+    settings.save()
+
+
+def pick_multiple_directories(parent, caption: str, settings: Settings | None = None) -> list[str]:
     """Выбор нескольких папок разом — обычный QFileDialog умеет только одну.
 
-    Стандартный трюк: недативный диалог + режим множественного выбора
-    у внутренних view-виджетов.
+    Windows не даёт нативный диалог с множественным выбором папок (это
+    возможно только через отдельный COM API IFileOpenDialog), поэтому это —
+    недативный Qt-диалог + режим множественного выбора у внутренних
+    view-виджетов (Ctrl/Shift+клик и обычное рамочное выделение работают
+    «из коробки», это стандартное поведение ExtendedSelection). Боковая
+    панель заполняется вручную (см. _sidebar_urls) — недативный диалог не
+    получает её от системы, в отличие от нативного.
     """
     dlg = QFileDialog(parent, caption)
     dlg.setFileMode(QFileDialog.FileMode.Directory)
     dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
     dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    dlg.setOption(QFileDialog.Option.HideNameFilterDetails, True)
+    dlg.setViewMode(QFileDialog.ViewMode.Detail)
+    dlg.setSidebarUrls(_sidebar_urls(settings))
     for view_type in (QListView, QTreeView):
         view = dlg.findChild(view_type)
         if view:
             view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     if dlg.exec():
-        return dlg.selectedFiles()
+        picked = dlg.selectedFiles()
+        _remember_recent_dirs(settings, picked)
+        return picked
     return []
 
 
-class SourcesDialog(QDialog):
+class SourcesDialog(ThemedDialog):
     """Папки сорсов локального мода (для запаковщика)."""
 
-    def __init__(self, mod: ModInfo, parent=None):
+    def __init__(self, mod: ModInfo, settings: Settings | None = None, parent=None):
         super().__init__(parent)
+        self.settings = settings
         self.setWindowTitle(tr("mods.sources_title", "Сорсы мода {m}", m=mod.name))
         self.resize(560, 300)
         layout = QVBoxLayout(self)
@@ -83,7 +449,7 @@ class SourcesDialog(QDialog):
 
     def _add(self) -> None:
         existing = {self.lst.item(i).text() for i in range(self.lst.count())}
-        for p in pick_multiple_directories(self, tr("mods.sources_pick", "Папки сорсов")):
+        for p in pick_multiple_directories(self, tr("mods.sources_pick", "Папки сорсов"), self.settings):
             if p not in existing:
                 self.lst.addItem(p)
                 existing.add(p)
@@ -92,13 +458,95 @@ class SourcesDialog(QDialog):
         return [self.lst.item(i).text() for i in range(self.lst.count())]
 
 
+class HiddenModsDialog(ThemedDialog):
+    """Список модов, убранных из списка вручную (settings.excluded_mods) — можно вернуть.
+    Показывает настоящее имя/источник мода, а не голый ключ — hidden передаётся из
+    ModRegistry.hidden (см. scan()); для ключей без соответствия (мод давно
+    удалён с диска) показывается сам ключ."""
+
+    def __init__(self, excluded_mods: list[str], hidden: dict[str, ModInfo], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("mods.hidden_title", "Скрытые моды"))
+        self.resize(400, 320)
+        self._boxes: list[tuple[str, CheckBox]] = []
+        layout = QVBoxLayout(self)
+        hint = BodyLabel(tr("mods.hidden_hint",
+                            "Отметьте моды, которые нужно вернуть в список."))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        if not excluded_mods:
+            layout.addWidget(CaptionLabel(tr("mods.hidden_empty", "Скрытых модов нет.")))
+        for key in excluded_mods:
+            mod = hidden.get(key)
+            if mod:
+                src = {SOURCE_STEAM: "Steam", SOURCE_LOCAL: "Локальный",
+                      SOURCE_GITHUB: "GitHub"}.get(mod.source, mod.source)
+                cb = CheckBox(f"{mod.name}  ({src})")
+                cb.setToolTip(mod.path)
+            else:
+                cb = CheckBox(tr("mods.hidden_gone", "{k} — не найден на диске", k=key))
+            layout.addWidget(cb)
+            self._boxes.append((key, cb))
+        layout.addStretch(1)
+        btns = QHBoxLayout()
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
+        b_cancel.clicked.connect(self.reject)
+        b_ok = PrimaryPushButton(tr("mods.hidden_restore", "Вернуть отмеченные"))
+        b_ok.clicked.connect(self.accept)
+        btns.addStretch(1)
+        btns.addWidget(b_cancel)
+        btns.addWidget(b_ok)
+        layout.addLayout(btns)
+
+    def selected_keys(self) -> list[str]:
+        return [k for k, cb in self._boxes if cb.isChecked()]
+
+
+class SetsDialog(ThemedDialog):
+    """Выбор одного или нескольких сохранённых наборов модов — их подключённые
+    моды объединяются (без дублей) в текущий пресет."""
+
+    def __init__(self, sets: list[ModPreset], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("mods.sets_title", "Наборы модов"))
+        self.resize(360, 320)
+        self._boxes: list[tuple[ModPreset, CheckBox]] = []
+        layout = QVBoxLayout(self)
+        hint = BodyLabel(tr("mods.sets_hint",
+                            "Можно выбрать сразу несколько наборов — их моды объединятся."))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        for mp in sets:
+            cb = CheckBox(mp.name)
+            layout.addWidget(cb)
+            self._boxes.append((mp, cb))
+        layout.addStretch(1)
+        btns = QHBoxLayout()
+        b_cancel = PushButton(tr("common.cancel", "Отмена"))
+        b_cancel.clicked.connect(self.reject)
+        b_ok = PrimaryPushButton(tr("mods.sets_apply", "Выбрать"))
+        b_ok.clicked.connect(self.accept)
+        btns.addStretch(1)
+        btns.addWidget(b_cancel)
+        btns.addWidget(b_ok)
+        layout.addLayout(btns)
+
+    def selected(self) -> list[ModPreset]:
+        return [mp for mp, cb in self._boxes if cb.isChecked()]
+
+
 class ModsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.registry: ModRegistry | None = None
-        self.preset: ServerPreset | None = None
         self.settings: Settings | None = None
+        self.log_cb = None  # callable(msg, level="info") — консоль вкладки «Запуск»
         self._building = False
+        self._flat_view = True
+        self._rebuild_workers: list[RebuildWorker] = []  # держим ссылки, иначе поток соберёт GC
+        self._stale_worker: StaleCheckWorker | None = None
+        self._misc_workers: list[QThread] = []  # разовые проверки из контекстного меню
+        self._flag_defs: dict = {}  # id -> ModFlagDef, обновляется в _rebuild()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -109,47 +557,61 @@ class ModsPanel(QWidget):
         b_add_dir.setToolTip(tr("mods.add_dir_tip",
                                 "Папка с @модами или одиночная @папка мода."))
         b_add_dir.clicked.connect(self._add_folder)
-        b_all = PushButton(tr("mods.enable_all", "Включить все"))
-        b_all.clicked.connect(lambda: self._set_all(True))
-        b_none = PushButton(tr("mods.disable_all", "Выключить все"))
-        b_none.clicked.connect(lambda: self._set_all(False))
-        b_up = TransparentToolButton(FIF.UP)
-        b_up.setToolTip(tr("mods.up", "Выше в порядке загрузки"))
-        b_up.clicked.connect(lambda: self._move(-1))
-        b_down = TransparentToolButton(FIF.DOWN)
-        b_down.setToolTip(tr("mods.down", "Ниже в порядке загрузки"))
-        b_down.clicked.connect(lambda: self._move(1))
-        b_save_set = PushButton(FIF.SAVE_AS, tr("mods.save_set", "Сохранить как набор…"))
-        b_save_set.clicked.connect(self._save_set)
-        self.b_apply_set = PushButton(FIF.CHECKBOX, tr("mods.apply_set", "Применить набор"))
-        self.b_apply_set.clicked.connect(self._apply_set_menu)
-        for b in (b_refresh, b_add_dir, b_all, b_none, b_up, b_down,
-                  b_save_set, self.b_apply_set):
+        b_hidden = PushButton(FIF.VIEW, tr("mods.hidden_btn", "Скрытые моды…"))
+        b_hidden.setToolTip(tr("mods.hidden_btn_tip",
+                               "Моды, убранные из списка через контекстное меню «Убрать из списка»."))
+        b_hidden.clicked.connect(self._open_hidden_mods)
+        b_flags = PushButton(FIF.PALETTE, tr("mods.flags_btn", "Флаги…"))
+        b_flags.setToolTip(tr("mods.flags_btn_tip",
+                              "Свои метки модов (название + цвет) — назначаются через ПКМ по моду."))
+        b_flags.clicked.connect(self._open_flags)
+        for b in (b_refresh, b_add_dir, b_hidden, b_flags):
             top.addWidget(b)
         top.addStretch(1)
         layout.addLayout(top)
 
+        # Поиск и переключатель вида — в одной строке, прямо над заголовками
+        # колонок: кнопка «Вид» физически рядом с тем, чем она управляет
+        # (сортировкой по клику на заголовок).
+        search_row = QHBoxLayout()
         self.search = SearchLineEdit()
         self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
         self.search.textChanged.connect(self._apply_filter)
-        layout.addWidget(self.search)
+        self.b_view = PushButton(FIF.VIEW, tr("mods.view_list", "Вид: Список"))
+        self.b_view.setToolTip(tr("mods.view_tip",
+                                  "Переключить между деревом по источникам и плоским списком "
+                                  "с сортировкой по клику на заголовок колонки."))
+        self.b_view.clicked.connect(self._toggle_view)
+        search_row.addWidget(self.b_view)
+        search_row.addWidget(self.search, 1)
+        layout.addLayout(search_row)
 
         self.tree = TreeWidget(self)
-        self.tree.setColumnCount(7)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setColumnCount(8)
         self.tree.setHeaderLabels([
             tr("mods.col_name", "Мод"), tr("mods.col_folder", "Папка"),
             tr("mods.col_size", "Размер"), tr("mods.col_pbo", "PBO"),
-            tr("mods.col_order", "Порядок"), tr("mods.col_server", "Серверный"),
-            tr("mods.col_sources", "Сорсы"),
+            tr("mods.col_server", "Серверный"),
+            tr("mods.col_sources", "Сорсы"), tr("mods.col_modified", "Изменён"), "",
         ])
+        self.tree.headerItem().setToolTip(COL_REBUILD, tr("mods.col_rebuild", "Ребилд"))
         hdr = self.tree.header()
         hdr.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(COL_FOLDER, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(COL_SIZE, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(COL_PBO, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(COL_ORDER, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(COL_SERVER, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(COL_SOURCES, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(COL_MODIFIED, QHeaderView.ResizeMode.ResizeToContents)
+        # без текста в заголовке колонка не раздувается шириной слова "Ребилд" —
+        # фиксированная ширина точно под саму кнопку/спиннер (см. _REBUILD_CELL_SIZE)
+        hdr.setSectionResizeMode(COL_REBUILD, QHeaderView.ResizeMode.Fixed)
+        hdr.resizeSection(COL_REBUILD, self._REBUILD_CELL_SIZE + 8)
+        # без явной инициализации Qt отдаёт sortIndicatorOrder() == Descending
+        # ещё до первого клика по заголовку — это переворачивало сортировку
+        # по умолчанию (подключённые моды оказывались в конце, а не в начале)
+        hdr.setSortIndicator(COL_NAME, Qt.SortOrder.AscendingOrder)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemDoubleClicked.connect(self._item_dbl)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -157,26 +619,72 @@ class ModsPanel(QWidget):
         layout.addWidget(self.tree, 1)
 
         hint = CaptionLabel(tr("mods.hint",
-                               "Галка подключает мод (в конец порядка загрузки). «Серверный» — мод идёт "
-                               "в -serverMod. Стрелками ↑↓ меняется порядок. Двойной клик по «Сорсы» — "
-                               "привязать сорсы локального мода для запаковки."))
+                               "Здесь — общие настройки модов, не привязанные к конкретному пресету. "
+                               "«Серверный» — мод подключается в -serverMod, а не в -mod, в окне "
+                               "«Подключить моды». Свои флаги (название + цвет имени) — кнопка «Флаги…», "
+                               "назначение — правый клик по моду. Двойной клик по «Сорсы» — привязать "
+                               "сорсы локального мода для запаковки. В режиме списка клик по заголовку "
+                               "колонки сортирует по ней."))
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
     # ---------------------------------------------------------------- контекст
 
-    def set_context(self, registry: ModRegistry, preset: ServerPreset | None,
-                    settings: Settings | None = None) -> None:
+    def set_context(self, registry: ModRegistry, settings: Settings | None = None) -> None:
         self.registry = registry
-        self.preset = preset
         if settings is not None:
             self.settings = settings
         self._rebuild()
+        self._check_stale()
 
     def refresh(self) -> None:
         if self.registry:
             self.registry.scan()
         self._rebuild()
+        self._check_stale()
+
+    def _check_stale(self) -> None:
+        """Фоновая проверка актуальности всех Steam-модов относительно Workshop."""
+        if not self.registry or (self._stale_worker and self._stale_worker.isRunning()):
+            return
+        steam_mods = [m for m in self.registry.all() if m.source == SOURCE_STEAM and m.valid]
+        if not steam_mods:
+            return
+        self._stale_worker = StaleCheckWorker(steam_mods, self)
+        self._stale_worker.checked.connect(self._on_stale_checked)
+        self._stale_worker.start()
+
+    def _on_stale_checked(self, mod: ModInfo, outdated: bool) -> None:
+        if mod.outdated == outdated:
+            return
+        mod.outdated = outdated
+        for item in self._iter_mod_items():
+            if self._item_mod(item) is mod:
+                self._apply_outdated_mark(item, mod)
+                break
+
+    def _apply_outdated_mark(self, item: QTreeWidgetItem, mod: ModInfo) -> None:
+        """Точечно обновляет строку мода после фоновой проверки актуальности —
+        без полной пересборки дерева (не сбивает сортировку/скролл)."""
+        name = mod.name
+        if mod.duplicate_of_steam:
+            name += "  " + tr("mods.dup", "(есть дубль в Workshop)")
+        if mod.outdated:
+            name += "  " + tr("mods.outdated", "(устарел)")
+        if not mod.valid:
+            name = "⚠ " + name
+        item.setText(COL_NAME, name)
+        if not mod.valid:
+            item.setForeground(COL_NAME, QColor("#d32f2f"))
+        elif mod.outdated:
+            item.setForeground(COL_NAME, _ORANGE)
+        else:
+            item.setData(COL_NAME, Qt.ItemDataRole.ForegroundRole, None)
+        tip = mod.problem or mod.name
+        if mod.outdated:
+            tip += "\n" + tr("mods.outdated_tip",
+                             "В Steam Workshop есть более новая версия мода.")
+        item.setToolTip(COL_NAME, tip)
 
     # ---------------------------------------------------------------- дерево
 
@@ -188,210 +696,237 @@ class ModsPanel(QWidget):
                 out.add(g.text(COL_NAME).rsplit(" (", 1)[0])
         return out
 
-    def _rebuild(self) -> None:
-        expanded = self._expanded_groups() or None  # None = первый раз, раскрыть всё
+    def _toggle_view(self) -> None:
+        self._flat_view = not self._flat_view
+        self.b_view.setText(tr("mods.view_list", "Вид: Список") if self._flat_view
+                            else tr("mods.view_tree", "Вид: Дерево"))
+        self._rebuild(reset_expand=True)
+
+    def _rebuild(self, reset_expand: bool = False) -> None:
+        expanded = None if reset_expand else (self._expanded_groups() or None)
+        # запоминаем текущую сортировку, чтобы пересборка одного мода (refresh()
+        # после ребилда) не сбрасывала список обратно на «по названию»
+        hdr = self.tree.header()
+        sort_col = hdr.sortIndicatorSection() if self._flat_view else COL_NAME
+        sort_order = hdr.sortIndicatorOrder() if self._flat_view else Qt.SortOrder.AscendingOrder
         self._building = True
+        self.tree.setSortingEnabled(False)
         self.tree.clear()
         if not self.registry:
             self._building = False
             return
+        # флаги грузятся один раз на всю пересборку — не на каждый мод отдельно
+        self._flag_defs = {d.id: d for d in load_flag_defs()}
 
-        groups: dict[str, list[ModInfo]] = {}
-        for mod in self.registry.all():
-            groups.setdefault(mod.group or tr("mods.local", "Локальный"), []).append(mod)
+        if self._flat_view:
+            for mod in self.registry.all():
+                item = self._make_mod_item(mod)
+                self.tree.addTopLevelItem(item)
+                self._maybe_add_rebuild_button(item, mod)
+            # сортировка по клику на заголовок — только здесь, в плоском списке;
+            # в дереве заголовки специально делаем некликабельными (см. ниже),
+            # чтобы клик по ним не выглядел «сломанным»
+            hdr.setSectionsClickable(True)
+            hdr.setSortIndicatorShown(True)
+            self.tree.setSortingEnabled(True)
+            self.tree.sortItems(sort_col, sort_order)
+        else:
+            hdr.setSectionsClickable(False)
+            hdr.setSortIndicatorShown(False)
+            groups: dict[str, list[ModInfo]] = {}
+            for mod in self.registry.all():
+                groups.setdefault(mod.group or tr("mods.local", "Локальный"), []).append(mod)
 
-        def group_rank(name: str):
-            if name == "Steam":
-                return (0, name)
-            if name == "GitHub":
-                return (1, name)
-            return (2, name.lower())
+            def group_rank(name: str):
+                if name == "Steam":
+                    return (0, name)
+                if name == "GitHub":
+                    return (1, name)
+                return (2, name.lower())
 
-        for gname in sorted(groups, key=group_rank):
-            mods = groups[gname]
-            gitem = QTreeWidgetItem([f"{gname} ({len(mods)})", "", "", "", "", "", ""])
-            gitem.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            font = QFont()
-            font.setBold(True)
-            gitem.setFont(COL_NAME, font)
-            self.tree.addTopLevelItem(gitem)
-            for mod in mods:
-                self._add_mod_item(gitem, mod)
-            gitem.setExpanded(expanded is None or gname in expanded)
+            for gname in sorted(groups, key=group_rank):
+                mods = groups[gname]
+                gitem = QTreeWidgetItem([f"{gname} ({len(mods)})"] + [""] * 7)
+                gitem.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                font = QFont()
+                font.setBold(True)
+                gitem.setFont(COL_NAME, font)
+                # растягиваем заголовок группы на всю строку — иначе при узкой
+                # колонке «Мод» жирный текст обрезается многоточием
+                gitem.setFirstColumnSpanned(True)
+                self.tree.addTopLevelItem(gitem)
+                for mod in mods:
+                    item = self._make_mod_item(mod)
+                    gitem.addChild(item)
+                    self._maybe_add_rebuild_button(item, mod)
+                gitem.setExpanded(expanded is None or gname in expanded)
         self._building = False
         self._apply_filter(self.search.text())
 
-    def _add_mod_item(self, parent: QTreeWidgetItem, mod: ModInfo) -> None:
-        p = self.preset
-        enabled = bool(p and (self._find(mod, p.mods) is not None
-                              or self._find(mod, p.server_mods) is not None))
-        is_server = bool(p and self._find(mod, p.server_mods) is not None)
-
+    def _make_mod_item(self, mod: ModInfo) -> ModTreeItem:
         name = mod.name
         if mod.duplicate_of_steam:
             name += "  " + tr("mods.dup", "(есть дубль в Workshop)")
+        if mod.outdated:
+            name += "  " + tr("mods.outdated", "(устарел)")
         if not mod.valid:
             name = "⚠ " + name
-        item = QTreeWidgetItem([name, mod.folder_name, format_size(mod.size_bytes),
-                                str(mod.pbo_count), self._order_text(mod), "",
-                                self._sources_text(mod)])
+        item = ModTreeItem([name, mod.folder_name, format_size(mod.size_bytes),
+                           str(mod.pbo_count), "",
+                           self._sources_text(mod), self._modified_text(mod.mtime), ""])
         item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                       | Qt.ItemFlag.ItemIsUserCheckable)
-        # невалидный мод (нет addons/.pbo и т.п.) — подключить нельзя;
-        # чекбокс остаётся видимым, но снятым, попытка включить откатывается
-        # в _item_changed, а имя красным + иконка предупреждения
-        item.setCheckState(COL_NAME, Qt.CheckState.Checked if (enabled and mod.valid)
+        item.setCheckState(COL_SERVER, Qt.CheckState.Checked if mod.is_server
                            else Qt.CheckState.Unchecked)
-        item.setCheckState(COL_SERVER, Qt.CheckState.Checked if (is_server and mod.valid)
-                           else Qt.CheckState.Unchecked)
+        # ключ сортировки: Серверный — по чекбоксу
+        item.setData(COL_NAME, Qt.ItemDataRole.UserRole + 1, mod.name.lower())
+        item.setData(COL_SERVER, Qt.ItemDataRole.UserRole + 1, 0 if mod.is_server else 1)
         item.setForeground(COL_FOLDER, _GREY)
-        item.setForeground(COL_SOURCES, _GREY)
+        item.setForeground(COL_SOURCES, self._sources_color(mod))
+        if mod.sources:
+            item.setToolTip(COL_SOURCES, "\n".join(mod.sources))
         item.setForeground(COL_SIZE, _GREY)
         item.setForeground(COL_PBO, _GREY)
+        item.setData(COL_SIZE, Qt.ItemDataRole.UserRole + 1, mod.size_bytes)
+        item.setData(COL_PBO, Qt.ItemDataRole.UserRole + 1, mod.pbo_count)
         if mod.pbo_names:
             item.setToolTip(COL_PBO, "\n".join(mod.pbo_names))
+        # оформление имени по флагам: цвет/иконка — от первого назначенного,
+        # начертание (жирный/курсив/подчёркнутый) — объединяется по всем сразу;
+        # невалиден/устарел по цвету всегда важнее пометки флагом
+        flag_ids = [fid for fid in mod.flags if fid in self._flag_defs]
+        flag_names = [self._flag_defs[fid].name for fid in flag_ids]
+        if flag_ids:
+            flag_defs = [self._flag_defs[fid] for fid in flag_ids]
+            font = item.font(COL_NAME)
+            font.setBold(any(d.bold for d in flag_defs))
+            font.setItalic(any(d.italic for d in flag_defs))
+            font.setUnderline(any(d.underline for d in flag_defs))
+            item.setFont(COL_NAME, font)
+            item.setForeground(COL_NAME, QColor(flag_defs[0].color))
+            icon = flag_icon(flag_defs[0])
+            if icon:
+                item.setIcon(COL_NAME, icon)
+        if mod.outdated:
+            item.setForeground(COL_NAME, _ORANGE)
         if not mod.valid:
             item.setForeground(COL_NAME, QColor("#d32f2f"))
-        item.setToolTip(COL_NAME, mod.problem or mod.path)
+        # полное название мода вместо пути — путь и так есть в колонке «Папка»
+        # и в подсказках у других колонок; для невалидных — причина проблемы
+        tip = mod.problem or mod.name
+        if mod.outdated:
+            tip += "\n" + tr("mods.outdated_tip",
+                             "В Steam Workshop есть более новая версия мода.")
+        if flag_names:
+            tip += "\n" + tr("mods.flags_tip", "Флаги: {f}", f=", ".join(flag_names))
+        item.setToolTip(COL_NAME, tip)
         item.setToolTip(COL_SERVER, tr("mods.server_tip",
-                                       "Серверный мод: подключается только к серверу через -serverMod."))
+                                       "Подключать в -serverMod (только на сервер), а не в -mod, "
+                                       "в окне «Подключить моды»."))
+        item.setForeground(COL_MODIFIED, _GREY)
+        item.setData(COL_MODIFIED, Qt.ItemDataRole.UserRole + 1, mod.mtime)
         item.setData(COL_NAME, Qt.ItemDataRole.UserRole, mod.folder_name.lower())
-        parent.addChild(item)
+        return item
+
+    @staticmethod
+    def _modified_text(mtime: float) -> str:
+        if not mtime:
+            return ""
+        dt = datetime.fromtimestamp(mtime)
+        if i18n.current() == "ru":
+            return dt.strftime("%d.%m.%y %H:%M")
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+    _REBUILD_CELL_SIZE = 22
+
+    def _maybe_add_rebuild_button(self, item: QTreeWidgetItem, mod: ModInfo) -> None:
+        """Кнопка «Ребилд» только у модов с привязанными сорсами."""
+        if not mod.sources:
+            return
+        btn = TransparentToolButton(FIF.ZIP_FOLDER)
+        btn.setFixedSize(self._REBUILD_CELL_SIZE, self._REBUILD_CELL_SIZE)
+        btn.setIconSize(QSize(14, 14))
+        btn.setToolTip(tr("mods.rebuild_tip",
+                          "Пересобрать PBO из всех привязанных сорсов."))
+        btn.clicked.connect(lambda _=False, m=mod, it=item: self._rebuild_mod(m, it))
+        self.tree.setItemWidget(item, COL_REBUILD, btn)
 
     def _sources_text(self, mod: ModInfo) -> str:
         if mod.source == SOURCE_STEAM:
-            return "—"
-        return "; ".join(mod.sources) if mod.sources else tr("mods.no_sources", "не заданы")
+            return tr("mods.sources_na", "не требуются")
+        return tr("mods.sources_set", "Указаны") if mod.sources else tr("mods.no_sources", "не заданы")
 
-    def _order_text(self, mod: ModInfo) -> str:
-        if not self.preset:
-            return ""
-        i = self._find(mod, self.preset.mods)
-        if i is not None:
-            return str(i + 1)
-        i = self._find(mod, self.preset.server_mods)
-        if i is not None:
-            return f"S{i + 1}"
-        return ""
-
-    def _find(self, mod: ModInfo, names: list[str]) -> int | None:
-        for i, n in enumerate(names):
-            got = self.registry.get(n)
-            if got and got.folder_name == mod.folder_name:
-                return i
-        return None
+    def _sources_color(self, mod: ModInfo) -> QColor:
+        if mod.source == SOURCE_STEAM:
+            return _GREY
+        return _GREEN if mod.sources else _ORANGE
 
     def _iter_mod_items(self):
+        """Все строки модов — работает и в режиме дерева, и в плоском списке."""
+        def walk(item):
+            if item.data(COL_NAME, Qt.ItemDataRole.UserRole):
+                yield item
+            for ci in range(item.childCount()):
+                yield from walk(item.child(ci))
         for gi in range(self.tree.topLevelItemCount()):
-            g = self.tree.topLevelItem(gi)
-            for ci in range(g.childCount()):
-                yield g.child(ci)
+            yield from walk(self.tree.topLevelItem(gi))
 
     def _item_mod(self, item: QTreeWidgetItem) -> ModInfo | None:
         key = item.data(COL_NAME, Qt.ItemDataRole.UserRole)
         return self.registry.mods.get(key) if (key and self.registry) else None
 
-    def _refresh_orders(self) -> None:
-        self._building = True
-        for item in self._iter_mod_items():
-            mod = self._item_mod(item)
-            if mod:
-                item.setText(COL_ORDER, self._order_text(mod))
-        self._building = False
-
     # ---------------------------------------------------------------- изменения
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        if self._building or not self.preset or not self.registry:
+        """«Серверный» — глобальный признак мода (не пресета), сохраняется
+        сразу в registry.save_flags()."""
+        if self._building or not self.registry or column != COL_SERVER:
             return
         mod = self._item_mod(item)
         if not mod:
             return
-        if not mod.valid and (item.checkState(COL_NAME) == Qt.CheckState.Checked
-                              or item.checkState(COL_SERVER) == Qt.CheckState.Checked):
-            # невалидный мод нельзя подключить — откатываем попытку включить
-            self._building = True
-            item.setCheckState(COL_NAME, Qt.CheckState.Unchecked)
-            item.setCheckState(COL_SERVER, Qt.CheckState.Unchecked)
-            self._building = False
-            InfoBar.warning(title=tr("mods.cant_enable",
-                                     "Мод нельзя подключить: {p}", p=mod.problem),
-                            content="", parent=self.window(), duration=4000,
-                            position=InfoBarPosition.TOP_RIGHT)
-            return
-        p = self.preset
-        enabled = item.checkState(COL_NAME) == Qt.CheckState.Checked
-        server = item.checkState(COL_SERVER) == Qt.CheckState.Checked
-
-        def drop(name_list):
-            i = self._find(mod, name_list)
-            if i is not None:
-                name_list.pop(i)
-
-        drop(p.mods)
-        drop(p.server_mods)
-        if enabled:
-            (p.server_mods if server else p.mods).append(mod.name)
-        elif column == COL_SERVER and server:
-            # серверную галку поставили на выключенном моде — включаем сразу
-            p.server_mods.append(mod.name)
-            self._building = True
-            item.setCheckState(COL_NAME, Qt.CheckState.Checked)
-            self._building = False
-        p.save()
-        self._refresh_orders()
-
-    def _set_all(self, state: bool) -> None:
-        if not self.preset:
-            return
-        p = self.preset
-        if not state:
-            p.mods, p.server_mods = [], []
-        else:
-            for item in self._iter_mod_items():
-                mod = self._item_mod(item)
-                if mod and mod.valid and self._find(mod, p.mods) is None \
-                        and self._find(mod, p.server_mods) is None:
-                    p.mods.append(mod.name)
-        p.save()
-        self._rebuild()
-
-    def _move(self, delta: int) -> None:
-        item = self.tree.currentItem()
-        mod = self._item_mod(item) if item else None
-        if not mod or not self.preset:
-            return
-        for lst in (self.preset.mods, self.preset.server_mods):
-            i = self._find(mod, lst)
-            if i is not None:
-                j = i + delta
-                if 0 <= j < len(lst):
-                    lst[i], lst[j] = lst[j], lst[i]
-                    self.preset.save()
-                    self._refresh_orders()
-                return
+        mod.is_server = item.checkState(COL_SERVER) == Qt.CheckState.Checked
+        self.registry.save_flags()
 
     def _item_dbl(self, item: QTreeWidgetItem, column: int) -> None:
+        if column == COL_NAME:
+            mod = self._item_mod(item)
+            if mod and mod.source == SOURCE_LOCAL:
+                self._edit_dependencies(mod)
+            return
         if column != COL_SOURCES:
             return
         mod = self._item_mod(item)
         if not mod or mod.source == SOURCE_STEAM:
             return
-        dlg = SourcesDialog(mod, self)
+        dlg = SourcesDialog(mod, self.settings, self)
         if dlg.exec():
             mod.sources = dlg.sources()
             self.registry.save_sources()
             item.setText(COL_SOURCES, self._sources_text(mod))
+            if mod.sources:
+                self._maybe_add_rebuild_button(item, mod)
+            else:
+                self.tree.removeItemWidget(item, COL_REBUILD)
 
     def _apply_filter(self, text: str) -> None:
         q = text.strip().lower()
+
+        def matches(item) -> bool:
+            return (not q or q in item.text(COL_NAME).lower()
+                    or q in item.text(COL_FOLDER).lower())
+
+        if self._flat_view:
+            for i in range(self.tree.topLevelItemCount()):
+                item = self.tree.topLevelItem(i)
+                item.setHidden(not matches(item))
+            return
         for gi in range(self.tree.topLevelItemCount()):
             g = self.tree.topLevelItem(gi)
             visible_children = 0
             for ci in range(g.childCount()):
                 child = g.child(ci)
-                match = (not q or q in child.text(COL_NAME).lower()
-                         or q in child.text(COL_FOLDER).lower())
+                match = matches(child)
                 child.setHidden(not match)
                 visible_children += int(match)
             g.setHidden(visible_children == 0)
@@ -418,8 +953,20 @@ class ModsPanel(QWidget):
 
     def _tree_context_menu(self, pos) -> None:
         item = self.tree.itemAt(pos)
-        if not item or item.parent() is not None or not self.settings:
-            return  # меню только на группах верхнего уровня
+        if not item:
+            return
+        selected_mods = [m for it in self.tree.selectedItems() if (m := self._item_mod(it))]
+        if len(selected_mods) > 1:
+            self._bulk_context_menu(selected_mods, pos)
+            return
+        mod = self._item_mod(item)
+        if mod:
+            self._mod_context_menu(item, mod, pos)
+            return
+        # иначе — заголовок группы верхнего уровня (только в режиме дерева;
+        # во плоском списке все строки — моды и до сюда код не доходит)
+        if item.parent() is not None or not self.settings:
+            return
         dirs = self._group_source_dirs(item)
         if not dirs:
             return  # группа не из настроенных папок (Steam/GitHub/легаси-корни)
@@ -433,6 +980,177 @@ class ModsPanel(QWidget):
             if d in self.settings.local_mods_dirs:
                 self.settings.local_mods_dirs.remove(d)
         self.settings.save()
+        self.refresh()
+
+    def _mod_context_menu(self, item: QTreeWidgetItem, mod: ModInfo, pos) -> None:
+        menu = QMenu(self)
+        act_update = menu.addAction(tr("mods.ctx_check_updates", "Проверить обновления")) \
+            if mod.source == SOURCE_STEAM and mod.workshop_id else None
+        act_rebuild = menu.addAction(tr("mods.ctx_rebuild", "Сделать ребилд")) \
+            if mod.sources else None
+        act_open_mod = menu.addAction(tr("mods.ctx_open_mod", "Открыть расположение мода"))
+        act_open_src = menu.addAction(tr("mods.ctx_open_sources", "Открыть расположение сорсов")) \
+            if mod.sources else None
+        act_open_steam = menu.addAction(tr("mods.ctx_open_steam", "Открыть страницу в Steam")) \
+            if mod.source == SOURCE_STEAM and mod.workshop_id else None
+        act_deps = menu.addAction(tr("mods.ctx_deps", "Зависимости…")) \
+            if mod.source == SOURCE_LOCAL else None
+        act_flags = menu.addAction(tr("mods.ctx_flags", "Флаги…"))
+        menu.addSeparator()
+        act_remove = menu.addAction(tr("mods.ctx_remove", "Убрать из списка"))
+        chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_update:
+            self._check_single_mod(mod)
+        elif chosen is act_rebuild:
+            self._rebuild_mod(mod, item)
+        elif chosen is act_open_mod:
+            self._open_path(mod.path)
+        elif chosen is act_open_src:
+            for src in mod.sources:
+                self._open_path(src)
+        elif chosen is act_open_steam:
+            QDesktopServices.openUrl(QUrl(
+                f"https://steamcommunity.com/sharedfiles/filedetails/?id={mod.workshop_id}"))
+        elif chosen is act_deps:
+            self._edit_dependencies(mod)
+        elif chosen is act_flags:
+            self._assign_flags([mod])
+        elif chosen is act_remove:
+            self._remove_from_list(mod)
+
+    def _bulk_context_menu(self, mods: list[ModInfo], pos) -> None:
+        menu = QMenu(self)
+        act_flags = menu.addAction(tr("mods.ctx_flags_bulk", "Флаги… ({n})", n=len(mods)))
+        chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if chosen is act_flags:
+            self._assign_flags(mods)
+
+    def _assign_flags(self, mods: list[ModInfo]) -> None:
+        if not self.registry:
+            return
+        dlg = FlagAssignDialog(mods, load_flag_defs(), self.window())
+        if not dlg.exec():
+            return
+        changes = dlg.result_changes()
+        if not changes:
+            return
+        for mod in mods:
+            for fid, add in changes.items():
+                if add and fid not in mod.flags:
+                    mod.flags.append(fid)
+                elif not add and fid in mod.flags:
+                    mod.flags.remove(fid)
+        self.registry.save_flags()
+        self._rebuild()
+
+    def _edit_dependencies(self, mod: ModInfo) -> None:
+        if not self.registry:
+            return
+        dlg = DependencyPickerDialog(mod, self.registry, self.window())
+        if not dlg.exec():
+            return
+        mod.dependencies = dlg.selected_keys()
+        self.registry.save_dependencies()
+
+    @staticmethod
+    def _open_path(path: str) -> None:
+        if Path(path).is_dir():
+            os.startfile(path)  # noqa: S606 — открытие проводника по своей же папке мода
+
+    def _check_single_mod(self, mod: ModInfo) -> None:
+        worker = StaleCheckWorker([mod], self)
+        worker.checked.connect(self._on_stale_checked)
+        self._misc_workers.append(worker)
+        worker.finished.connect(
+            lambda: setattr(self, "_misc_workers",
+                            [w for w in self._misc_workers if w.isRunning()]))
+        worker.start()
+        InfoBar.info(title=tr("mods.ctx_checking", "Проверяю «{n}»…", n=mod.name),
+                    content="", parent=self.window(), duration=3000,
+                    position=InfoBarPosition.TOP_RIGHT)
+
+    def _remove_from_list(self, mod: ModInfo) -> None:
+        if not self.settings:
+            return
+        key = mod.folder_name.lower()
+        if key not in self.settings.excluded_mods:
+            self.settings.excluded_mods.append(key)
+            self.settings.save()
+        self.refresh()
+        InfoBar.success(title=tr("mods.ctx_removed", "«{n}» убран из списка", n=mod.name),
+                        content="", parent=self.window(), duration=3000,
+                        position=InfoBarPosition.TOP_RIGHT)
+
+    def _open_hidden_mods(self) -> None:
+        if not self.settings or not self.registry:
+            return
+        dlg = HiddenModsDialog(list(self.settings.excluded_mods), self.registry.hidden, self)
+        if not dlg.exec():
+            return
+        restore = dlg.selected_keys()
+        if not restore:
+            return
+        self.settings.excluded_mods = [k for k in self.settings.excluded_mods if k not in restore]
+        self.settings.save()
+        self.refresh()
+
+    def _open_flags(self) -> None:
+        if not self.registry:
+            return
+        dlg = ModFlagsDialog(self.registry, self)
+        dlg.exec()
+        if dlg.changed:
+            self._rebuild()
+
+    # ---------------------------------------------------------------- ребилд
+
+    def _rebuild_mod(self, mod: ModInfo, item: QTreeWidgetItem | None = None) -> None:
+        if not self.settings or not mod.sources:
+            return
+        if item is not None:
+            # заменяем кнопку крутящимся индикатором — видно, что идёт сборка;
+            # после завершения self.refresh() пересоздаст строку с обычной кнопкой
+            spinner = IndeterminateProgressRing()
+            spinner.setFixedSize(self._REBUILD_CELL_SIZE, self._REBUILD_CELL_SIZE)
+            spinner.setStrokeWidth(3)
+            self.tree.setItemWidget(item, COL_REBUILD, spinner)
+        InfoBar.info(title=tr("mods.rebuild_started", "Пересборка «{n}»…", n=mod.name),
+                    content="", parent=self.window(), duration=3000,
+                    position=InfoBarPosition.TOP_RIGHT)
+        if self.log_cb:
+            self.log_cb(tr("mods.rebuild_log_start", "Пакуем мод «{n}»", n=mod.name))
+        worker = RebuildWorker(self.settings, mod, list(mod.sources), self)
+        worker.source_done.connect(self._on_pack_source_done)
+        worker.done.connect(lambda ok, msg, m=mod: self._rebuild_done(ok, msg, m))
+        self._rebuild_workers.append(worker)
+        worker.start()
+
+    def _on_pack_source_done(self, name: str, ok: bool) -> None:
+        if self.log_cb:
+            mark = tr("mods.pack_mark_ok", "[ok]") if ok else tr("mods.pack_mark_failed", "[ошибка]")
+            self.log_cb(f"{name} {mark}", "info" if ok else "error")
+
+    def _rebuild_done(self, ok: bool, msg: str, mod: ModInfo) -> None:
+        if ok:
+            InfoBar.success(title=tr("mods.rebuild_ok", "«{n}» пересобран", n=mod.name),
+                            content="", parent=self.window(), duration=4000,
+                            position=InfoBarPosition.TOP_RIGHT)
+            if self.log_cb:
+                self.log_cb(tr("mods.rebuild_log_ok", "Запаковка мода «{n}» завершена", n=mod.name))
+        else:
+            InfoBar.error(title=tr("mods.rebuild_failed", "Ошибка пересборки «{n}»", n=mod.name),
+                         content=msg, parent=self.window(), duration=8000,
+                         position=InfoBarPosition.TOP_RIGHT)
+            if self.log_cb:
+                if msg:
+                    self.log_cb(msg, "error")
+                self.log_cb(tr("mods.rebuild_log_failed", "Ошибка пересборки «{n}».", n=mod.name),
+                           "error")
+        if self.log_cb:
+            self.log_cb("=================")
+        self._rebuild_workers = [w for w in self._rebuild_workers if w.isRunning()]
         self.refresh()
 
     def _add_folder(self) -> None:
@@ -464,37 +1182,3 @@ class ModsPanel(QWidget):
                         content="\n".join(problems[:6]), parent=self, duration=5000,
                         position=InfoBarPosition.TOP_RIGHT)
 
-    # ---------------------------------------------------------------- наборы
-
-    def _save_set(self) -> None:
-        if not self.preset:
-            return
-        name, ok = QInputDialog.getText(self, tr("mods.set_title", "Набор модов"),
-                                        tr("mods.set_name", "Название набора:"))
-        if not ok or not name.strip():
-            return
-        ModPreset(name=name.strip(), mods=list(self.preset.mods),
-                  server_mods=list(self.preset.server_mods)).save()
-        InfoBar.success(title=tr("mods.set_saved", "Набор «{n}» сохранён.", n=name.strip()),
-                        content="", parent=self, duration=3000,
-                        position=InfoBarPosition.TOP_RIGHT)
-
-    def _apply_set_menu(self) -> None:
-        sets = ModPreset.load_all()
-        if not sets:
-            InfoBar.info(title=tr("mods.no_sets", "Сохранённых наборов пока нет."),
-                         content="", parent=self, duration=3000,
-                         position=InfoBarPosition.TOP_RIGHT)
-            return
-        menu = QMenu(self)
-        for mp in sets:
-            menu.addAction(mp.name, lambda m=mp: self._apply_set(m))
-        menu.exec(self.b_apply_set.mapToGlobal(self.b_apply_set.rect().bottomLeft()))
-
-    def _apply_set(self, mp: ModPreset) -> None:
-        if not self.preset:
-            return
-        self.preset.mods = list(mp.mods)
-        self.preset.server_mods = list(mp.server_mods)
-        self.preset.save()
-        self._rebuild()
