@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout
 from qfluentwidgets import (
     ProgressBar, PushButton, StrongBodyLabel, BodyLabel, CaptionLabel,
 )
@@ -12,6 +12,7 @@ from qfluentwidgets import (
 from core.downloader import MissionDownloadWorker
 from core.i18n import tr
 from core.missions import CatalogEntry
+from ui.theme import ThemedDialog
 
 
 def _fmt_size(n: int) -> str:
@@ -24,7 +25,7 @@ def _fmt_time(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-class DownloadWindow(QDialog):
+class DownloadWindow(ThemedDialog):
     """Модальное (блокирует приложение) и поверх всех окон; загрузка идёт в потоке."""
     finished_ok = Signal(str)  # путь установленной миссии
 

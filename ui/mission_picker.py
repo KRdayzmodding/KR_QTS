@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QDialog
+from PySide6.QtCore import Signal, Qt, QUrl
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from qfluentwidgets import (
     ComboBox, ToolButton, PushButton, PrimaryPushButton, CheckBox,
-    BodyLabel, CaptionLabel, IndeterminateProgressBar, FluentIcon as FIF,
+    BodyLabel, CaptionLabel, HyperlinkLabel, IndeterminateProgressBar, FluentIcon as FIF,
 )
 
 from core import missions
@@ -19,9 +19,12 @@ from core.i18n import tr
 from core.missions import CatalogEntry, template_name
 from core.settings import Settings
 from ui.download_window import DownloadWindow
+from ui.theme import ThemedDialog
+
+_WARN_COLOR = "#e08f00"
 
 
-class CopyDialog(QDialog):
+class CopyDialog(ThemedDialog):
     """Модальное окошко локального копирования шаблона в миссию пресета."""
 
     def __init__(self, src, dst, replace: bool = False, keep_storage: bool = True,
@@ -61,7 +64,7 @@ _LEGACY = "legacy"
 _CATALOG = "cat"
 
 
-class UpdateMissionDialog(QDialog):
+class UpdateMissionDialog(ThemedDialog):
     """Подтверждение пересоздания миссии из шаблона + вопрос про storage."""
 
     def __init__(self, mission_name: str, parent=None):
@@ -123,6 +126,16 @@ class MapPicker(QWidget):
         col.addLayout(row)
         self.status = CaptionLabel("")
         col.addWidget(self.status)
+        warn_row = QHBoxLayout()
+        self.map_warn = CaptionLabel("")
+        self.map_warn.setStyleSheet(f"color: {_WARN_COLOR};")
+        self.map_warn.setWordWrap(True)
+        self.map_link = HyperlinkLabel(parent=self)
+        self.map_link.setText(tr("mission.map_open_workshop", "Открыть в Workshop"))
+        self.map_link.hide()
+        warn_row.addWidget(self.map_warn, 1)
+        warn_row.addWidget(self.map_link)
+        col.addLayout(warn_row)
 
     # ------------------------------------------------------------------
 
@@ -211,6 +224,7 @@ class MapPicker(QWidget):
             self.status.setText(tr("mission.st_legacy", "Используется как есть."))
             self.b_upd.setEnabled(False)
             self.b_recreate.setEnabled(False)
+            self._update_map_warning(None)
             self.changed.emit()
             return
         entry = self.catalog_entry()
@@ -230,7 +244,23 @@ class MapPicker(QWidget):
                                    repo=entry.repo if entry else "?"))
         self.b_upd.setEnabled(template_ok and bool(entry))
         self.b_recreate.setEnabled(installed and template_ok)
+        self._update_map_warning(entry)
         self.changed.emit()
+
+    def _update_map_warning(self, entry: CatalogEntry | None) -> None:
+        """Мод карты (не bundled в репозиторий миссии, отдельная подписка в
+        Steam Workshop) — предупреждаем, если его нет, ссылка на страницу."""
+        workshop_id = entry.map_mod if entry else ""
+        if not workshop_id or not self.settings \
+                or missions.map_mod_installed(self.settings, workshop_id):
+            self.map_warn.setText("")
+            self.map_link.hide()
+            return
+        self.map_warn.setText(tr("mission.map_missing",
+                                 "Не найден мод карты — без него миссия не запустится."))
+        self.map_link.setUrl(QUrl(
+            f"https://steamcommunity.com/sharedfiles/filedetails/?id={workshop_id}"))
+        self.map_link.show()
 
     # ------------------------------------------------------------------
 

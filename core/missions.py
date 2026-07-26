@@ -68,6 +68,9 @@ class CatalogEntry:
     path: str
     # моды карты из того же репозитория: [{"path": "@ModFolder"}]
     mods: list = field(default_factory=list)
+    # Steam Workshop id мода карты (для карт вроде Namalsk/DeerIsle/Banov —
+    # отдельная подписка, не входит в репозиторий миссии); пусто — не нужен
+    map_mod: str = ""
 
 
 @dataclass
@@ -87,10 +90,18 @@ def load_catalog() -> list[CatalogEntry]:
         data = json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
         return [CatalogEntry(**{k: m[k] for k in
                                 ("id", "title", "world", "repo", "branch", "path")},
-                             mods=m.get("mods", []))
+                             mods=m.get("mods", []), map_mod=m.get("map_mod", ""))
                 for m in data.get("missions", [])]
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return []
+
+
+def map_mod_installed(settings: Settings, workshop_id: str) -> bool:
+    """Мод карты (map_mod) реально подписан — папка content/221100/<id>
+    есть хотя бы в одной из настроенных папок Steam Workshop."""
+    if not workshop_id:
+        return True
+    return any((Path(wdir) / workshop_id).is_dir() for wdir in settings.workshop_dirs)
 
 
 def mpmissions_dir(settings: Settings, branch: str, mode: str) -> Path:

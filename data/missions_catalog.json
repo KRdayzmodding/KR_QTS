@@ -31,7 +31,8 @@
       "world": "namalsk",
       "repo": "SumrakDZN/Namalsk-Server",
       "branch": "main",
-      "path": "Mission Files/regular.namalsk"
+      "path": "Mission Files/regular.namalsk",
+      "map_mod": "2289456201"
     },
     {
       "id": "hardcore.namalsk",
@@ -39,7 +40,8 @@
       "world": "namalsk",
       "repo": "SumrakDZN/Namalsk-Server",
       "branch": "main",
-      "path": "Mission Files/hardcore.namalsk"
+      "path": "Mission Files/hardcore.namalsk",
+      "map_mod": "2289456201"
     },
     {
       "id": "empty.deerisle",
@@ -47,7 +49,8 @@
       "world": "deerisle",
       "repo": "johnmclane666/Deerisle-Stable",
       "branch": "master",
-      "path": "{latestV}/empty.deerisle"
+      "path": "{latestV}/empty.deerisle",
+      "map_mod": "1602372402"
     },
     {
       "id": "dayzOffline.banov",
@@ -55,7 +58,8 @@
       "world": "banov",
       "repo": "KubeloLive/Banov-Central-Economy",
       "branch": "main",
-      "path": "dayzOffline.banov"
+      "path": "dayzOffline.banov",
+      "map_mod": "2415195639"
     },
     {
       "id": "mission.takistanplus",
@@ -63,7 +67,8 @@
       "world": "takistanplus",
       "repo": "CypeR79/DayZ-Projects",
       "branch": "main",
-      "path": "TakistanPlus/mission"
+      "path": "TakistanPlus/mission",
+      "map_mod": "2153795105"
     },
     {
       "id": "dayzOffline.kot_map",
