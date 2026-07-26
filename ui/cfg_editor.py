@@ -76,6 +76,14 @@ _HINTS_RU = {
     "multithreadedReplication": "Многопоточная репликация (число потоков — из dayzsettings.xml).",
     "speedhackDetection": "Детект спидхака: 1 — строгий … 10 — мягкий.",
     "disablePersonalLight": "Отключить персональную подсветку у всех клиентов.",
+    "networkObjectBatchLogSlow": "Порог (сек): если обработка сетевого «пузыря» занимает дольше — пишется в лог.",
+    "networkObjectBatchEnforceBandwidthLimits": "Ограничивать создание объектов по статистике использования канала.",
+    "networkObjectBatchUseEstimatedBandwidth": "0 — реально отправленные данные за прошлый кадр, 1 — грубая оценка.",
+    "networkObjectBatchUseDynamicMaximumBandwidth": "Лимит канала — доля от текущего максимума, а не жёсткое число.",
+    "networkObjectBatchBandwidthLimit": "Сам лимит канала: доля [0,1] или число [1,∞) — смотря что выше.",
+    "networkObjectBatchCompute": "Сколько объектов на создание/удаление проверяется за один кадр сервера.",
+    "networkObjectBatchSendCreate": "Максимум объектов, отправляемых на создание за кадр.",
+    "networkObjectBatchSendDelete": "Максимум объектов, отправляемых на удаление за кадр.",
 }
 
 

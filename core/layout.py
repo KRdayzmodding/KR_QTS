@@ -192,7 +192,11 @@ def create_preset_files(settings: Settings, branch: str, mode: str,
             template = TEMPLATE_CFG.read_text(encoding="utf-8")
         except OSError:
             template = 'hostname = "{NAME}";\n'
-        text = template.replace("{NAME}", name).replace(
+        # префикс проекта из настроек — чтобы не вписывать его в hostname вручную
+        # при создании каждого пресета; обрамление ("[...] TEST" и т.п.) задаёт
+        # сам шаблон cfg, {NAME} — это только "префикс + имя пресета"
+        name_value = f"{settings.project_prefix} {name}" if settings.project_prefix else name
+        text = template.replace("{NAME}", name_value).replace(
             "{MISSION}", mission_name or "dayzOffline.chernarusplus")
         cfg_path.write_bytes(text.encode("utf-8"))  # UTF-8 без BOM
 

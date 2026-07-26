@@ -169,17 +169,27 @@ class LaunchWorker(QThread):
         selected = [reg.get(n) for n in (p.mods + p.server_mods)]
         selected = [m for m in selected if m]
 
-        # 1. Перепаковка устаревших локальных модов
-        for mod, stale in packer.stale_mods(selected):
-            for src in stale:
-                self.log.emit(tr("launch.packing", "Запаковка: {src}", src=src), "info")
-                ok, output = packer.pack_source(s, mod, src, lambda m: self.log.emit(m, "info"))
-                if not ok:
-                    self.log.emit(output[-4000:], "error")
+        # 1. Перепаковка устаревших локальных модов (только если включено в настройках)
+        if s.repack_before_launch:
+            for mod, stale in packer.stale_mods(selected):
+                self.log.emit(tr("launch.pack_start", "Пакуем мод «{n}»", n=mod.name), "info")
+                mod_failed = False
+                for src in stale:
+                    ok, output = packer.pack_source_auto(s, mod, src)
+                    mark = tr("mods.pack_mark_ok", "[ok]") if ok else tr("mods.pack_mark_failed", "[ошибка]")
+                    self.log.emit(f"{Path(src).name} {mark}", "info" if ok else "error")
+                    if not ok:
+                        if output:
+                            self.log.emit(output[-4000:], "error")
+                        mod_failed = True
+                        break
+                if mod_failed:
+                    self.log.emit("=================", "info")
                     self.failed.emit(tr("launch.pack_failed",
                                         "Ошибка запаковки {mod}. Запуск отменён.", mod=mod.name))
                     return
-                self.log.emit(tr("launch.packed", "Готово: {mod}", mod=mod.name), "info")
+                self.log.emit(tr("launch.pack_end", "Запаковка мода «{n}» завершена", n=mod.name), "info")
+                self.log.emit("=================", "info")
 
         # 2. Убираем старые процессы
         killed = kill_all()
