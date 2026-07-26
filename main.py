@@ -11,15 +11,18 @@ from core.settings import Settings
 from ui.main_window import MainWindow
 from ui.wizard import FirstRunWizard
 
+_THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
+
 
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("KR Server Manager")
     app.setOrganizationName("KRdayzmodding")
-    setTheme(Theme.AUTO)  # следуем светлой/тёмной теме Windows, чтобы диалоги не выбивались
-    setThemeColor("#d0752b")  # оливково-оранжевый акцент под DayZ
 
     settings = Settings.load()
+    setTheme(_THEMES.get(settings.theme, Theme.AUTO))
+    setThemeColor("#d0752b")  # оливково-оранжевый акцент под DayZ
+
     i18n.load(settings.language)
 
     if not settings.first_run_done:

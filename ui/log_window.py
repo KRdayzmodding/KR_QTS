@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QLabel
 from qfluentwidgets import (
     PushButton, RadioButton, SearchLineEdit, CaptionLabel, MessageBox,
-    FluentIcon as FIF,
+    FluentIcon as FIF, isDarkTheme, qconfig,
 )
 
 from core.i18n import tr
@@ -20,19 +21,72 @@ from core import logsource
 _COLORS = {"error": "#ff6b6b", "warning": "#e5c07b", "info": "#d4d4d4", "session": "#61afef"}
 _MAX_BLOCKS = 20000  # строк в окне, старые вытесняются
 
+# Подсветка отдельных токенов внутри строки (поверх общего цвета по уровню) —
+# порядок групп важен: более специфичные (time/tag/string/keyword) идут перед
+# общим number, иначе номер внутри времени/тега перехватил бы совпадение
+_TOKEN_RE = re.compile(
+    r"(?P<time>\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b)"
+    r"|(?P<tag>\[[^\]\r\n]{1,60}\])"
+    r"|(?P<string>\"[^\"\r\n]*\")"
+    r"|(?P<keyword>\b(?:error|warning|exception|fatal|critical|deprecated|obsolete"
+    r"|cannot find|can't|missing)\b)"
+    r"|(?P<number>-?\d+\.\d+|\b\d{5,}\b)",
+    re.IGNORECASE,
+)
+_TOKEN_COLORS = {
+    "time": "#61afef",     # синий — временные метки
+    "tag": "#c678dd",      # фиолетовый — [KR_CORE] и подобные теги в скобках
+    "string": "#98c379",   # зелёный — строки в кавычках
+    "number": "#d19a66",   # оранжевый — числа/координаты, SteamID и т.п.
+}
+
+
+def _highlight(line: str) -> str:
+    """HTML с раскрашенными токенами; текст вне токенов — без цвета (наследует
+    цвет уровня строки, заданный обёрткой в _append)."""
+    out = []
+    pos = 0
+    for m in _TOKEN_RE.finditer(line):
+        if m.start() > pos:
+            out.append(html.escape(line[pos:m.start()]))
+        kind = m.lastgroup
+        text = html.escape(m.group())
+        if kind == "keyword":
+            out.append(f'<b style="color:{_COLORS["error"]};">{text}</b>')
+        else:
+            out.append(f'<span style="color:{_TOKEN_COLORS[kind]};">{text}</span>')
+        pos = m.end()
+    out.append(html.escape(line[pos:]))
+    return "".join(out)
+
 
 class LogWindow(QWidget):
     """Самостоятельное окно — свободно перемещается и масштабируется."""
 
-    def __init__(self, title: str):
+    def __init__(self, title: str, accent: str = "#61afef", banner_text: str = ""):
         super().__init__(None, Qt.Window)
         self.setWindowTitle(title)
         self.resize(900, 500)
         self.directory: Path | None = None
         self.tailer: logsource.LogTailer | None = None
 
+        # само окно — обычный QWidget, в отличие от диалогов qfluentwidgets
+        # фон себе не красит вообще (остаётся системным светлым даже в тёмной
+        # теме) — красим вручную и подписываемся на смену темы «на лету»
+        self._apply_bg()
+        qconfig.themeChanged.connect(self._apply_bg)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
+
+        # цветная плашка с названием окна — чтобы окна сервера и клиента
+        # различались с первого взгляда, а не только текстом в заголовке ОС
+        banner = QLabel(banner_text or title)
+        banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        banner.setStyleSheet(
+            f"QLabel{{background:{accent};color:#ffffff;font-weight:600;"
+            f"font-size:16pt;padding:8px 10px;border-radius:6px;}}")
+        layout.addWidget(banner)
 
         top = QHBoxLayout()
         self.search_edit = SearchLineEdit()
@@ -82,6 +136,10 @@ class LogWindow(QWidget):
 
     # ------------------------------------------------------------------ управление
 
+    def _apply_bg(self) -> None:
+        bg = "rgb(43, 43, 43)" if isDarkTheme() else "white"
+        self.setStyleSheet(f"QWidget{{background-color:{bg};}}")
+
     def set_directory(self, directory: Path | None) -> None:
         self.directory = directory
         self.path_label.setText(str(directory) if directory else
@@ -105,7 +163,7 @@ class LogWindow(QWidget):
 
     def _append(self, line: str, level: str) -> None:
         color = _COLORS.get(level, _COLORS["info"])
-        self.view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
+        self.view.appendHtml(f'<span style="color:{color};">{_highlight(line)}</span>')
 
     # ------------------------------------------------------------------ кнопки
 

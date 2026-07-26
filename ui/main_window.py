@@ -20,14 +20,12 @@ from core.launcher import LaunchWorker, kill_all
 from core.mods import ModRegistry
 from core.preflight import run_checks
 from core.presets import ServerPreset
-from core.settings import Settings, STABLE, EXPERIMENTAL
+from core.settings import Settings, STABLE, EXPERIMENTAL, find_pbo_project_exe
 from ui.cfg_editor import CfgEditor
 from ui.log_window import LogWindow
 from ui.mods_panel import ModsPanel
 from ui.preflight_dialog import PreflightDialog
-from ui.preset_editor import (
-    AdvancedPresetDialog, LazyPresetWizard, choose_creation_mode,
-)
+from ui.preset_editor import AdvancedPresetDialog, LazyPresetWizard
 from ui.settings_page import SettingsPage
 
 _STATUS_COLORS = {"info": "#d4d4d4", "warning": "#e5c07b", "error": "#ff6b6b"}
@@ -46,12 +44,14 @@ class LaunchInterface(QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
-        # Пресет + ветка
+        # Пресет + ветка — прижаты влево, чтобы справа осталось место для
+        # кнопки «Подключить моды» (см. ниже, addStretch перед ней)
         top = QHBoxLayout()
         top.addWidget(BodyLabel(tr("main.preset", "Пресет:")))
         self.preset_combo = ComboBox()
-        self.preset_combo.setMinimumWidth(260)
-        top.addWidget(self.preset_combo, 1)
+        self.preset_combo.setMinimumWidth(200)
+        self.preset_combo.setMaximumWidth(260)
+        top.addWidget(self.preset_combo)
         self.b_new = TransparentToolButton(FIF.ADD)
         self.b_new.setToolTip(tr("main.preset_new", "Создать"))
         self.b_edit = TransparentToolButton(FIF.EDIT)
@@ -67,6 +67,9 @@ class LaunchInterface(QWidget):
         self.branch_combo.addItem("Stable", userData=STABLE)
         self.branch_combo.addItem("Experimental", userData=EXPERIMENTAL)
         top.addWidget(self.branch_combo)
+        top.addStretch(1)
+        self.b_connect_mods = PushButton(FIF.APPLICATION, tr("main.connect_mods", "Подключить моды"))
+        top.addWidget(self.b_connect_mods)
         layout.addLayout(top)
 
         # Карточка запуска
@@ -82,6 +85,20 @@ class LaunchInterface(QWidget):
         self.status_label = StrongBodyLabel("")
         row.addWidget(self.status_label)
         cl.addLayout(row)
+
+        row_pack = QHBoxLayout()
+        self.chk_repack = CheckBox(tr("main.repack_before_launch",
+                                      "Перепаковывать изменённые моды перед запуском"))
+        row_pack.addWidget(self.chk_repack)
+        row_pack.addStretch(1)
+        row_pack.addWidget(BodyLabel(tr("main.pack_engine", "Запаковка:")))
+        self.pack_engine = ComboBox()
+        self.pack_engine.addItem(tr("settings.engine_full", "Полная, с проверками (pboProject)"),
+                                 userData="full")
+        self.pack_engine.addItem(tr("settings.engine_fast", "Быстрая, без проверок (pbo_packer)"),
+                                 userData="fast")
+        row_pack.addWidget(self.pack_engine)
+        cl.addLayout(row_pack)
 
         row2 = QHBoxLayout()
         self.btn_launch = PrimaryPushButton(FIF.PLAY, tr("main.launch_btn", "Запустить"))
@@ -120,13 +137,16 @@ class MainWindow(FluentWindow):
         self.setWindowTitle("KR Server Manager")
         self.resize(1060, 720)
 
-        self.log_server = LogWindow(tr("main.server_log", "Логи сервера"))
-        self.log_client = LogWindow(tr("main.client_log", "Логи клиента"))
+        self.log_server = LogWindow(tr("main.server_log", "Логи сервера"),
+                                    accent="#2e7d32", banner_text="SERVER")
+        self.log_client = LogWindow(tr("main.client_log", "Логи клиента"),
+                                    accent="#1565c0", banner_text="CLIENT")
 
         # Страницы
         self.launch_page = LaunchInterface(self)
         self.mods_panel = ModsPanel()
         self.mods_panel.setObjectName("modsInterface")
+        self.mods_panel.log_cb = self._append_log
         self.cfg_editor = CfgEditor()
         self.cfg_editor.setObjectName("cfgInterface")
         self.settings_page = SettingsPage(settings, on_saved=self._settings_saved)
@@ -150,11 +170,18 @@ class MainWindow(FluentWindow):
         lp.b_new.clicked.connect(self._new_preset)
         lp.b_edit.clicked.connect(self._edit_preset)
         lp.b_del.clicked.connect(self._delete_preset)
+        lp.b_connect_mods.clicked.connect(self._open_connect_mods)
         lp.chk_server.toggled.connect(self._launch_flags_changed)
         lp.chk_client.toggled.connect(self._launch_flags_changed)
         lp.btn_launch.clicked.connect(self._launch)
         lp.btn_stop.clicked.connect(self._stop_all)
         lp.btn_logs.clicked.connect(self._show_logs)
+
+        lp.chk_repack.setChecked(settings.repack_before_launch)
+        lp.chk_repack.toggled.connect(self._repack_setting_changed)
+        lp.pack_engine.setCurrentIndex(1 if settings.pack_engine == "fast" else 0)
+        lp.pack_engine.currentIndexChanged.connect(self._pack_engine_changed)
+        self._update_branch_availability()
 
         self._reload_presets()
 
@@ -205,6 +232,7 @@ class MainWindow(FluentWindow):
         lp = self.launch_page
         lp.b_edit.setEnabled(p is not None)
         lp.b_del.setEnabled(p is not None)
+        lp.b_connect_mods.setEnabled(p is not None)
         for chk, val in ((lp.chk_server, p.launch_server if p else True),
                          (lp.chk_client, p.launch_client if p else True)):
             chk.blockSignals(True)
@@ -214,7 +242,7 @@ class MainWindow(FluentWindow):
             lp.branch_combo.blockSignals(True)
             lp.branch_combo.setCurrentIndex(0 if p.branch == STABLE else 1)
             lp.branch_combo.blockSignals(False)
-        self.mods_panel.set_context(self.registry, p, self.settings)
+        self.mods_panel.set_context(self.registry, self.settings)
         self._bind_cfg()
         self._bind_log_dirs()
 
@@ -250,17 +278,18 @@ class MainWindow(FluentWindow):
             self.current.launch_client = self.launch_page.chk_client.isChecked()
             self.current.save()
 
+    def _repack_setting_changed(self, checked: bool) -> None:
+        self.settings.repack_before_launch = checked
+        self.settings.save()
+
+    def _pack_engine_changed(self, _idx: int) -> None:
+        self.settings.pack_engine = self.launch_page.pack_engine.currentData()
+        self.settings.save()
+
     def _new_preset(self) -> None:
-        mode = choose_creation_mode(self)
-        if mode == "lazy":
-            wiz = LazyPresetWizard(self.settings, self)
-            if wiz.exec() and wiz.result_preset:
-                self._reload_presets(select=wiz.result_preset.file_stem())
-        elif mode == "advanced":
-            preset = ServerPreset()
-            dlg = AdvancedPresetDialog(preset, self.settings, self)
-            if dlg.exec():
-                self._reload_presets(select=preset.file_stem())
+        wiz = LazyPresetWizard(self.settings, self)
+        if wiz.exec() and wiz.result_preset:
+            self._reload_presets(select=wiz.result_preset.file_stem())
 
     def _edit_preset(self) -> None:
         if not self.current:
@@ -269,14 +298,22 @@ class MainWindow(FluentWindow):
         if dlg.exec():
             self._reload_presets(select=self.current.file_stem())
 
+    def _open_connect_mods(self) -> None:
+        if not self.current:
+            return
+        from ui.connect_mods_dialog import ConnectModsDialog
+        dlg = ConnectModsDialog(self.registry, self.current, self.settings, self)
+        dlg.exec()
+
     def _delete_preset(self) -> None:
         p = self.current
         if not p:
             return
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout
+        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout
         from qfluentwidgets import BodyLabel
+        from ui.theme import ThemedDialog
 
-        dlg = QDialog(self)
+        dlg = ThemedDialog(self)
         dlg.setWindowTitle(tr("main.del_title", "Удаление пресета"))
         dlg.resize(460, 170)
         lay = QVBoxLayout(dlg)
@@ -375,8 +412,6 @@ class MainWindow(FluentWindow):
     def _on_server_started(self, pid: int) -> None:
         self.server_pid = pid
         self._bind_log_dirs()
-        if not self.log_server.isVisible():
-            self.log_server.show()
 
     def _on_client_started(self, pid: int) -> None:
         self.client_pid = pid
@@ -396,10 +431,27 @@ class MainWindow(FluentWindow):
 
     def _show_logs(self) -> None:
         self._bind_log_dirs()
+        self._position_log_windows()
         self.log_server.show()
         self.log_client.show()
         self.log_server.raise_()
         self.log_client.raise_()
+
+    def _position_log_windows(self) -> None:
+        """Ставит окна логов рядом друг с другом, не перекрывая — но только
+        при первом показе каждого (уже видимое окно пользователь мог сам
+        передвинуть, сбрасывать его позицию не нужно)."""
+        screen = QApplication.primaryScreen().availableGeometry()
+        w, h = self.log_server.width(), self.log_server.height()
+        margin = 24
+        side_by_side = screen.width() >= w * 2 + margin * 3
+        if not self.log_server.isVisible():
+            self.log_server.move(screen.left() + margin, screen.top() + margin)
+        if not self.log_client.isVisible():
+            if side_by_side:
+                self.log_client.move(screen.left() + margin * 2 + w, screen.top() + margin)
+            else:
+                self.log_client.move(screen.left() + margin, screen.top() + margin * 2 + h)
 
     def _update_status(self) -> None:
         def state(pid: int | None, name: str, color_run: str) -> str:
@@ -423,7 +475,31 @@ class MainWindow(FluentWindow):
         self.registry = ModRegistry(self.settings)
         self.registry.scan()
         self._bind_preset()
+        self._update_branch_availability()
         self._notify("success", tr("settings.saved", "Настройки сохранены."))
+
+    def _update_branch_availability(self) -> None:
+        """Experimental-ветка доступна в списке, только если хотя бы одна из
+        её папок (клиент/сервер) реально указана и существует."""
+        s = self.settings
+        exp_ok = (bool(s.client_exp) and Path(s.client_exp).is_dir()) or \
+            (bool(s.server_exp) and Path(s.server_exp).is_dir())
+        combo = self.launch_page.branch_combo
+        combo.setItemEnabled(1, exp_ok)
+        if not exp_ok and combo.currentIndex() == 1:
+            combo.setCurrentIndex(0)
+
+        # «Полная» запаковка доступна, только если pboProject реально найден
+        pbo_ok = Path(find_pbo_project_exe(s.mikero_tools)).is_file()
+        engine = self.launch_page.pack_engine
+        engine.setItemEnabled(0, pbo_ok)
+        if not pbo_ok and engine.currentIndex() == 0:
+            engine.setCurrentIndex(1)
+        engine.setItemText(
+            0,
+            tr("settings.engine_full", "Полная, с проверками (pboProject)") if pbo_ok else
+            tr("settings.engine_full_missing",
+              "Полная, с проверками (pboProject) — недоступно, pboProject не найден"))
 
     def _about(self) -> None:
         import re
