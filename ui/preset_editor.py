@@ -1,9 +1,11 @@
-"""Создание и редактирование пресетов: «Ленивый» мастер и «Расширенный» редактор."""
+"""Создание пресетов — «Ленивый» мастер; «Расширенный» редактор — для правки уже созданных."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog,
-    QGroupBox, QWizard, QWizardPage, QMessageBox, QWidget,
+    QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog,
+    QGroupBox, QWizard, QWizardPage, QWidget,
 )
 from qfluentwidgets import (
     LineEdit, ComboBox, CheckBox, SpinBox, PushButton, PrimaryPushButton,
@@ -15,24 +17,7 @@ from core.params import specs_for, FLAG, SWITCH, INT, STR, SERVER, CLIENT
 from core.presets import ServerPreset, MODE_DIAG, MODE_DEDICATED
 from core.settings import Settings, STABLE, EXPERIMENTAL
 from ui.mission_picker import MapPicker
-
-
-def choose_creation_mode(parent) -> str | None:
-    """Возвращает 'lazy' | 'advanced' | None."""
-    box = QMessageBox(parent)
-    box.setWindowTitle(tr("preset.new_title", "Новый пресет"))
-    box.setText(tr("preset.new_question",
-                   "Как создать пресет?\n\n«Ленивый» — несколько простых шагов с подсказками.\n"
-                   "«Расширенный» — все настройки сразу на одной форме."))
-    b_lazy = box.addButton(tr("preset.lazy", "Ленивый"), QMessageBox.ButtonRole.AcceptRole)
-    b_adv = box.addButton(tr("preset.advanced", "Расширенный"), QMessageBox.ButtonRole.AcceptRole)
-    box.addButton(QMessageBox.StandardButton.Cancel)
-    box.exec()
-    if box.clickedButton() == b_lazy:
-        return "lazy"
-    if box.clickedButton() == b_adv:
-        return "advanced"
-    return None
+from ui.theme import ThemedDialog, ThemedWizard
 
 
 class _PathField(QHBoxLayout):
@@ -79,7 +64,7 @@ def _attach_map_mods(preset: ServerPreset, picker: "MapPicker") -> None:
 
 # ---------------------------------------------------------------- Расширенный
 
-class AdvancedPresetDialog(QDialog):
+class AdvancedPresetDialog(ThemedDialog):
     def __init__(self, preset: ServerPreset, settings: Settings, parent=None):
         super().__init__(parent)
         self.preset = preset
@@ -119,6 +104,24 @@ class AdvancedPresetDialog(QDialog):
         self.branch.addItem("Experimental", userData=EXPERIMENTAL)
         self.branch.setCurrentIndex(0 if preset.branch == STABLE else 1)
         form.addRow(tr("preset.branch", "Ветка по умолчанию"), self.branch)
+
+        # доступность режима/ветки — только если нужные exe реально на месте
+        diag_ok = bool(settings.client_stable) and \
+            (Path(settings.client_stable) / "DayZDiag_x64.exe").is_file()
+        dedicated_ok = bool(settings.server_stable) and \
+            (Path(settings.server_stable) / "DayZServer_x64.exe").is_file()
+        self.mode.setItemEnabled(0, diag_ok)
+        self.mode.setItemEnabled(1, dedicated_ok)
+        if not diag_ok and self.mode.currentIndex() == 0 and dedicated_ok:
+            self.mode.setCurrentIndex(1)
+        elif not dedicated_ok and self.mode.currentIndex() == 1 and diag_ok:
+            self.mode.setCurrentIndex(0)
+
+        exp_ok = (bool(settings.client_exp) and Path(settings.client_exp).is_dir()) or \
+            (bool(settings.server_exp) and Path(settings.server_exp).is_dir())
+        self.branch.setItemEnabled(1, exp_ok)
+        if not exp_ok and self.branch.currentIndex() == 1:
+            self.branch.setCurrentIndex(0)
 
         self.map_picker = MapPicker(self)
         self.map_picker.set_context(settings, preset.branch, preset.mode,
@@ -381,7 +384,7 @@ class AdvancedPresetDialog(QDialog):
 
 # ---------------------------------------------------------------- Ленивый мастер
 
-class LazyPresetWizard(QWizard):
+class LazyPresetWizard(ThemedWizard):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -420,6 +423,28 @@ class LazyPresetWizard(QWizard):
         l1.addWidget(self.rb_dedicated)
         l1.addWidget(ded_desc)
         l1.addStretch(1)
+
+        # доступность режимов — только если нужный exe реально на месте
+        diag_ok = bool(settings.client_stable) and \
+            (Path(settings.client_stable) / "DayZDiag_x64.exe").is_file()
+        dedicated_ok = bool(settings.server_stable) and \
+            (Path(settings.server_stable) / "DayZServer_x64.exe").is_file()
+        if not diag_ok:
+            self.rb_diag.setEnabled(False)
+            diag_desc.setEnabled(False)
+            no_diag = tr("preset.lazy_diag_missing",
+                        "DayZDiag_x64.exe не найден — укажите папку игры в «Настройках».")
+            self.rb_diag.setToolTip(no_diag)
+            diag_desc.setToolTip(no_diag)
+        if not dedicated_ok:
+            self.rb_dedicated.setEnabled(False)
+            ded_desc.setEnabled(False)
+            no_ded = tr("preset.lazy_dedicated_missing",
+                       "DayZServer_x64.exe не найден — укажите папку сервера в «Настройках».")
+            self.rb_dedicated.setToolTip(no_ded)
+            ded_desc.setToolTip(no_ded)
+        if not diag_ok and dedicated_ok:
+            self.rb_dedicated.setChecked(True)
         p1.registerField("name*", self.name)
         self.addPage(p1)
 

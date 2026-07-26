@@ -1,7 +1,7 @@
 """Диалог предстартовой проверки: критичные и некритичные проблемы."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidgetItem
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QListWidgetItem
 from PySide6.QtGui import QColor
 from qfluentwidgets import (
     ListWidget, PushButton, PrimaryPushButton, CheckBox, StrongBodyLabel,
@@ -9,9 +9,10 @@ from qfluentwidgets import (
 
 from core.i18n import tr
 from core.preflight import Problem, CRITICAL, has_critical
+from ui.theme import ThemedDialog
 
 
-class PreflightDialog(QDialog):
+class PreflightDialog(ThemedDialog):
     """Показывает найденные проблемы.
 
     «Пропустить и запустить» доступна, только если критичных проблем нет.
