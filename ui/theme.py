@@ -12,7 +12,21 @@ ThemedDialog вместо голого QDialog, чтобы получать то
 from __future__ import annotations
 
 from PySide6.QtWidgets import QDialog, QWizard
-from qfluentwidgets import FluentStyleSheet
+from qfluentwidgets import FluentStyleSheet, setCustomStyleSheet
+
+_LIGHT_BG = "white"
+_DARK_BG = "rgb(43, 43, 43)"
+
+
+def _page_qss(bg: str) -> str:
+    """Фон страниц мастера и их дочерних контейнеров.
+
+    Правило QDialog из DIALOG.qss до QWizardPage не достаёт, а нативный стиль
+    Windows (windowsvista + ModernStyle) рисует область страницы белой поверх
+    тёмного фона самого окна.
+    """
+    return (f"QWizardPage{{background-color:{bg};}}"
+            f"QWizardPage QGroupBox{{background-color:transparent;}}")
 
 
 class ThemedDialog(QDialog):
@@ -23,8 +37,13 @@ class ThemedDialog(QDialog):
 
 class ThemedWizard(QWizard):
     """QWizard — тоже QDialog в Qt, поэтому тот же DIALOG.qss (селектор QDialog
-    в стилевом листе матчит и подклассы) красит фон под текущую тему."""
+    в стилевом листе матчит и подклассы) красит фон самого окна; страницы
+    приходится красить отдельно (см. _page_qss)."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # ClassicStyle — иначе windowsvista подмешивает свой светлый заголовок
+        # и рамку страницы, которые не подчиняются таблице стилей
+        self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
         FluentStyleSheet.DIALOG.apply(self)
+        setCustomStyleSheet(self, _page_qss(_LIGHT_BG), _page_qss(_DARK_BG))

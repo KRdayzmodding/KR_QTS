@@ -7,17 +7,19 @@ from PySide6.QtWidgets import (
     QWizardPage, QVBoxLayout, QFormLayout, QHBoxLayout, QFileDialog,
     QListWidgetItem,
 )
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt
 from qfluentwidgets import (
-    ComboBox, LineEdit, PasswordLineEdit, PlainTextEdit, PushButton, ToolButton,
+    ComboBox, LineEdit, PlainTextEdit, PushButton, ToolButton,
     ListWidget, BodyLabel, CaptionLabel, FluentIcon as FIF,
 )
 
 from core import autodetect, i18n
 from core.i18n import tr, AVAILABLE
 from core.presets import import_bats_from_dir, ServerPreset
-from core.settings import Settings
+from core.settings import Settings, check_path
+from core.steam_urls import SETTINGS_APPS
+from ui.settings_page import make_install_button
+from ui.steam_watch import SteamWatcher, status_text
 from ui.theme import ThemedWizard
 
 
@@ -66,8 +68,8 @@ class FirstRunWizard(ThemedWizard):
         paths_help = CaptionLabel(tr("wizard.paths_help",
             "Ничего страшного, если что-то не найдено или не установлено — поле можно "
             "оставить пустым и заполнить позже в «Настройках», когда всё будет готово. "
-            "Красная рамка означает, что путь указан, но папки по нему сейчас нет "
-            "(например, игра установлена, но эту конкретную папку удалили, или в "
+            "Красная рамка означает, что путь указан, но по нему нет папки или в ней "
+            "нет самой программы (например, игру удалили, а папка осталась, или в "
             "реестре остался след от старой установки). DayZ, Experimental-версия и "
             "выделенный сервер устанавливаются и обновляются через Steam (библиотека "
             "игр и вкладка «Инструменты» для DayZ Tools); Mikero Tools (DePboTools) — "
@@ -79,72 +81,94 @@ class FirstRunWizard(ThemedWizard):
         det = autodetect.detect_all()
         self.paths: dict[str, LineEdit] = {}
 
+        self.path_status: dict[str, CaptionLabel] = {}
+
         def row(key: str, label: str, value: str):
+            box = QVBoxLayout()
+            box.setSpacing(2)
             h = QHBoxLayout()
             edit = LineEdit()
             edit.setText(value)
-            edit.setError(bool(value) and not Path(value).is_dir())
-            edit.textChanged.connect(lambda t, e=edit: e.setError(bool(t) and not Path(t).is_dir()))
+            # проверка та же, что в «Настройках»: для клиента и сервера мало
+            # существования папки — нужен исполняемый файл
+            edit.setError(bool(check_path(key, value)))
+            edit.textChanged.connect(
+                lambda t, e=edit, k=key: e.setError(bool(check_path(k, t.strip()))))
             btn = ToolButton(FIF.FOLDER)
             btn.clicked.connect(lambda _=False, e=edit: self._browse(e))
             h.addWidget(edit, 1)
             h.addWidget(btn)
-            l2.addRow(label, h)
+            # не установлено — предлагаем взять недостающее, не уходя из мастера
+            b_inst = make_install_button(self, key)
+            if b_inst is not None:
+                b_inst.setVisible(not value.strip())
+                edit.textChanged.connect(lambda t, b=b_inst: b.setVisible(not t.strip()))
+                h.addWidget(b_inst)
+            box.addLayout(h)
+            # состояние загрузки Steam: заполняется наблюдателем, пока пусто — скрыто
+            st = CaptionLabel("")
+            st.setWordWrap(True)
+            st.hide()
+            box.addWidget(st)
+            l2.addRow(label, box)
             self.paths[key] = edit
+            self.path_status[key] = st
 
-        row("client_stable", tr("settings.client", "Папка игры (DayZ)"),
+        row("client_stable", tr("settings.client", "DayZ"),
             settings.client_stable or det["client_stable"])
-        row("client_exp", tr("settings.client_exp", "Папка игры Experimental"),
-            settings.client_exp or det["client_exp"])
-        row("server_stable", tr("settings.server", "Папка сервера (DayZServer)"),
+        row("server_stable", tr("settings.server", "DayZ Server"),
             settings.server_stable or det["server_stable"])
-        row("server_exp", tr("settings.server_exp", "Папка сервера Experimental"),
+        row("client_exp", tr("settings.client_exp", "DayZ Experimental"),
+            settings.client_exp or det["client_exp"])
+        row("server_exp", tr("settings.server_exp", "DayZ Server Experimental"),
             settings.server_exp or det["server_exp"])
-        row("mikero_tools", tr("settings.mikero", "Mikero Tools (DePboTools)"),
-            settings.mikero_tools or det["mikero_tools"])
         row("dayz_tools", tr("settings.dayz_tools", "DayZ Tools"),
             settings.dayz_tools or det["dayz_tools"])
+        row("dayz_tools_exp", tr("settings.dayz_tools_exp", "DayZ Tools Experimental"),
+            settings.dayz_tools_exp or det["dayz_tools_exp"])
+        row("mikero_tools", tr("settings.mikero", "Mikero Tools (DePboTools)"),
+            settings.mikero_tools or det["mikero_tools"])
         self._workshop_dirs = settings.workshop_dirs or det["workshop_dirs"]
-        ws_label = CaptionLabel("\n".join(self._workshop_dirs) or
-                                tr("wizard.no_workshop", "Workshop не найден (можно указать в настройках)"))
-        l2.addRow(tr("settings.workshop", "Папки Steam Workshop"), ws_label)
+        self.ws_label = CaptionLabel("\n".join(self._workshop_dirs) or
+                                     tr("wizard.no_workshop", "Workshop не найден (можно указать в настройках)"))
+        l2.addRow(tr("settings.workshop", "Steam Workshop"), self.ws_label)
+
+        # повторный автопоиск: пригодится, если пользователь доустановил
+        # что-то мимо наших кнопок, не закрывая мастер
+        b_detect = PushButton(FIF.SEARCH, tr("wizard.redetect", "Найти пути автоматически"))
+        b_detect.setToolTip(tr("wizard.redetect_tip",
+                               "Перечитывает библиотеки Steam и заполняет пустые поля."))
+        b_detect.clicked.connect(self._redetect)
+        l2v.addWidget(b_detect)
         self.addPage(p2)
 
-        # --- Шаг 3: Steam — SteamID админов и API-ключ
+        # --- Шаг 3: Steam — SteamID админов
+        #     API-ключ сюда намеренно не вынесен: он нигде не обязателен
+        #     (везде есть безключевой путь) — его место в «Настройках».
         p_steam = QWizardPage()
         p_steam.setTitle(tr("wizard.steam_title", "Steam"))
         p_steam.setSubTitle(tr("wizard.steam_sub",
-                               "Оба поля необязательны и легко заполняются позже в «Настройках» — "
-                               "но про них проще не забыть сразу."))
+                               "Поле необязательное и легко заполняется позже в «Настройках» — "
+                               "но про него проще не забыть сразу."))
         l_steam = QFormLayout(p_steam)
         self.admin_ids = PlainTextEdit()
         self.admin_ids.setPlainText("\n".join(settings.admin_steamids))
         self.admin_ids.setMaximumHeight(64)
         self.admin_ids.setPlaceholderText(tr("wizard.admin_ph", "SteamID64 — по одному на строку"))
         l_steam.addRow(tr("settings.admins", "Админские SteamID"), self.admin_ids)
+        self.b_resolve = PushButton(FIF.SEARCH, tr("settings.admins_resolve",
+                                                   "Добавить по ссылке на профиль…"))
+        self.b_resolve.setToolTip(tr("settings.admins_resolve_tip",
+                                     "Определяет SteamID64 по ссылке вида "
+                                     "steamcommunity.com/id/<имя> или /profiles/<id>."))
+        self.b_resolve.clicked.connect(self._resolve_steamid)
+        l_steam.addRow("", self.b_resolve)
         admin_hint = CaptionLabel(tr("wizard.admin_hint",
-                                     "Используется модами-админками для выдачи прав. Своё SteamID64 "
-                                     "можно найти на steamid.io или в свойствах профиля Steam."))
+                                     "Используется модами-админками (COT, VPPAdminTools, LBmaster) для выдачи "
+                                     "прав. Проще всего — вставить ссылку на свой профиль Steam "
+                                     "кнопкой выше, SteamID64 определится сам."))
         admin_hint.setWordWrap(True)
         l_steam.addRow("", admin_hint)
-
-        steam_key_row = QHBoxLayout()
-        self.steam_key = PasswordLineEdit()
-        self.steam_key.setText(settings.steam_api_key)
-        btn_get_key = PushButton(FIF.LINK, tr("settings.steam_key_get", "Получить"))
-        btn_get_key.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://steamcommunity.com/dev/apikey")))
-        steam_key_row.addWidget(self.steam_key, 1)
-        steam_key_row.addWidget(btn_get_key)
-        l_steam.addRow(tr("settings.steam_key", "Steam API-ключ"), steam_key_row)
-        key_hint = CaptionLabel(tr("settings.steam_key_hint",
-            "Нужен для определения зависимостей стим-модов через официальный API. "
-            "Как получить: нажмите «Получить», войдите в Steam, в поле «Domain Name» "
-            "впишите что угодно (например, localhost), согласитесь с условиями и "
-            "скопируйте ключ сюда. Без ключа зависимости читаются со страницы "
-            "воркшопа — работает, но менее надёжно."))
-        key_hint.setWordWrap(True)
-        l_steam.addRow("", key_hint)
         self.addPage(p_steam)
 
         # --- Шаг 4: импорт батников
@@ -190,10 +214,101 @@ class FirstRunWizard(ThemedWizard):
 
         self.currentIdChanged.connect(self._page_changed)
 
+        # Кнопка установки отправляет пользователя в Steam, и дальше мастер
+        # ничего бы о загрузке не знал — поэтому следим за ней сами и
+        # подставляем путь, как только компонент установится.
+        self.watcher = SteamWatcher(self)
+        self.watcher.watch_apps(self.paths)
+        self.watcher.app_changed.connect(self._steam_app_changed)
+        self.watcher.app_installed.connect(self._steam_app_installed)
+        self.watcher.start()
+
+    # ------------------------------------------------------- загрузки Steam
+
+    def _steam_app_changed(self, key: str, st) -> None:
+        label = self.path_status.get(key)
+        if label is None:
+            return
+        text = status_text(st)
+        label.setText(text)
+        label.setVisible(bool(text))
+
+    def _steam_app_installed(self, key: str, path: str) -> None:
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        edit = self.paths.get(key)
+        label = self.path_status.get(key)
+        if label is not None:
+            label.setVisible(False)
+        if edit is None or not path:
+            return
+        title = SETTINGS_APPS.get(key, ("", key))[1]
+        if edit.text().strip():
+            return          # путь уже задан — вероятно, вручную, не перетираем
+        edit.setText(path)
+        InfoBar.success(
+            title=tr("steam.dl_done", "«{n}» установлен", n=title),
+            content=tr("steam.dl_path_set_wizard", "Путь подставлен автоматически."),
+            parent=self, duration=8000, position=InfoBarPosition.TOP_RIGHT)
+
+    def _redetect(self) -> None:
+        """Повторный автопоиск — заполняет только пустые поля."""
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        det = autodetect.detect_all()
+        filled = 0
+        for key, edit in self.paths.items():
+            if not edit.text().strip() and det.get(key):
+                edit.setText(det[key])
+                filled += 1
+        if not self._workshop_dirs and det["workshop_dirs"]:
+            self._workshop_dirs = det["workshop_dirs"]
+            self.ws_label.setText("\n".join(self._workshop_dirs))
+            filled += 1
+        InfoBar.info(title=tr("settings.detected", "Заполнено полей: {n}", n=filled),
+                     content="", parent=self, duration=4000,
+                     position=InfoBarPosition.TOP_RIGHT)
+
     def _browse(self, edit: QLineEdit) -> None:
         p = QFileDialog.getExistingDirectory(self, "", edit.text())
         if p:
             edit.setText(p)
+
+    def _resolve_steamid(self) -> None:
+        """SteamID64 по ссылке на профиль — тот же механизм, что в «Настройках».
+        Ключ на этом шаге ещё не введён (его тут и нет), поэтому резолв идёт
+        публичными способами — им ключ не нужен."""
+        from PySide6.QtWidgets import QInputDialog
+        from ui.settings_page import _ResolveSteamIdWorker
+        value, ok = QInputDialog.getText(
+            self, tr("settings.admins_resolve", "Добавить по ссылке на профиль…"),
+            tr("settings.admins_resolve_prompt",
+               "Ссылка на профиль Steam (или ник из ссылки /id/):"))
+        if not ok or not value.strip():
+            return
+        self.b_resolve.setEnabled(False)
+        self._resolve_worker = _ResolveSteamIdWorker(value, self.settings.steam_api_key, self)
+        self._resolve_worker.done.connect(self._steamid_resolved)
+        self._resolve_worker.start()
+
+    def _steamid_resolved(self, sid: str, source: str) -> None:
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        self.b_resolve.setEnabled(True)
+        if not sid:
+            InfoBar.error(title=tr("settings.admins_resolve_failed",
+                                   "Не удалось определить SteamID"),
+                          content=source, parent=self, duration=6000,
+                          position=InfoBarPosition.TOP_RIGHT)
+            return
+        lines = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
+        if sid in lines:
+            InfoBar.info(title=tr("settings.admins_resolve_dup", "{id} уже в списке", id=sid),
+                         content="", parent=self, duration=4000,
+                         position=InfoBarPosition.TOP_RIGHT)
+            return
+        lines.append(sid)
+        self.admin_ids.setPlainText("\n".join(lines))
+        InfoBar.success(title=tr("settings.admins_resolve_ok", "Добавлен {id}", id=sid),
+                        content="", parent=self, duration=4000,
+                        position=InfoBarPosition.TOP_RIGHT)
 
     def _page_changed(self, _id: int) -> None:
         # На страницу импорта подставляем Debug-папку клиента
@@ -243,7 +358,6 @@ class FirstRunWizard(ThemedWizard):
             setattr(s, key, edit.text().strip())
         s.workshop_dirs = self._workshop_dirs
         s.admin_steamids = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
-        s.steam_api_key = self.steam_key.text().strip()
         s.first_run_done = True
         s.save()
         i18n.load(s.language)

@@ -50,6 +50,21 @@ class _PathField(QHBoxLayout):
         return self.edit.text().strip()
 
 
+# Параметры запуска новых пресетов — отладочный набор «как надо»:
+# полное логирование на сервере, окно вместо фуллскрина на клиенте,
+# быстрый вход/выход. Diag-набор добавляется поверх для режима отладки.
+_DEFAULT_PARAMS_SERVER = {
+    "doLogs": True, "adminLog": True, "netLog": True, "noPause": True,
+}
+_DEFAULT_PARAMS_CLIENT = {
+    "noPause": True, "window": True,
+}
+_DEFAULT_PARAMS_DIAG = {
+    "filePatching": True, "battleye": False, "newErrorsAreWarnings": True,
+}
+_DEFAULT_TIME_LOGIN = 3   # TimeLogin/TimeLogout в db/globals.xml миссии, секунды
+
+
 def _attach_map_mods(preset: ServerPreset, picker: "MapPicker") -> None:
     """Моды карты (из репозитория миссии) автоматически включаются в пресет."""
     from pathlib import Path as _P
@@ -160,8 +175,20 @@ class AdvancedPresetDialog(ThemedDialog):
         b_clear_prof.setToolTip(tr("preset.clear_prof_tip",
                                    "Полностью чистит папку профиля сервера (логи, настройки модов)."))
         b_clear_prof.clicked.connect(self._clear_profile)
+        b_admin = PushButton(FIF.PEOPLE, tr("preset.admin_sync",
+                                            "Актуализировать данные для Admin Tools"))
+        b_admin.setToolTip(tr("preset.admin_sync_tip",
+                              "Перезаписывает в профиле списки админов и пароль VPP "
+                              "из «Настроек» — для COT, VPPAdminTools и LBmaster."))
+        b_admin.clicked.connect(self._sync_admin_tools)
+        b_open_prof = PushButton(FIF.FOLDER, tr("preset.open_prof", "Открыть папку профиля"))
+        b_open_prof.setToolTip(tr("preset.open_prof_tip",
+                                  "Открывает папку профиля сервера в проводнике."))
+        b_open_prof.clicked.connect(self._open_profile)
         clean_row.addWidget(b_clear_db)
         clean_row.addWidget(b_clear_prof)
+        clean_row.addWidget(b_admin)
+        clean_row.addWidget(b_open_prof)
         clean_row.addStretch(1)
         form.addRow("", clean_row)
         layout.addLayout(form)
@@ -211,7 +238,15 @@ class AdvancedPresetDialog(ThemedDialog):
 
     def _clear_profile(self) -> None:
         from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
+        from core.launcher import dayz_running
         from core.layout import clear_profile, preset_base_name
+        if dayz_running():
+            InfoBar.warning(title=tr("preset.busy_title", "Сервер запущен"),
+                            content=tr("preset.busy_body",
+                                       "Остановите сервер — он держит файлы профиля открытыми "
+                                       "и перезапишет их при выходе."),
+                            parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
+            return
         profiles = self.preset.profiles or preset_base_name(
             self.name.text().strip(), self.map_picker.mission_name())
         box = MessageBox(tr("preset.clear_prof", "Очистить профайл"),
@@ -225,6 +260,43 @@ class AdvancedPresetDialog(ThemedDialog):
         InfoBar.success(title=tr("preset.cleared_prof", "Удалено элементов: {n}", n=n),
                         content="", parent=self, duration=3000,
                         position=InfoBarPosition.TOP_RIGHT)
+
+    def _profile_dir(self) -> str:
+        """Абсолютный путь папки профиля для текущих значений формы."""
+        from core.layout import resolve_profiles, preset_base_name
+        profiles = self.preset.profiles or preset_base_name(
+            self.name.text().strip(), self.map_picker.mission_name())
+        return resolve_profiles(profiles, self.settings, self.branch.currentData(),
+                                self.mode.currentData())
+
+    def _open_profile(self) -> None:
+        import os
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        path = self._profile_dir()
+        if not path or not Path(path).is_dir():
+            InfoBar.warning(title=tr("preset.no_profile",
+                                     "Папки профиля ещё нет — она создастся при запуске."),
+                            content=path or "", parent=self, duration=5000,
+                            position=InfoBarPosition.TOP_RIGHT)
+            return
+        os.startfile(path)  # noqa: S606 — открытие проводника по своей же папке
+
+    def _sync_admin_tools(self) -> None:
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        from core.admin_tools import apply as apply_admin_rights
+        s = self.settings
+        if not s.admin_steamids and not s.admin_password.strip():
+            InfoBar.warning(title=tr("preset.admin_sync_empty",
+                                     "В настройках не заданы ни SteamID админов, ни пароль."),
+                            content="", parent=self, duration=5000,
+                            position=InfoBarPosition.TOP_RIGHT)
+            return
+        # mods=None — обновляем обе админки: какая из них подключена к пресету,
+        # тут неважно, лишние файлы никому не мешают
+        done = apply_admin_rights(self._profile_dir(), None, s.admin_steamids, s.admin_password)
+        InfoBar.success(title=tr("preset.admin_synced", "Обновлено админок: {n}", n=len(done)),
+                        content=", ".join(t.title for t, _ in done),
+                        parent=self, duration=4000, position=InfoBarPosition.TOP_RIGHT)
 
     def _read_time_login(self) -> int:
         """Актуальное значение из globals.xml миссии; иначе из пресета; иначе 15."""
@@ -533,14 +605,13 @@ class LazyPresetWizard(ThemedWizard):
             self.auto_note.setText(str(e))
             return
         preset = ServerPreset(name=name, mode=mode, server_config=config,
-                              mission=mission, profiles=profiles)
-        preset.params_server = {"doLogs": True, "noPause": True}
-        preset.params_client = {"noPause": True}
+                              mission=mission, profiles=profiles,
+                              time_login=_DEFAULT_TIME_LOGIN)
+        preset.params_server = dict(_DEFAULT_PARAMS_SERVER)
+        preset.params_client = dict(_DEFAULT_PARAMS_CLIENT)
         if diag:
-            preset.params_server.update({"filePatching": True, "battleye": False,
-                                         "newErrorsAreWarnings": True})
-            preset.params_client.update({"filePatching": True, "battleye": False,
-                                         "newErrorsAreWarnings": True})
+            preset.params_server.update(_DEFAULT_PARAMS_DIAG)
+            preset.params_client.update(_DEFAULT_PARAMS_DIAG)
         _attach_map_mods(preset, self.map_picker)
         preset.save()
         self.result_preset = preset

@@ -4,25 +4,65 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog, QScrollArea,
 )
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QUrl, QRegularExpression, QThread, Signal
+from PySide6.QtGui import QDesktopServices, QRegularExpressionValidator
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox,
     PushButton, PrimaryPushButton, ToolButton, BodyLabel, CaptionLabel,
-    StrongBodyLabel, FluentIcon as FIF, setTheme, Theme,
+    StrongBodyLabel, SimpleCardWidget, TransparentToolButton, TeachingTip,
+    TeachingTipTailPosition, InfoBar, InfoBarPosition,
+    FluentIcon as FIF, setTheme, Theme,
 )
 
 from pathlib import Path
 
-from core import autodetect
+from core import autodetect, filepatch, steam_api, steam_urls
 from core.i18n import tr, AVAILABLE
-from core.settings import Settings, find_pbo_project_exe
+from core.settings import (
+    Settings, find_pbo_project_exe, check_path, PATH_MISSING, PATH_NOT_INSTALLED,
+)
 from ui.pboproject_dialog import PboProjectDialog
 
+_VPP_PASS_MAXLEN = 32
 
-class PathRow(QHBoxLayout):
-    def __init__(self, value: str, parent: QWidget):
+# Компоненты не из Steam: ключ настроек -> (страница загрузки, название).
+# Ставятся вручную, так что можем только открыть страницу в браузере.
+EXTERNAL_DOWNLOADS: dict[str, tuple[str, str]] = {
+    "mikero_tools": ("https://mikero.bytex.digital/Downloads",
+                     "Mikero Tools (DePboTools)"),
+}
+
+
+class _ResolveSteamIdWorker(QThread):
+    """Определение SteamID64 по ссылке — в фоне: ходит в сеть."""
+    done = Signal(str, str)   # SteamID64 (пусто — не вышло), исходный ввод
+
+    def __init__(self, value: str, api_key: str, parent=None):
+        super().__init__(parent)
+        self.value = value
+        self.api_key = api_key
+
+    def run(self) -> None:
+        try:
+            sid = steam_api.resolve_steamid(self.value, self.api_key)
+        except Exception:  # noqa: BLE001 — сеть/парсинг не должны ронять приложение
+            sid = ""
+        self.done.emit(sid, self.value)
+
+
+class PathRow(QVBoxLayout):
+    """Поле пути + обзор. Для устанавливаемых компонентов (settings_key задан)
+    добавляется кнопка «взять недостающее» — видна, только пока путь не заполнен,
+    и строка состояния под полем: пока Steam качает компонент, здесь виден
+    прогресс, а по завершении путь подставляется сам."""
+
+    def __init__(self, value: str, parent: QWidget, settings_key: str = ""):
         super().__init__()
+        self.setSpacing(2)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.settings_key = settings_key
+
+        row = QHBoxLayout()
         self.edit = LineEdit()
         self.edit.setText(value)
         btn = ToolButton(FIF.FOLDER)
@@ -33,11 +73,112 @@ class PathRow(QHBoxLayout):
                 self.edit.setText(p)
 
         btn.clicked.connect(browse)
-        self.addWidget(self.edit, 1)
-        self.addWidget(btn)
+        row.addWidget(self.edit, 1)
+        row.addWidget(btn)
+
+        self.install_btn = make_install_button(parent, settings_key)
+        if self.install_btn is not None:
+            row.addWidget(self.install_btn)
+        self.addLayout(row)
+
+        self.status = CaptionLabel("")
+        self.status.setWordWrap(True)
+        self.status.hide()
+        self.addWidget(self.status)
+
+        self._dl_text = ""    # «Скачивание началось» от наблюдателя Steam
+        self._problem = ""    # результат check_path
+        self.edit.textChanged.connect(lambda _t: self.refresh_validity())
+        self.refresh_validity()
+
+    def refresh_validity(self) -> None:
+        """Подсвечивает путь, если папки нет или программа из неё удалена.
+
+        Сам путь не стираем: диск может быть временно недоступен, а терять
+        из-за этого настройку нельзя.
+        """
+        self._problem = check_path(self.settings_key, self.edit.text().strip())
+        self.edit.setError(bool(self._problem))
+        if self.install_btn is not None:
+            # кнопка установки нужна, пока компонента фактически нет
+            self.install_btn.setVisible(not self.edit.text().strip()
+                                        or self._problem == PATH_NOT_INSTALLED)
+        self._render_status()
+
+    def _render_status(self) -> None:
+        if self._dl_text:
+            text = self._dl_text          # идущая загрузка важнее старой ошибки
+        elif self._problem == PATH_MISSING:
+            text = tr("settings.path_missing", "Папки по этому пути нет.")
+        elif self._problem == PATH_NOT_INSTALLED:
+            # обычно живёт доли секунды: наблюдатель Steam в главном окне
+            # увидит это и очистит путь сам. Видно, если приложение запущено
+            # без главного окна (мастер) или программу удалили только что.
+            text = tr("settings.path_not_installed",
+                      "Программы по этому пути нет — осталась только папка.")
+        else:
+            text = ""
+        self.status.setText(text)
+        self.status.setVisible(bool(text))
+
+    def set_status(self, text: str) -> None:
+        """Статус загрузки Steam — от наблюдателя в главном окне."""
+        self._dl_text = text
+        self._render_status()
 
     def text(self) -> str:
         return self.edit.text().strip()
+
+
+def install_via_steam(parent, appid: str, title: str) -> None:
+    """Диалог установки в Steam — только после явного подтверждения:
+    steam://install сразу начинает качать, отменять придётся уже в Steam.
+
+    Отдельно проговариваем, что путь подставится сам: иначе непонятно, зачем
+    приложение отправило в Steam и что делать после того, как тот докачает.
+    """
+    from qfluentwidgets import MessageBox
+    box = MessageBox(
+        tr("steam.install_title", "Установка через Steam"),
+        tr("steam.install_confirm",
+           "Сейчас откроется Steam и начнётся скачивание «{n}» — он спросит, "
+           "в какую библиотеку качать.\n\n"
+           "Можно спокойно продолжать работу: приложение само отследит загрузку, "
+           "подставит и сохранит путь, когда она завершится.\n\n"
+           "Продолжить?", n=title),
+        parent.window() if parent else None,
+    )
+    box.yesButton.setText(tr("common.yes", "Да"))
+    box.cancelButton.setText(tr("common.no", "Нет"))
+    if box.exec():
+        QDesktopServices.openUrl(QUrl(steam_urls.install(appid)))
+
+
+def make_install_button(parent, settings_key: str):
+    """Кнопка «получить недостающее» для поля пути; None — компонент ставится
+    вручную и подсказать нечем.
+
+    Steam-компоненты ставятся прямо из приложения (с подтверждением — начнётся
+    скачивание), сторонние — открытием страницы загрузки в браузере.
+    """
+    app = steam_urls.SETTINGS_APPS.get(settings_key)
+    if app:
+        appid, title = app
+        btn = ToolButton(FIF.DOWNLOAD)
+        btn.setToolTip(tr("settings.install_via_steam",
+                          "Установить «{n}» через Steam", n=title))
+        btn.clicked.connect(lambda _=False, a=appid, t=title: install_via_steam(parent, a, t))
+        return btn
+
+    ext = EXTERNAL_DOWNLOADS.get(settings_key)
+    if ext:
+        url, title = ext
+        btn = ToolButton(FIF.LINK)
+        btn.setToolTip(tr("settings.open_download_page",
+                          "Открыть страницу загрузки «{n}»", n=title))
+        btn.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+        return btn
+    return None
 
 
 class SettingsPage(QScrollArea):
@@ -57,11 +198,15 @@ class SettingsPage(QScrollArea):
         layout.setSpacing(10)
 
         def section(title: str) -> QFormLayout:
-            heading = StrongBodyLabel(title)
-            layout.addWidget(heading)
+            """Заголовок + обведённая рамкой карточка с полями секции."""
+            layout.addWidget(StrongBodyLabel(title))
+            card = SimpleCardWidget()
+            inner_box = QVBoxLayout(card)
+            inner_box.setContentsMargins(16, 12, 16, 12)
             f = QFormLayout()
             f.setSpacing(8)
-            layout.addLayout(f)
+            inner_box.addLayout(f)
+            layout.addWidget(card)
             layout.addSpacing(6)
             return f
 
@@ -92,27 +237,30 @@ class SettingsPage(QScrollArea):
         self.theme.currentIndexChanged.connect(self._theme_changed)
         form_general.addRow(BodyLabel(tr("settings.theme_label", "Тема оформления")), self.theme)
 
-        # ------------------------------------------------------------ Пути
-        form_paths = section(tr("settings.section_paths", "Пути"))
-        self.p_client = PathRow(settings.client_stable, self)
-        self.p_client_exp = PathRow(settings.client_exp, self)
-        self.p_server = PathRow(settings.server_stable, self)
-        self.p_server_exp = PathRow(settings.server_exp, self)
-        self.p_mikero = PathRow(settings.mikero_tools, self)
-        self.p_tools = PathRow(settings.dayz_tools, self)
-        form_paths.addRow(BodyLabel(tr("settings.client", "Папка игры (DayZ)")), self.p_client)
-        form_paths.addRow(BodyLabel(tr("settings.client_exp", "Папка игры Experimental")), self.p_client_exp)
-        form_paths.addRow(BodyLabel(tr("settings.server", "Папка сервера (DayZServer)")), self.p_server)
-        form_paths.addRow(BodyLabel(tr("settings.server_exp", "Папка сервера Experimental")), self.p_server_exp)
-        form_paths.addRow(BodyLabel(tr("settings.mikero", "Mikero Tools (DePboTools)")), self.p_mikero)
-        form_paths.addRow(BodyLabel(tr("settings.dayz_tools", "DayZ Tools")), self.p_tools)
+        # ------------------------------------------------- Клиент и сервер
+        form_paths = section(tr("settings.section_paths", "Клиент и сервер"))
+        self.p_client = PathRow(settings.client_stable, self, "client_stable")
+        self.p_client_exp = PathRow(settings.client_exp, self, "client_exp")
+        self.p_server = PathRow(settings.server_stable, self, "server_stable")
+        self.p_server_exp = PathRow(settings.server_exp, self, "server_exp")
+        self.p_tools = PathRow(settings.dayz_tools, self, "dayz_tools")
+        self.p_tools_exp = PathRow(settings.dayz_tools_exp, self, "dayz_tools_exp")
+        form_paths.addRow(BodyLabel(tr("settings.client", "DayZ")), self.p_client)
+        form_paths.addRow(BodyLabel(tr("settings.server", "DayZ Server")), self.p_server)
+        form_paths.addRow(BodyLabel(tr("settings.client_exp", "DayZ Experimental")), self.p_client_exp)
+        form_paths.addRow(BodyLabel(tr("settings.server_exp", "DayZ Server Experimental")),
+                          self.p_server_exp)
 
         self.workshop = PlainTextEdit()
         self.workshop.setPlainText("\n".join(settings.workshop_dirs))
         self.workshop.setMaximumHeight(64)
         self.workshop.setToolTip(tr("settings.workshop_tip",
                                     "Папки steamapps/workshop/content/221100 — по одной на строку."))
-        form_paths.addRow(BodyLabel(tr("settings.workshop", "Папки Steam Workshop")), self.workshop)
+        form_paths.addRow(BodyLabel(tr("settings.workshop", "Steam Workshop")), self.workshop)
+
+        form_paths.addRow(BodyLabel(tr("settings.dayz_tools", "DayZ Tools")), self.p_tools)
+        form_paths.addRow(BodyLabel(tr("settings.dayz_tools_exp", "DayZ Tools Experimental")),
+                          self.p_tools_exp)
 
         self.p_downloads = PathRow(settings.downloads_dir, self)
         self.p_downloads.edit.setPlaceholderText(tr("settings.downloads_ph",
@@ -120,7 +268,7 @@ class SettingsPage(QScrollArea):
         self.p_downloads.edit.setToolTip(tr("settings.downloads_tip",
                                             "Общее хранилище скачанных модов карт; во все корни "
                                             "они подключаются junction-ссылками."))
-        form_paths.addRow(BodyLabel(tr("settings.downloads", "Папка загрузок")), self.p_downloads)
+        form_paths.addRow(BodyLabel(tr("settings.downloads", "Папка для загрузок")), self.p_downloads)
 
         # ------------------------------------------------------------ Steam
         form_steam = section(tr("settings.section_steam", "Steam"))
@@ -130,10 +278,27 @@ class SettingsPage(QScrollArea):
         self.admin_ids.setToolTip(tr("settings.admins_tip",
                                      "SteamID64 админов — по одному на строку. Используется модами-админками."))
         form_steam.addRow(BodyLabel(tr("settings.admins", "Админские SteamID")), self.admin_ids)
+        self.b_resolve = PushButton(FIF.SEARCH, tr("settings.admins_resolve",
+                                                   "Добавить по ссылке на профиль…"))
+        self.b_resolve.setToolTip(tr("settings.admins_resolve_tip",
+                                     "Определяет SteamID64 по ссылке вида "
+                                     "steamcommunity.com/id/<имя> или /profiles/<id>."))
+        self.b_resolve.clicked.connect(self._resolve_steamid)
+        form_steam.addRow("", self.b_resolve)
 
         self.admin_pass = PasswordLineEdit()
+        self.admin_pass.setMaxLength(_VPP_PASS_MAXLEN)
+        # только печатные ASCII без пробела и кавычки: пароль уходит в кавычках
+        # в serverDZ.cfg, а кириллицу VPPAdminTools не понимает
+        self.admin_pass.setValidator(QRegularExpressionValidator(
+            QRegularExpression(rf"[!#-~]{{0,{_VPP_PASS_MAXLEN}}}")))
         self.admin_pass.setText(settings.admin_password)
-        form_steam.addRow(BodyLabel(tr("settings.admin_pass", "Пароль модов-админок")), self.admin_pass)
+        self.admin_pass.setToolTip(tr("settings.admin_pass_tip",
+                                      "До 32 символов, латиница/цифры/знаки — без кириллицы и "
+                                      "пробелов. Пустое поле — вход в админку без пароля "
+                                      "(vppDisablePassword = 1 в serverDZ.cfg)."))
+        form_steam.addRow(BodyLabel(tr("settings.admin_pass", "Пароль VPPA (необязательно)")),
+                          self.admin_pass)
 
         steam_row = QHBoxLayout()
         self.steam_key = PasswordLineEdit()
@@ -143,14 +308,15 @@ class SettingsPage(QScrollArea):
             QUrl("https://steamcommunity.com/dev/apikey")))
         steam_row.addWidget(self.steam_key, 1)
         steam_row.addWidget(btn_get_key)
-        form_steam.addRow(BodyLabel(tr("settings.steam_key", "Steam API-ключ")), steam_row)
+        form_steam.addRow(BodyLabel(tr("settings.steam_key",
+                                       "Steam API-ключ (необязательно)")), steam_row)
         steam_hint = CaptionLabel(tr(
             "settings.steam_key_hint",
-            "Нужен для определения зависимостей стим-модов через официальный API. "
-            "Как получить: нажмите «Получить», войдите в Steam, в поле «Domain Name» "
-            "впишите что угодно (например, localhost), согласитесь с условиями и "
-            "скопируйте ключ сюда. Без ключа зависимости читаются со страницы "
-            "воркшопа — работает, но менее надёжно."))
+            "Не обязателен: зависимости модов и SteamID по ссылке определяются и без него — "
+            "чтением страниц Steam. Ключ делает это быстрее и надёжнее (страницы Valve может "
+            "в любой момент переверстать, а контракт API стабилен). Как получить: нажмите "
+            "«Получить», войдите в Steam, в поле «Domain Name» впишите что угодно "
+            "(например, localhost), согласитесь с условиями и скопируйте ключ сюда."))
         steam_hint.setWordWrap(True)
         form_steam.addRow("", steam_hint)
 
@@ -158,9 +324,35 @@ class SettingsPage(QScrollArea):
         form_pack = section(tr("settings.section_pack", "Запаковка модов"))
         self._pack_flags = settings.pack_flags
         self._clean_meta = settings.clean_meta
+
+        # Mikero Tools — первым: это движок «полной» запаковки, всё ниже зависит от него
+        self.p_mikero = PathRow(settings.mikero_tools, self, "mikero_tools")
+        form_pack.addRow(BodyLabel(tr("settings.mikero", "Mikero Tools (DePboTools)")), self.p_mikero)
+        mikero_hint = CaptionLabel(tr("settings.mikero_hint",
+                                      "pboProject входит в состав Mikero Tools и требует "
+                                      "установленных DayZ Tools — без них бинаризация не работает."))
+        mikero_hint.setWordWrap(True)
+        form_pack.addRow("", mikero_hint)
+
         self.b_pbo_settings = PushButton(FIF.SETTING, tr("settings.pbo_settings", "Настройки PboProject"))
         self.b_pbo_settings.clicked.connect(self._open_pbo_settings)
         form_pack.addRow(BodyLabel(tr("settings.pbo_settings_label", "Запаковка PBO")), self.b_pbo_settings)
+
+        packer_row = QHBoxLayout()
+        self.b_get_packer = PushButton(FIF.DOWNLOAD, tr("settings.get_kr_packer",
+                                                        "Скачать [KR] PBO Packer"))
+        self.b_get_packer.clicked.connect(self._download_kr_packer)
+        self.b_packer_help = TransparentToolButton(FIF.HELP)
+        self.b_packer_help.setToolTip(tr("settings.kr_packer_what", "Что это?"))
+        self.b_packer_help.clicked.connect(self._show_packer_help)
+        packer_row.addWidget(self.b_get_packer)
+        packer_row.addWidget(self.b_packer_help)
+        packer_row.addStretch(1)
+        form_pack.addRow(BodyLabel(tr("settings.kr_packer_label", "[KR] PBO Packer")),
+                         packer_row)
+        self.packer_status = CaptionLabel("")
+        self.packer_status.setWordWrap(True)
+        form_pack.addRow("", self.packer_status)
 
         self.pack_engine = ComboBox()
         self.pack_engine.addItem(tr("settings.engine_full", "Полная, с проверками (pboProject)"),
@@ -173,8 +365,45 @@ class SettingsPage(QScrollArea):
                                        "подписывает pbo — только для локальной отладки."))
         form_pack.addRow(BodyLabel(tr("settings.engine_label", "Способ запаковки модов")), self.pack_engine)
 
+        # «полная» запаковка зависит и от pboProject, и от DayZ Tools
         self.p_mikero.edit.textChanged.connect(self._update_pbo_button_state)
+        self.p_tools.edit.textChanged.connect(self._update_pbo_button_state)
         self._update_pbo_button_state()
+        self._update_packer_status()
+
+        # ---------------------------------------------------- Filepatching
+        form_fp = section(tr("settings.section_filepatch", "Filepatching"))
+        fp_row = QHBoxLayout()
+        self.b_fp_add = PushButton(FIF.LINK, tr("filepatch.add", "Создать симлинк"))
+        self.b_fp_add.clicked.connect(self._filepatch_add)
+        self.b_fp_help = TransparentToolButton(FIF.HELP)
+        self.b_fp_help.setToolTip(tr("filepatch.help_tip", "Для чего это нужно"))
+        self.b_fp_help.clicked.connect(self._show_filepatch_help)
+        fp_row.addWidget(self.b_fp_add)
+        fp_row.addWidget(self.b_fp_help)
+        fp_row.addStretch(1)
+        form_fp.addRow("", fp_row)
+
+        fp_row2 = QHBoxLayout()
+        self.b_fp_sync = PushButton(FIF.SYNC, tr("filepatch.sync", "Актуализировать Simlink"))
+        self.b_fp_sync.setToolTip(tr("filepatch.sync_tip",
+                                     "Досоздаёт недостающие ссылки во всех корнях и убирает те, "
+                                     "чья папка на диске P: пропала."))
+        self.b_fp_sync.clicked.connect(self._filepatch_sync)
+        self.b_fp_clear = PushButton(FIF.DELETE, tr("filepatch.clear", "Удалить все Simlink"))
+        self.b_fp_clear.setToolTip(tr("filepatch.clear_tip",
+                                      "Снимает только ссылки, созданные этой кнопкой. "
+                                      "Моды и прочее содержимое каталогов не трогает."))
+        self.b_fp_clear.clicked.connect(self._filepatch_clear)
+        fp_row2.addWidget(self.b_fp_sync)
+        fp_row2.addWidget(self.b_fp_clear)
+        fp_row2.addStretch(1)
+        form_fp.addRow("", fp_row2)
+
+        self.fp_status = CaptionLabel("")
+        self.fp_status.setWordWrap(True)
+        form_fp.addRow("", self.fp_status)
+        self._update_filepatch_status()
 
         btns = QHBoxLayout()
         btn_detect = PushButton(FIF.SEARCH, tr("settings.autodetect",
@@ -191,6 +420,77 @@ class SettingsPage(QScrollArea):
         layout.addWidget(self.note)
         layout.addStretch(1)
 
+        # Слежением за загрузками Steam владеет главное окно: качать можно
+        # несколько компонентов сразу и уйти с этой страницы, а уведомление и
+        # запись пути должны прийти всё равно. Здесь только отображение.
+        self._path_rows = {
+            "client_stable": self.p_client, "client_exp": self.p_client_exp,
+            "server_stable": self.p_server, "server_exp": self.p_server_exp,
+            "dayz_tools": self.p_tools, "dayz_tools_exp": self.p_tools_exp,
+        }
+
+    # ------------------------------------------------------- загрузки Steam
+
+    def set_path_status(self, key: str, text: str) -> None:
+        """Подпись под полем пути («Скачивание началось» либо пусто).
+
+        Заодно перепроверяем сам путь: сигнал приходит и когда компонент
+        удалили из Steam — тогда поле должно подсветиться, а кнопка установки
+        вернуться.
+        """
+        row = self._path_rows.get(key)
+        if row is not None:
+            row.set_status(text)
+            row.refresh_validity()
+
+    def set_path_value(self, key: str, path: str, force: bool = False) -> None:
+        """Подставляет путь, если поле пустое. Заполненное не трогаем — там мог
+        быть ручной путь; force перезаписывает (компонент удалён — чистим поле).
+
+        Нужно даже когда страница не открыта: иначе следующее нажатие
+        «Сохранить» перезаписало бы значение тем, что осталось в виджете.
+        """
+        row = self._path_rows.get(key)
+        if row is None or (not path and not force):
+            return
+        row.set_status("")
+        if force or not row.text():
+            row.edit.setText(path)
+
+    def _resolve_steamid(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        value, ok = QInputDialog.getText(
+            self, tr("settings.admins_resolve", "Добавить по ссылке на профиль…"),
+            tr("settings.admins_resolve_prompt",
+               "Ссылка на профиль Steam (или ник из ссылки /id/):"))
+        if not ok or not value.strip():
+            return
+        self.b_resolve.setEnabled(False)
+        self._resolve_worker = _ResolveSteamIdWorker(value, self.steam_key.text().strip(), self)
+        self._resolve_worker.done.connect(self._steamid_resolved)
+        self._resolve_worker.start()
+
+    def _steamid_resolved(self, sid: str, source: str) -> None:
+        self.b_resolve.setEnabled(True)
+        if not sid:
+            InfoBar.error(title=tr("settings.admins_resolve_failed",
+                                   "Не удалось определить SteamID"),
+                          content=source, parent=self, duration=6000,
+                          position=InfoBarPosition.TOP_RIGHT)
+            return
+        lines = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
+        if sid in lines:
+            InfoBar.info(title=tr("settings.admins_resolve_dup", "{id} уже в списке", id=sid),
+                         content="", parent=self, duration=4000,
+                         position=InfoBarPosition.TOP_RIGHT)
+            return
+        lines.append(sid)
+        self.admin_ids.setPlainText("\n".join(lines))
+        InfoBar.success(title=tr("settings.admins_resolve_ok", "Добавлен {id}", id=sid),
+                        content=tr("settings.admins_resolve_save",
+                                   "Не забудьте нажать «Сохранить»."),
+                        parent=self, duration=5000, position=InfoBarPosition.TOP_RIGHT)
+
     def _theme_changed(self, _idx: int) -> None:
         code = self.theme.currentData()
         setTheme({"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
@@ -204,6 +504,7 @@ class SettingsPage(QScrollArea):
             (self.p_client, det["client_stable"]), (self.p_client_exp, det["client_exp"]),
             (self.p_server, det["server_stable"]), (self.p_server_exp, det["server_exp"]),
             (self.p_mikero, det["mikero_tools"]), (self.p_tools, det["dayz_tools"]),
+            (self.p_tools_exp, det["dayz_tools_exp"]),
         ]
         filled = 0
         for row, val in pairs:
@@ -216,25 +517,149 @@ class SettingsPage(QScrollArea):
         self.note.setText(tr("settings.detected", "Заполнено полей: {n}", n=filled))
 
     def _update_pbo_button_state(self) -> None:
-        found = Path(find_pbo_project_exe(self.p_mikero.text())).is_file()
-        self.b_pbo_settings.setEnabled(found)
+        """Полная запаковка требует и pboProject, и DayZ Tools: pboProject зовёт
+        бинаризатор/конвертеры из DayZ Tools, без них она падает на бинаризации."""
+        pbo_ok = Path(find_pbo_project_exe(self.p_mikero.text())).is_file()
+        tools_ok = bool(self.p_tools.text()) and Path(self.p_tools.text()).is_dir()
+        full_ok = pbo_ok and tools_ok
+
+        self.b_pbo_settings.setEnabled(pbo_ok)
         self.b_pbo_settings.setToolTip(
             tr("settings.pbo_settings_tip",
               "Флаги командной строки pboProject: подпись, сжатие, "
               "обработка файлов и т.д. — с пояснениями по каждому.")
-            if found else
+            if pbo_ok else
             tr("settings.pbo_settings_missing",
               "pboProject не найден по указанному пути Mikero Tools — "
               "укажите правильный путь, чтобы открыть эти настройки."))
 
-        self.pack_engine.setItemEnabled(0, found)
-        if not found and self.pack_engine.currentData() == "full":
+        if not pbo_ok:
+            label = tr("settings.engine_full_missing",
+                       "Полная, с проверками (pboProject) — недоступно, pboProject не найден")
+        elif not tools_ok:
+            label = tr("settings.engine_full_no_tools",
+                       "Полная, с проверками (pboProject) — недоступно, не найдены DayZ Tools")
+        else:
+            label = tr("settings.engine_full", "Полная, с проверками (pboProject)")
+        self.pack_engine.setItemEnabled(0, full_ok)
+        if not full_ok and self.pack_engine.currentData() == "full":
             self.pack_engine.setCurrentIndex(1)
-        self.pack_engine.setItemText(
-            0,
-            tr("settings.engine_full", "Полная, с проверками (pboProject)") if found else
-            tr("settings.engine_full_missing",
-              "Полная, с проверками (pboProject) — недоступно, pboProject не найден"))
+        self.pack_engine.setItemText(0, label)
+
+    def _update_packer_status(self) -> None:
+        exe = Path(self.settings.pbo_packer_exe())
+        if exe.is_file():
+            self.packer_status.setText(tr("settings.kr_packer_present",
+                                          "Установлен: {p}", p=exe))
+        else:
+            self.packer_status.setText(tr("settings.kr_packer_missing",
+                                          "Не установлен — «Быстрая» запаковка будет недоступна."))
+
+    # ------------------------------------------------------- filepatching
+
+    def _show_filepatch_help(self) -> None:
+        TeachingTip.create(
+            target=self.b_fp_help,
+            icon=FIF.HELP,
+            title=tr("settings.section_filepatch", "Filepatching"),
+            content=tr("filepatch.help",
+                       "Симлинк нужен для корректной работы filepatching. Filepatching "
+                       "позволяет подтягивать скрипты без перепаковки PBO — достаточно "
+                       "перезапустить клиент и сервер.\n\n"
+                       "Для подключения укажите папку скриптов вашего мода на диске P:. "
+                       "Дальше ссылки создадутся автоматически везде, где это требуется — "
+                       "в клиенте и сервере, stable и Experimental."),
+            isClosable=True,
+            tailPosition=TeachingTipTailPosition.BOTTOM,
+            duration=-1,
+            parent=self,
+        )
+
+    def _update_filepatch_status(self) -> None:
+        lines = filepatch.status_lines(self.settings)
+        self.fp_status.setText("\n".join(lines) if lines else
+                               tr("filepatch.none", "Симлинки не подключены."))
+
+    def _filepatch_report(self, rep, title: str) -> None:
+        """Показывает итог операции. Ошибки важнее — их показываем отдельно."""
+        parts = []
+        if rep.created:
+            parts.append(tr("filepatch.n_created", "создано: {n}", n=len(rep.created)))
+        if rep.removed:
+            parts.append(tr("filepatch.n_removed", "удалено: {n}", n=len(rep.removed)))
+        if rep.kept:
+            parts.append(tr("filepatch.n_kept", "уже было: {n}", n=len(rep.kept)))
+        if rep.stale:
+            parts.append(tr("filepatch.n_stale", "пропавших папок: {n}", n=len(rep.stale)))
+        body = ", ".join(parts)
+
+        if rep.failed:
+            InfoBar.warning(title=title,
+                            content=(body + "\n" if body else "") + "\n".join(rep.failed),
+                            parent=self, duration=12000,
+                            position=InfoBarPosition.TOP_RIGHT)
+        else:
+            InfoBar.success(title=title, content=body or tr("filepatch.nothing", "Изменений нет."),
+                            parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
+        self._update_filepatch_status()
+
+    def _filepatch_add(self) -> None:
+        # стартуем прямо с P: — оттуда всё равно только и можно выбирать
+        start = "P:\\" if Path("P:\\").is_dir() else ""
+        path = QFileDialog.getExistingDirectory(
+            self, tr("filepatch.pick", "Папка скриптов мода на диске P:"), start)
+        if not path:
+            return
+        rep, err = filepatch.add(self.settings, path)
+        if err:
+            InfoBar.error(title=tr("filepatch.add", "Создать симлинк"), content=err,
+                          parent=self, duration=10000, position=InfoBarPosition.TOP_RIGHT)
+            return
+        self._filepatch_report(rep, tr("filepatch.added", "Симлинк подключён"))
+
+    def _filepatch_sync(self) -> None:
+        self._filepatch_report(filepatch.sync(self.settings),
+                               tr("filepatch.synced", "Симлинки актуализированы"))
+
+    def _filepatch_clear(self) -> None:
+        if not self.settings.filepatch_links:
+            InfoBar.info(title=tr("filepatch.none", "Симлинки не подключены."), content="",
+                         parent=self, duration=4000, position=InfoBarPosition.TOP_RIGHT)
+            return
+        from qfluentwidgets import MessageBox
+        box = MessageBox(
+            tr("filepatch.clear", "Удалить все Simlink"),
+            tr("filepatch.clear_confirm",
+               "Снять все ссылки filepatching во всех корнях?\n\n"
+               "Сами папки со скриптами на диске P: останутся нетронутыми — "
+               "удаляются только ссылки на них."),
+            self.window())
+        box.yesButton.setText(tr("common.yes", "Да"))
+        box.cancelButton.setText(tr("common.no", "Нет"))
+        if not box.exec():
+            return
+        self._filepatch_report(filepatch.remove_all(self.settings),
+                               tr("filepatch.cleared", "Симлинки удалены"))
+
+    def _show_packer_help(self) -> None:
+        TeachingTip.create(
+            target=self.b_packer_help,
+            icon=FIF.HELP,
+            title=tr("settings.kr_packer_label", "[KR] PBO Packer"),
+            content=tr("settings.kr_packer_help",
+                       "Тулза для быстрой запаковки PBO. Её задача — только паковать: "
+                       "мод на ошибки она не проверяет. Если не уверены в работоспособности "
+                       "своего мода, лучше использовать pboProject."),
+            isClosable=True,
+            tailPosition=TeachingTipTailPosition.LEFT,
+            duration=-1,   # закрывается только крестиком, а не по таймеру
+            parent=self,
+        )
+
+    def _download_kr_packer(self) -> None:
+        from ui.packer_download import download_kr_packer
+        if download_kr_packer(self, self.settings):
+            self._update_packer_status()
 
     def _open_pbo_settings(self) -> None:
         dlg = PboProjectDialog(self._pack_flags, self._clean_meta, self)
@@ -252,6 +677,7 @@ class SettingsPage(QScrollArea):
         s.server_exp = self.p_server_exp.text()
         s.mikero_tools = self.p_mikero.text()
         s.dayz_tools = self.p_tools.text()
+        s.dayz_tools_exp = self.p_tools_exp.text()
         s.workshop_dirs = [x.strip() for x in self.workshop.toPlainText().splitlines() if x.strip()]
         # local_mods_dirs больше не редактируется на этой странице — управляется
         # с вкладки «Моды» (кнопка «Добавить локальные моды»), не перезаписываем

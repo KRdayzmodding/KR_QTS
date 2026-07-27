@@ -14,19 +14,24 @@ from qfluentwidgets import (
     BodyLabel, StrongBodyLabel, CardWidget, InfoBar, InfoBarPosition, MessageBox,
 )
 
-from core import logsource
+from core import filepatch, logsource
 from core.i18n import tr
 from core.launcher import LaunchWorker, kill_all
 from core.mods import ModRegistry
 from core.preflight import run_checks
 from core.presets import ServerPreset
-from core.settings import Settings, STABLE, EXPERIMENTAL, find_pbo_project_exe
+from core.settings import (
+    Settings, STABLE, EXPERIMENTAL, CLIENT_EXE, SERVER_EXE, PATH_NOT_INSTALLED,
+    check_path, find_pbo_project_exe, is_install,
+)
+from core.steam_urls import SETTINGS_APPS
 from ui.cfg_editor import CfgEditor
 from ui.log_window import LogWindow
 from ui.mods_panel import ModsPanel
 from ui.preflight_dialog import PreflightDialog
 from ui.preset_editor import AdvancedPresetDialog, LazyPresetWizard
 from ui.settings_page import SettingsPage
+from ui.steam_watch import SteamWatcher, status_text
 
 _STATUS_COLORS = {"info": "#d4d4d4", "warning": "#e5c07b", "error": "#ff6b6b"}
 _CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
@@ -87,17 +92,17 @@ class LaunchInterface(QWidget):
         cl.addLayout(row)
 
         row_pack = QHBoxLayout()
-        self.chk_repack = CheckBox(tr("main.repack_before_launch",
-                                      "Перепаковывать изменённые моды перед запуском"))
-        row_pack.addWidget(self.chk_repack)
-        row_pack.addStretch(1)
-        row_pack.addWidget(BodyLabel(tr("main.pack_engine", "Запаковка:")))
+        row_pack.addWidget(BodyLabel(tr("main.pack_engine",
+                                        "Перепаковка изменённых модов перед запуском:")))
+        # три состояния одним списком: выключено + два движка (галка «перепаковывать»
+        # и выбор движка — по сути одна настройка с точки зрения пользователя)
         self.pack_engine = ComboBox()
+        self.pack_engine.addItem(tr("main.repack_off", "Не перепаковывать"), userData="")
         self.pack_engine.addItem(tr("settings.engine_full", "Полная, с проверками (pboProject)"),
                                  userData="full")
         self.pack_engine.addItem(tr("settings.engine_fast", "Быстрая, без проверок (pbo_packer)"),
                                  userData="fast")
-        row_pack.addWidget(self.pack_engine)
+        row_pack.addWidget(self.pack_engine, 1)
         cl.addLayout(row_pack)
 
         row2 = QHBoxLayout()
@@ -177,9 +182,9 @@ class MainWindow(FluentWindow):
         lp.btn_stop.clicked.connect(self._stop_all)
         lp.btn_logs.clicked.connect(self._show_logs)
 
-        lp.chk_repack.setChecked(settings.repack_before_launch)
-        lp.chk_repack.toggled.connect(self._repack_setting_changed)
-        lp.pack_engine.setCurrentIndex(1 if settings.pack_engine == "fast" else 0)
+        current_engine = settings.pack_engine if settings.repack_before_launch else ""
+        idx = lp.pack_engine.findData(current_engine)
+        lp.pack_engine.setCurrentIndex(idx if idx >= 0 else 0)
         lp.pack_engine.currentIndexChanged.connect(self._pack_engine_changed)
         self._update_branch_availability()
 
@@ -189,6 +194,78 @@ class MainWindow(FluentWindow):
         self.status_timer.setInterval(1000)
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start()
+
+        # Загрузки Steam отслеживает главное окно, а не страница настроек:
+        # компонентов можно поставить на скачивание сразу несколько и уйти
+        # изучать приложение — уведомление и запись пути должны прийти в любом
+        # случае, независимо от того, какая страница сейчас открыта.
+        self.steam_watcher = SteamWatcher(self)
+        self.steam_watcher.watch_apps(SETTINGS_APPS)
+        self.steam_watcher.app_changed.connect(self._steam_app_changed)
+        self.steam_watcher.app_installed.connect(self._steam_app_installed)
+        self.steam_watcher.start()
+
+    # ----------------------------------------------------- загрузки Steam
+
+    def _steam_app_changed(self, key: str, st) -> None:
+        self.settings_page.set_path_status(key, status_text(st))
+        self._drop_if_removed(key, st)
+
+    def _drop_if_removed(self, key: str, st) -> None:
+        """Компонент удалили — стираем путь, он больше ни на что не годится.
+
+        Стираем только когда папка доступна, а программы в ней нет: это факт, а
+        не подозрение. Случай «папки нет вовсе» так не обрабатывается — точно так
+        же выглядит отключённый внешний или сетевой диск, и терять настройку
+        из-за этого нельзя (там остаётся предупреждение в поле).
+        """
+        value = getattr(self.settings, key, "")
+        if not value or check_path(key, value) != PATH_NOT_INSTALLED:
+            return
+        if st is not None and st.downloading:
+            return      # идёт установка или обновление — exe вот-вот появится
+
+        # Сначала снимаем свои симлинки: пока путь записан, папка видна
+        # filepatch как «остаток установки». После очистки настройки добраться
+        # до неё будет уже нечем, и ссылки остались бы там навсегда.
+        filepatch.sync(self.settings)
+
+        setattr(self.settings, key, "")
+        self.settings.save()
+        self.settings_page.set_path_value(key, "", force=True)
+        self._update_branch_availability()
+        title = SETTINGS_APPS.get(key, ("", key))[1]
+        self._notify("warning", tr("steam.removed", "«{n}» удалён", n=title),
+                     tr("steam.removed_body",
+                        "Путь очищен — программы по нему больше нет."),
+                     duration=10000)
+
+    def _steam_app_installed(self, key: str, path: str) -> None:
+        """Компонент докачался: подставляем путь и сразу сохраняем настройки.
+
+        Сохраняем сами, чтобы пользователю не приходилось возвращаться в
+        настройки и жать «Сохранить» — он мог уйти оттуда сразу после запуска
+        скачивания. Уже заданный путь не трогаем: он мог быть указан вручную.
+        """
+        if not path:
+            return
+        self.settings_page.set_path_status(key, "")
+        title = SETTINGS_APPS.get(key, ("", key))[1]
+
+        if getattr(self.settings, key, ""):
+            self._notify("info", tr("steam.dl_done", "«{n}» установлен", n=title))
+            return
+
+        setattr(self.settings, key, path)
+        self.settings.save()
+        # поле на странице настроек тоже обновляем — иначе следующее нажатие
+        # «Сохранить» затёрло бы записанный путь пустым полем
+        self.settings_page.set_path_value(key, path)
+        self._update_branch_availability()
+        # держим дольше обычного: пользователь в этот момент занят другим
+        self._notify("success", tr("steam.dl_done", "«{n}» установлен", n=title),
+                     tr("steam.dl_path_saved", "Путь найден и сохранён автоматически."),
+                     duration=10000)
 
     # ------------------------------------------------------------------ пресеты
 
@@ -278,12 +355,13 @@ class MainWindow(FluentWindow):
             self.current.launch_client = self.launch_page.chk_client.isChecked()
             self.current.save()
 
-    def _repack_setting_changed(self, checked: bool) -> None:
-        self.settings.repack_before_launch = checked
-        self.settings.save()
-
     def _pack_engine_changed(self, _idx: int) -> None:
-        self.settings.pack_engine = self.launch_page.pack_engine.currentData()
+        """Пустой userData — «не перепаковывать»; движок при этом не сбрасываем:
+        он всё ещё нужен кнопке «Ребилд» на вкладке модов."""
+        engine = self.launch_page.pack_engine.currentData()
+        self.settings.repack_before_launch = bool(engine)
+        if engine:
+            self.settings.pack_engine = engine
         self.settings.save()
 
     def _new_preset(self) -> None:
@@ -354,10 +432,10 @@ class MainWindow(FluentWindow):
         self.launch_page.launch_log.appendHtml(
             f'<span style="color:{color};">{html.escape(msg)}</span>')
 
-    def _notify(self, kind: str, title: str, text: str = "") -> None:
+    def _notify(self, kind: str, title: str, text: str = "", duration: int = 4000) -> None:
         fn = {"success": InfoBar.success, "warning": InfoBar.warning,
               "error": InfoBar.error}.get(kind, InfoBar.info)
-        fn(title=title, content=text, parent=self, duration=4000,
+        fn(title=title, content=text, parent=self, duration=duration,
            position=InfoBarPosition.TOP_RIGHT)
 
     def _launch(self) -> None:
@@ -472,34 +550,63 @@ class MainWindow(FluentWindow):
     # ------------------------------------------------------------------ прочее
 
     def _settings_saved(self) -> None:
+        # Перепроверяем пути после сохранения: наблюдатель Steam ловит только
+        # смену состояния самого Steam, а путь мог вернуться в настройки и
+        # помимо него — например, пользователь сохранил страницу со старым
+        # значением в поле. Без этого удалённый компонент остался бы записан.
+        self._drop_removed_paths()
         self.registry = ModRegistry(self.settings)
         self.registry.scan()
         self._bind_preset()
         self._update_branch_availability()
         self._notify("success", tr("settings.saved", "Настройки сохранены."))
 
+    def _drop_removed_paths(self) -> None:
+        """Проверяет все отслеживаемые компоненты разом."""
+        states = self.steam_watcher.states()
+        for key in SETTINGS_APPS:
+            self._drop_if_removed(key, states.get(key))
+
     def _update_branch_availability(self) -> None:
         """Experimental-ветка доступна в списке, только если хотя бы одна из
         её папок (клиент/сервер) реально указана и существует."""
         s = self.settings
-        exp_ok = (bool(s.client_exp) and Path(s.client_exp).is_dir()) or \
-            (bool(s.server_exp) and Path(s.server_exp).is_dir())
+        # именно is_install, а не «папка существует»: после удаления игры из
+        # Steam каталог часто остаётся (наши симлинки, serverDZ.cfg и прочее),
+        # и ветка выглядела бы доступной, хотя запускать уже нечего
+        exp_ok = is_install(s.client_exp, CLIENT_EXE) or is_install(s.server_exp, SERVER_EXE)
         combo = self.launch_page.branch_combo
         combo.setItemEnabled(1, exp_ok)
         if not exp_ok and combo.currentIndex() == 1:
             combo.setCurrentIndex(0)
 
-        # «Полная» запаковка доступна, только если pboProject реально найден
-        pbo_ok = Path(find_pbo_project_exe(s.mikero_tools)).is_file()
+        # «Полная» запаковка требует и pboProject, и DayZ Tools (pboProject зовёт
+        # оттуда бинаризатор); «Быстрая» — наличия скачанного [KR] PBO Packer.
+        # (индекс 0 — «Не перепаковывать», 1 — полная, 2 — быстрая)
         engine = self.launch_page.pack_engine
-        engine.setItemEnabled(0, pbo_ok)
-        if not pbo_ok and engine.currentIndex() == 0:
-            engine.setCurrentIndex(1)
-        engine.setItemText(
-            0,
-            tr("settings.engine_full", "Полная, с проверками (pboProject)") if pbo_ok else
-            tr("settings.engine_full_missing",
-              "Полная, с проверками (pboProject) — недоступно, pboProject не найден"))
+        pbo_ok = Path(find_pbo_project_exe(s.mikero_tools)).is_file()
+        tools_ok = bool(s.dayz_tools) and Path(s.dayz_tools).is_dir()
+        if not pbo_ok:
+            full_label = tr("settings.engine_full_missing",
+                            "Полная, с проверками (pboProject) — недоступно, pboProject не найден")
+        elif not tools_ok:
+            full_label = tr("settings.engine_full_no_tools",
+                            "Полная, с проверками (pboProject) — недоступно, не найдены DayZ Tools")
+        else:
+            full_label = tr("settings.engine_full", "Полная, с проверками (pboProject)")
+
+        fast_ok = Path(s.pbo_packer_exe()).is_file()
+        fast_label = (tr("settings.engine_fast", "Быстрая, без проверок (pbo_packer)") if fast_ok
+                      else tr("settings.engine_fast_missing",
+                              "Быстрая, без проверок — недоступно, [KR] PBO Packer не скачан"))
+
+        for data, ok, label in (("full", pbo_ok and tools_ok, full_label),
+                                ("fast", fast_ok, fast_label)):
+            idx = engine.findData(data)
+            engine.setItemEnabled(idx, ok)
+            engine.setItemText(idx, label)
+            if not ok and engine.currentIndex() == idx:
+                engine.setCurrentIndex(0)   # «Не перепаковывать»
 
     def _about(self) -> None:
         import re
