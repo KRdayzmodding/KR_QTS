@@ -1,7 +1,7 @@
-"""Зависимости воркшоп-модов (Required Items).
+"""Обращения к Steam: зависимости воркшоп-модов, коллекции, SteamID профилей.
 
-С ключом Steam Web API — официальный IPublishedFileService/GetDetails
-(includechildren); без ключа — разбор секции RequiredItems страницы воркшопа.
+Везде один принцип: с ключом Steam Web API — официальный эндпоинт, без ключа —
+публичный (xml/страница воркшопа), чтобы приложение работало и без настройки ключа.
 """
 from __future__ import annotations
 
@@ -17,6 +17,82 @@ def _get(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(url, headers=_UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", errors="replace")
+
+
+_STEAMID64_RE = re.compile(r"^\d{17}$")
+_PROFILE_URL_RE = re.compile(r"steamcommunity\.com/profiles/(\d{17})", re.IGNORECASE)
+_VANITY_URL_RE = re.compile(r"steamcommunity\.com/id/([^/?#\s]+)", re.IGNORECASE)
+
+
+def parse_steamid_input(value: str) -> tuple[str, str]:
+    """Разбирает ввод пользователя: («id», SteamID64) либо («vanity», имя).
+
+    Понимает готовый SteamID64, ссылку /profiles/<id>, ссылку /id/<имя>
+    и голое vanity-имя. ("", "") — распознать не удалось.
+    """
+    value = value.strip()
+    if not value:
+        return "", ""
+    if _STEAMID64_RE.match(value):
+        return "id", value
+    m = _PROFILE_URL_RE.search(value)
+    if m:
+        return "id", m.group(1)
+    m = _VANITY_URL_RE.search(value)
+    if m:
+        return "vanity", m.group(1)
+    # голое имя без ссылки — считаем vanity, если это не мусор с разделителями
+    if "/" not in value and " " not in value:
+        return "vanity", value
+    return "", ""
+
+
+def _vanity_via_api(vanity: str, api_key: str) -> str:
+    """ISteamUser/ResolveVanityURL — официально, но нужен ключ."""
+    params = urllib.parse.urlencode({"key": api_key, "vanityurl": vanity})
+    data = json.loads(_get(
+        f"https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?{params}"))
+    resp = data.get("response", {})
+    return str(resp.get("steamid", "")) if resp.get("success") == 1 else ""
+
+
+def _vanity_via_xml(vanity: str) -> str:
+    """?xml=1 у страницы профиля — публично, ключ не нужен."""
+    xml = _get(f"https://steamcommunity.com/id/{urllib.parse.quote(vanity)}/?xml=1")
+    m = re.search(r"<steamID64>(\d{17})</steamID64>", xml)
+    return m.group(1) if m else ""
+
+
+def _vanity_via_page(vanity: str) -> str:
+    """Запасной вариант: steamid в g_rgProfileData на странице профиля."""
+    html = _get(f"https://steamcommunity.com/id/{urllib.parse.quote(vanity)}/")
+    m = re.search(r'"steamid"\s*:\s*"(\d{17})"', html)
+    return m.group(1) if m else ""
+
+
+def resolve_steamid(value: str, api_key: str = "") -> str:
+    """SteamID64 по ссылке на профиль / vanity-имени / готовому ID.
+
+    Пустая строка — не удалось (нет такого профиля, сеть недоступна и т.п.).
+    """
+    kind, payload = parse_steamid_input(value)
+    if kind == "id":
+        return payload
+    if kind != "vanity":
+        return ""
+    if api_key:
+        try:
+            if sid := _vanity_via_api(payload, api_key):
+                return sid
+        except Exception:  # noqa: BLE001 — неверный ключ/сеть: падаем на публичные способы
+            pass
+    for fallback in (_vanity_via_xml, _vanity_via_page):
+        try:
+            if sid := fallback(payload):
+                return sid
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
 
 
 def get_time_updated(workshop_id: str) -> int:

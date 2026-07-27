@@ -19,6 +19,53 @@ STABLE = "stable"
 EXPERIMENTAL = "experimental"
 
 
+CLIENT_EXE = "DayZ_x64.exe"
+SERVER_EXE = "DayZServer_x64.exe"
+
+# поле настроек -> исполняемый файл, по которому опознаётся установка
+ROOT_EXES: dict[str, str] = {
+    "client_stable": CLIENT_EXE,
+    "client_exp": CLIENT_EXE,
+    "server_stable": SERVER_EXE,
+    "server_exp": SERVER_EXE,
+}
+
+# результаты check_path
+PATH_OK = ""
+PATH_MISSING = "missing"              # папки по пути нет
+PATH_NOT_INSTALLED = "not_installed"  # папка есть, но программы в ней нет
+
+
+def is_install(path: str, exe: str) -> bool:
+    """Является ли папка установкой игры/сервера.
+
+    Проверяется исполняемый файл, а не просто существование папки: после
+    удаления игры из Steam каталог часто остаётся — Steam не удаляет его, если
+    внутри есть чужое содержимое (наши симлинки filepatching, serverDZ.cfg,
+    ban.txt, mpmissions). Такой остаток установкой не является.
+    """
+    return bool(path) and (Path(path) / exe).is_file()
+
+
+def check_path(key: str, value: str) -> str:
+    """Проверка пути из настроек: PATH_OK / PATH_MISSING / PATH_NOT_INSTALLED.
+
+    Пустое поле ошибкой не считается — компонент просто не установлен, это
+    нормальное состояние. Путь автоматически не стирается: папка может быть
+    временно недоступна (внешний диск, сеть), и терять из-за этого настройку
+    нельзя — пользователю показывается предупреждение.
+    """
+    if not value:
+        return PATH_OK
+    p = Path(value)
+    if not p.is_dir():
+        return PATH_MISSING
+    exe = ROOT_EXES.get(key)
+    if exe and not (p / exe).is_file():
+        return PATH_NOT_INSTALLED
+    return PATH_OK
+
+
 def find_pbo_project_exe(mikero_tools: str) -> str:
     """Путь к pboProject.exe по настройке mikero_tools (папка или сам .exe).
 
@@ -50,6 +97,7 @@ class Settings:
     # Инструменты
     mikero_tools: str = ""      # папка Mikero (внутри bin/pboProject.exe) или прямой путь к exe
     dayz_tools: str = ""        # папка DayZ Tools
+    dayz_tools_exp: str = ""    # папка DayZ Experimental Tools
 
     # Steam Workshop: папки content/221100 (может быть несколько библиотек)
     workshop_dirs: list[str] = field(default_factory=list)
@@ -69,6 +117,11 @@ class Settings:
 
     # Папки с локальными модами (@папки собственных сборок)
     local_mods_dirs: list[str] = field(default_factory=list)
+
+    # Папки скриптов на диске P:, подключённые ссылками для filepatching
+    # (см. core/filepatch.py). Хранится исходный P:-путь, а не разрешённый:
+    # цель вычисляется заново при каждой синхронизации.
+    filepatch_links: list[str] = field(default_factory=list)
 
     # Моды, скрытые из списка вручную (ключ — folder_name.lower()); сама папка
     # мода/подписка на Steam остаётся нетронутой, мод просто не показывается
@@ -92,8 +145,9 @@ class Settings:
         return find_pbo_project_exe(self.mikero_tools)
 
     def pbo_packer_exe(self) -> str:
-        """Быстрый packer в комплекте с приложением (data/pbo_packer/)."""
-        return str(APP_DIR / "data" / "pbo_packer" / "pbo_packer.exe")
+        """[KR] PBO Packer — ставится отдельно от приложения (см. ui/packer_download.py),
+        поэтому лежит своей папкой, а не среди данных приложения."""
+        return str(APP_DIR / "packer" / "pbo_packer.exe")
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
