@@ -20,6 +20,21 @@ PROC_NAMES = {"dayz_x64.exe", "dayzdiag_x64.exe", "dayzserver_x64.exe"}
 READY_TIMEOUT = 180  # секунд ждём, пока сервер займёт UDP-порт
 
 
+def dayz_running() -> bool:
+    """Запущен ли хоть один процесс DayZ (сервер/клиент/диаг).
+
+    Правки cfg и чистка профиля во время работы сервера либо не подхватятся
+    (файлы прочитаны при старте), либо потеряются — он перезапишет их своими.
+    """
+    for p in psutil.process_iter(["name"]):
+        try:
+            if (p.info["name"] or "").lower() in PROC_NAMES:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+
 def kill_all() -> int:
     """Убивает все процессы DayZ. Возвращает количество убитых."""
     n = 0
@@ -229,6 +244,28 @@ class LaunchWorker(QThread):
                     self.log.emit(tr("launch.time_login",
                                      "TimeLogin/TimeLogout = {v} с (db/globals.xml)",
                                      v=p.time_login), "info")
+
+        # 4.6. Права админок (COT/VPP) в папке профиля — до старта сервера,
+        #      иначе мод создаст свои файлы с заглушкой и перечитает их только
+        #      при следующем запуске
+        from .admin_tools import apply as apply_admin_rights, sync_vpp_password_flag
+        from .layout import resolve_profiles as _rp
+        if s.admin_steamids or s.admin_password:
+            profile_dir = _rp(p.profiles, s, self.branch, p.mode)
+            for tool, added in apply_admin_rights(profile_dir, selected,
+                                                  s.admin_steamids, s.admin_password):
+                if added:
+                    self.log.emit(tr("launch.admin_rights",
+                                     "{tool}: выданы права админа ({n})",
+                                     tool=tool.title, n=len(added)), "info")
+
+        # 4.7. vppDisablePassword в cfg — по факту наличия пароля в настройках
+        from .layout import resolve_config as _rc
+        flag = sync_vpp_password_flag(_rc(p.server_config, s, self.branch, p.mode),
+                                      s.admin_password)
+        if flag is not None:
+            self.log.emit(tr("launch.vpp_password_flag",
+                             "serverDZ.cfg: vppDisablePassword = {v}", v=flag), "info")
 
         # 5. Сервер
         server_proc = None
