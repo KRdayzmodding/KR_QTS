@@ -13,7 +13,7 @@ from qfluentwidgets import (
     BodyLabel, CaptionLabel, HyperlinkLabel, IndeterminateProgressBar, FluentIcon as FIF,
 )
 
-from core import missions
+from core import missions, steam_urls
 from core.downloader import MissionCopyWorker
 from core.i18n import tr
 from core.missions import CatalogEntry, template_name
@@ -258,8 +258,7 @@ class MapPicker(QWidget):
             return
         self.map_warn.setText(tr("mission.map_missing",
                                  "Не найден мод карты — без него миссия не запустится."))
-        self.map_link.setUrl(QUrl(
-            f"https://steamcommunity.com/sharedfiles/filedetails/?id={workshop_id}"))
+        self.map_link.setUrl(QUrl(steam_urls.workshop_item(workshop_id)))
         self.map_link.show()
 
     # ------------------------------------------------------------------

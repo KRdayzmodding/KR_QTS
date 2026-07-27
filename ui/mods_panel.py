@@ -31,7 +31,7 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
-from core import packer, steam_api
+from core import packer, steam_api, steam_urls
 from core import i18n
 from core.i18n import tr
 from core.mods import (
@@ -164,7 +164,7 @@ class DependencyDialog(ThemedDialog):
             row.addWidget(cb, 1)
             if not found:
                 link = HyperlinkLabel(parent=self)
-                link.setUrl(QUrl(f"https://steamcommunity.com/sharedfiles/filedetails/?id={dep_id}"))
+                link.setUrl(QUrl(steam_urls.workshop_item(dep_id)))
                 link.setText(tr("mods.deps_open_workshop", "Открыть в Workshop"))
                 row.addWidget(link)
             layout.addLayout(row)
@@ -597,8 +597,10 @@ class ModsPanel(QWidget):
         ])
         self.tree.headerItem().setToolTip(COL_REBUILD, tr("mods.col_rebuild", "Ребилд"))
         hdr = self.tree.header()
-        hdr.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(COL_FOLDER, QHeaderView.ResizeMode.ResizeToContents)
+        # «Мод» — по содержимому (имена короткие и осмысленные, обрезать нечего),
+        # тянется «Папка»: там длинные пути, которым лишняя ширина полезнее
+        hdr.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(COL_FOLDER, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(COL_SIZE, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(COL_PBO, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(COL_SERVER, QHeaderView.ResizeMode.ResizeToContents)
@@ -843,7 +845,7 @@ class ModsPanel(QWidget):
         """Кнопка «Ребилд» только у модов с привязанными сорсами."""
         if not mod.sources:
             return
-        btn = TransparentToolButton(FIF.ZIP_FOLDER)
+        btn = TransparentToolButton(FIF.UPDATE)
         btn.setFixedSize(self._REBUILD_CELL_SIZE, self._REBUILD_CELL_SIZE)
         btn.setIconSize(QSize(14, 14))
         btn.setToolTip(tr("mods.rebuild_tip",
@@ -1011,8 +1013,7 @@ class ModsPanel(QWidget):
             for src in mod.sources:
                 self._open_path(src)
         elif chosen is act_open_steam:
-            QDesktopServices.openUrl(QUrl(
-                f"https://steamcommunity.com/sharedfiles/filedetails/?id={mod.workshop_id}"))
+            QDesktopServices.openUrl(QUrl(steam_urls.workshop_item(mod.workshop_id)))
         elif chosen is act_deps:
             self._edit_dependencies(mod)
         elif chosen is act_flags:

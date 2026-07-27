@@ -143,7 +143,11 @@ class PboProjectDialog(ThemedDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        # без этого viewport остаётся системным белым в тёмной теме
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
         inner = QWidget()
+        inner.setObjectName("pboFlags")
+        inner.setStyleSheet("QWidget#pboFlags{background:transparent;}")
         scroll.setWidget(inner)
         v = QVBoxLayout(inner)
 

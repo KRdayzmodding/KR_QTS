@@ -97,7 +97,13 @@ class IconPickerDialog(ThemedDialog):
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        # QScrollArea сама тему не подхватывает: её viewport остаётся системным
+        # белым даже в тёмной теме — делаем прозрачной, чтобы был виден фон диалога
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
         inner = QWidget()
+        inner.setObjectName("iconGrid")
+        inner.setStyleSheet("QWidget#iconGrid{background:transparent;}")
         grid = QGridLayout(inner)
         grid.setSpacing(4)
         cols = 8

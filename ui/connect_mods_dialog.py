@@ -15,7 +15,7 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
-from core import steam_api
+from core import steam_api, steam_urls
 from core.i18n import tr
 from core.mods import ModRegistry, ModInfo, SOURCE_STEAM, load_flag_defs
 from core.presets import ServerPreset, ModPreset
@@ -24,6 +24,7 @@ from ui.mods_panel import (
     DependencyCheckWorker, DependencyDialog, LocalDependencyDialog, SetsDialog,
 )
 from ui.mod_flags_dialog import flag_icon, _swatch_icon
+from ui.steam_watch import SteamWatcher
 from ui.theme import ThemedDialog
 
 _GREY = QColor("#888888")
@@ -115,9 +116,15 @@ class CollectionDialog(ThemedDialog):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        # без этого viewport остаётся системным белым в тёмной теме
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
         inner = QWidget()
+        inner.setObjectName("collectionList")
+        inner.setStyleSheet("QWidget#collectionList{background:transparent;}")
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(0, 0, 0, 0)
+        # виджеты недостающих модов — их состояние обновляет наблюдатель Steam
+        self._missing_rows: dict[str, tuple[BodyLabel, BodyLabel, HyperlinkLabel]] = {}
         for wid in ordered:
             found = found_by_id.get(wid)
             row = QHBoxLayout()
@@ -130,14 +137,26 @@ class CollectionDialog(ThemedDialog):
                 lbl = BodyLabel(names.get(wid) or wid)
                 lbl.setStyleSheet(f"color: {_GREY.name()};")
                 row.addWidget(lbl, 1)
+                status = BodyLabel("")
+                status.hide()
+                row.addWidget(status)
                 link = HyperlinkLabel(parent=self)
-                link.setUrl(QUrl(f"https://steamcommunity.com/sharedfiles/filedetails/?id={wid}"))
+                link.setUrl(QUrl(steam_urls.workshop_item(wid)))
                 link.setText(tr("mods.deps_open_workshop", "Открыть в Workshop"))
                 row.addWidget(link)
+                self._missing_rows[wid] = (lbl, status, link)
             inner_layout.addLayout(row)
         inner_layout.addStretch(1)
         scroll.setWidget(inner)
         layout.addWidget(scroll, 1)
+
+        # Подписка происходит в Steam, окно об этом само не узнает — поэтому
+        # следим за воркшопом и отмечаем моды скачавшимися прямо в списке.
+        self.watcher = SteamWatcher(self)
+        self.watcher.watch_workshop(steam_urls.APP_DAYZ)
+        self.watcher.workshop_changed.connect(self._workshop_changed)
+        if self._missing_rows:
+            self.watcher.start()
 
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -151,6 +170,26 @@ class CollectionDialog(ThemedDialog):
             b_connect.clicked.connect(self.accept)
             btns.addWidget(b_connect)
         layout.addLayout(btns)
+
+    def _workshop_changed(self, ws) -> None:
+        """Отмечает в списке моды, которые Steam качает или уже скачал.
+
+        Строка мода остаётся на месте: перестраивать список под пользователем,
+        пока он его читает, неудобнее, чем поменять подпись справа.
+        """
+        for wid, (lbl, status, link) in self._missing_rows.items():
+            if wid in ws.installed:
+                lbl.setStyleSheet("")
+                status.setText(tr("collection.installed", "Установлен"))
+                status.setStyleSheet(f"color: {_GREEN.name()};")
+                status.show()
+                link.hide()
+            elif wid in ws.downloading:
+                status.setText(tr("collection.downloading", "Скачивается…"))
+                status.setStyleSheet(f"color: {_GREY.name()};")
+                status.show()
+            else:
+                status.hide()
 
 
 class ConnectModsDialog(ThemedDialog):
@@ -240,6 +279,34 @@ class ConnectModsDialog(ThemedDialog):
         layout.addLayout(btns)
 
         self._rebuild()
+
+        # Пользователь мог подписаться на мод в Steam, не закрывая это окно —
+        # ловим появление новых модов и обновляем список сами, чтобы не
+        # приходилось идти на вкладку «Моды» и жать «Обновить».
+        self._known_workshop: set[str] | None = None
+        self.watcher = SteamWatcher(self)
+        self.watcher.watch_workshop(steam_urls.APP_DAYZ)
+        self.watcher.workshop_changed.connect(self._workshop_changed)
+        self.watcher.start()
+
+    def _workshop_changed(self, ws) -> None:
+        installed = set(ws.installed)
+        if self._known_workshop is None:
+            self._known_workshop = installed      # первый снимок — точка отсчёта
+            return
+        fresh = installed - self._known_workshop
+        self._known_workshop = installed
+        if not fresh:
+            return
+
+        self.registry.scan()
+        self._rebuild()
+        names = [m.name for m in self.registry.all()
+                 if m.source == SOURCE_STEAM and m.workshop_id in fresh]
+        InfoBar.success(
+            title=tr("connect.new_mods", "Скачано новых модов: {n}", n=len(fresh)),
+            content=", ".join(names) or ", ".join(sorted(fresh)),
+            parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
 
     # ---------------------------------------------------------------- дерево
 

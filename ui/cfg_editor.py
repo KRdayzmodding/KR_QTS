@@ -162,6 +162,14 @@ class CfgEditor(QWidget):
     def save(self) -> None:
         if not self.cfg:
             return
+        from core.launcher import dayz_running
+        if dayz_running():
+            InfoBar.warning(title=tr("cfg.save_busy", "Сервер запущен — сохранение отменено"),
+                            content=tr("cfg.save_busy_body",
+                                       "Остановите сервер: изменения cfg он всё равно не "
+                                       "подхватит на лету, а при выходе может перезаписать файл."),
+                            parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
+            return
         values = {}
         for row in range(self.table.rowCount()):
             name = self.table.item(row, 0).text()

@@ -200,7 +200,13 @@ def create_preset_files(settings: Settings, branch: str, mode: str,
             "{MISSION}", mission_name or "dayzOffline.chernarusplus")
         cfg_path.write_bytes(text.encode("utf-8"))  # UTF-8 без BOM
 
-    (base / PROFILE_SUBDIR / fname).mkdir(parents=True, exist_ok=True)
+    profile = base / PROFILE_SUBDIR / fname
+    profile.mkdir(parents=True, exist_ok=True)
+    # структура админок готовится сразу: какие моды подключат — на этом шаге
+    # ещё неизвестно, а лишние пустые папки безвредны, зато права/пароль уже
+    # на месте и не придётся править файлы после первого запуска
+    from .admin_tools import apply as apply_admin_rights
+    apply_admin_rights(profile, None, settings.admin_steamids, settings.admin_password)
     return f"{fname}.cfg", fname
 
 
