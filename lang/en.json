@@ -78,6 +78,7 @@
   "cfgvar.verifySignatures": "PBO signature verification: 2 — enabled (.bikey files required in keys), 0 — disabled (for development).",
   "cfgvar.vonCodecQuality": "Voice codec quality (0–30).",
   "check.battleye": "Diag mode usually requires battleye=0 — check the parameters if the server fails to start.",
+  "check.cfg_mission": "Mission “{m}” from the server config is not installed: no folder {p}",
   "check.client_exe": "{exe} not found in {p}",
   "check.client_root": "Game folder not found: {p}",
   "check.config": "Server config not found: {p}",

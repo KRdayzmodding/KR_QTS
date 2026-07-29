@@ -183,8 +183,14 @@ TEST_SUFFIX = "TEST"
 def server_display_name(prefix: str, preset_name: str) -> str:
     """Название сервера для hostname: «[префикс] имя пресета TEST».
 
-    TEST дописывается, только если этого слова ещё нет ни в префиксе, ни в
-    имени пресета — иначе выходило бы «[KR TEST] my test TEST».
+    TEST дописывается всегда. Раньше стояла защита от дубля — не дописывать,
+    если слово уже есть в префиксе или имени, — и она же всё ломала: проверка
+    шла по подстроке, а пресет с именем «test» здесь скорее правило, чем
+    исключение. Выходило «[KR] test» вместо «[KR] test TEST», причём молча и
+    только у части пресетов.
+
+    Предсказуемость важнее аккуратности редкого случая: «[KR TEST] my TEST»
+    выглядит избыточно, но человек хотя бы знает, что получит.
     """
     prefix, preset_name = prefix.strip(), preset_name.strip()
     parts = []
@@ -192,10 +198,8 @@ def server_display_name(prefix: str, preset_name: str) -> str:
         parts.append(f"[{prefix}]")
     if preset_name:
         parts.append(preset_name)
-    name = " ".join(parts)
-    if TEST_SUFFIX.lower() not in f"{prefix} {preset_name}".lower():
-        name = f"{name} {TEST_SUFFIX}".strip()
-    return name
+    parts.append(TEST_SUFFIX)
+    return " ".join(parts)
 
 
 def create_preset_files(settings: Settings, branch: str, mode: str,

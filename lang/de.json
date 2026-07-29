@@ -78,6 +78,7 @@
   "cfgvar.verifySignatures": "PBO-Signaturprüfung: 2 — aktiviert (.bikey-Dateien in keys erforderlich), 0 — deaktiviert (für Entwicklung).",
   "cfgvar.vonCodecQuality": "Sprachcodec-Qualität (0–30).",
   "check.battleye": "Der Diag-Modus erfordert normalerweise battleye=0 — prüfen Sie die Parameter, falls der Server nicht startet.",
+  "check.cfg_mission": "Mission „{m}“ aus der Serverkonfiguration ist nicht installiert: Ordner {p} fehlt",
   "check.client_exe": "{exe} nicht gefunden in {p}",
   "check.client_root": "Spielordner nicht gefunden: {p}",
   "check.config": "Serverkonfiguration nicht gefunden: {p}",

@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import steam_api
-from .mods import SOURCE_STEAM, ModInfo, ModRegistry
+from .mods import SOURCE_STEAM, ModInfo, ModRegistry, workshop_ids
 
 MAX_DEPTH = 8   # страховка от бесконечного обхода на битых данных
 
@@ -65,6 +65,7 @@ def resolve(roots: list[ModInfo], registry: ModRegistry, api_key: str = "",
     первым в списке оказывается то, что ближе к запрошенному моду.
     """
     by_workshop = {m.workshop_id: m for m in registry.all() if m.workshop_id}
+    remembered = workshop_ids()   # ключ -> id воркшопа по всем виденным модам
     seen_mods = {mod_key(m) for m in roots}
     seen_missing: set[tuple[str, str]] = set()
     res = DepResult()
@@ -88,7 +89,19 @@ def resolve(roots: list[ModInfo], registry: ModRegistry, api_key: str = "",
                 if (kind, ident) in seen_missing:
                     continue
                 seen_missing.add((kind, ident))
-                (res.missing_workshop if kind == "steam" else res.missing_local).append(ident)
+                if kind == "steam":
+                    res.missing_workshop.append(ident)
+                    continue
+                # Ключ вида «@cf» может принадлежать воркшопному моду, от
+                # которого отписались: папки нет, зависимость осталась. Если id
+                # мы когда-то видели — это не «локальный ненайденный», а именно
+                # неподписанный, и человеку нужна ссылка на подписку, а не
+                # сообщение «не найден» без единой подсказки, что делать.
+                wid = remembered.get(ident.lower())
+                if wid:
+                    res.missing_workshop.append(wid)
+                else:
+                    res.missing_local.append(ident)
         if not nxt:
             break
         frontier = nxt

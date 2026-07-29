@@ -9,7 +9,7 @@ from .i18n import tr
 from .launcher import port_is_free
 from .mods import ModRegistry
 from .presets import ServerPreset, MODE_DIAG
-from .servercfg import needs_reencode
+from .servercfg import ServerCfg, needs_reencode
 from .settings import Settings
 
 CRITICAL = "critical"
@@ -70,10 +70,28 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
         warn("config_enc", tr("check.config_enc",
              "Кодировка конфига не UTF-8 без BOM — будет исправлена автоматически."))
 
-    from .missions import resolve_mission
+    from .missions import mpmissions_dir, resolve_mission
     mission = resolve_mission(preset.mission, settings, branch, preset.mode)
     if not mission or not Path(mission).is_dir():
         crit("mission", tr("check.mission", "Папка миссии не найдена: {p}", p=mission or "—"))
+
+    # Отдельно — миссия, записанная в самом конфиге. Сервер грузит именно её:
+    # template из class Missions, а не поле пресета. Эти два значения расходятся,
+    # стоит поменять миссию в редакторе конфига, и тогда проверка поля пресета
+    # смотрит не туда — сервер молча падает на старте.
+    if cfg and Path(cfg).is_file():
+        try:
+            tpl = next((v.value for v in ServerCfg(Path(cfg)).variables()
+                        if v.name == "template"), "")
+        except OSError:
+            tpl = ""
+        if tpl:
+            folder = mpmissions_dir(settings, branch, preset.mode) / tpl
+            if not folder.is_dir():
+                crit("cfg_mission", tr(
+                    "check.cfg_mission",
+                    "Миссия «{m}» из конфига сервера не установлена: нет папки {p}",
+                    m=tpl, p=str(folder)))
 
     profiles = resolve_profiles(preset.profiles, settings, branch, preset.mode)
     if not profiles:

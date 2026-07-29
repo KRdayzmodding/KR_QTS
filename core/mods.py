@@ -12,7 +12,9 @@ from pathlib import Path
 from . import junction
 from .settings import (
     Settings, MOD_SOURCES_FILE, MOD_DEPENDENCIES_FILE, MOD_FLAGS_FILE, MOD_FLAG_DEFS_FILE,
+    MOD_WORKSHOP_IDS_FILE,
 )
+
 
 SOURCE_STEAM = "steam"
 SOURCE_LOCAL = "local"
@@ -46,6 +48,18 @@ def _default_flag_defs() -> list[ModFlagDef]:
                   bold=True, icon="MIX_VOLUMES"),
         ModFlagDef(id="exp", name="EXP", color="#55007f", italic=True, icon="SPEED_HIGH"),
     ]
+
+
+def workshop_ids() -> dict[str, str]:
+    """Запомненные «ключ мода -> id воркшопа», см. ModRegistry.remember_workshop_ids."""
+    if MOD_WORKSHOP_IDS_FILE.is_file():
+        try:
+            data = json.loads(MOD_WORKSHOP_IDS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
 
 
 def load_flag_defs() -> list[ModFlagDef]:
@@ -413,6 +427,10 @@ class ModRegistry:
         if auto_dirty:
             self.save_flags()
 
+        # Запоминаем id воркшопа до сокрытия: скрытый мод остаётся подпиской,
+        # и его id пригодится ровно так же, как у видимого.
+        self.remember_workshop_ids()
+
         # 4. Моды, скрытые вручную (папка/подписка остаётся — просто не показываем)
         self.hidden = {}
         for key in self.settings.excluded_mods:
@@ -454,6 +472,28 @@ class ModRegistry:
         MOD_SOURCES_FILE.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+    # --------------------------------------------------- память id воркшопа
+
+    def remember_workshop_ids(self) -> None:
+        """Дописывает «ключ мода -> id воркшопа» по всем найденным стим-модам.
+
+        Зависимости хранятся ключами вида «@cf», а id воркшопа живёт только в
+        реестре. Стоит отписаться от мода — папка исчезает, ключ перестаёт
+        находиться, и предложить подписку уже не по чему: id к тому моменту
+        потерян. Поэтому помним, и только дописываем: мод, которого сейчас нет,
+        из памяти вычёркивать нельзя, ради него всё и затевалось.
+        """
+        known = workshop_ids()
+        known.update({key: m.workshop_id for key, m in self.mods.items()
+                      if m.source == SOURCE_STEAM and m.workshop_id})
+        try:
+            MOD_WORKSHOP_IDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MOD_WORKSHOP_IDS_FILE.write_text(
+                json.dumps(known, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8")
+        except OSError:
+            pass      # не смогли запомнить — не повод ронять пересканирование
 
     # ------------------------------------------------------- зависимости модов
 

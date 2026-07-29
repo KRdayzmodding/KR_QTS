@@ -45,6 +45,9 @@ PRESETS_DIR = CONFIG_DIR / "presets"
 MOD_PRESETS_DIR = CONFIG_DIR / "mod_presets"
 MOD_SOURCES_FILE = CONFIG_DIR / "mod_sources.json"
 MOD_DEPENDENCIES_FILE = CONFIG_DIR / "mod_dependencies.json"
+# ключ мода -> id воркшопа: помним по всем стим-модам, которые видели. Нужен,
+# когда мод отписали: зависимость по ключу остаётся, а id взять уже неоткуда
+MOD_WORKSHOP_IDS_FILE = CONFIG_DIR / "mod_workshop_ids.json"
 MOD_FLAGS_FILE = CONFIG_DIR / "mod_flags.json"
 MOD_FLAG_DEFS_FILE = CONFIG_DIR / "mod_flag_defs.json"
 
