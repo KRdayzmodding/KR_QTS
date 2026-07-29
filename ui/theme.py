@@ -12,7 +12,7 @@ ThemedDialog вместо голого QDialog, чтобы получать то
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QDialog, QWizard
 from qfluentwidgets import FluentStyleSheet, isDarkTheme, setCustomStyleSheet
 
@@ -85,46 +85,65 @@ def app_icon(dark: bool | None = None) -> QIcon:
     return icon
 
 
-def window_icon() -> QIcon:
-    """Иконка окна — всегда исходная, светлая.
+# Серый для значков вне окна. Выбран по худшему случаю: на четырёх фонах,
+# которые там встречаются, — белая шапка (255), светлая панель задач (243),
+# тёмная шапка (43) и тёмная панель (32) — контраст выходит 3.9, 3.6, 3.6 и 4.1
+# к одному при норме 3:1 для значков. Соседние варианты хуже: 120 проседает на
+# тёмном фоне, 140 — на светлом.
+_OUTSIDE_GREY = 128
 
-    Её Windows берёт для кнопки на панели задач, «Пуска», Alt+Tab и проводника.
-    Фон там свой и от темы приложения не зависит никак: тёмная панель задач при
-    светлых окнах — обычное сочетание. Подставлять туда инвертированный вариант
-    значит получить чёрный значок на чёрной панели.
 
-    Под тему меняется только иконка в шапке самого окна — там фон действительно
-    светлеет вместе с темой, см. app_icon.
+def _tinted(src: QPixmap, value: int) -> QPixmap:
+    """Ровная перекраска силуэта; форма и прозрачность не затрагиваются.
+
+    Иконка — плоский силуэт: девять десятых непрозрачных пикселей имеют ровно
+    один уровень, остальное приходится на сглаженные края. Терять при заливке
+    нечего, полутона краёв сохраняет режим SourceIn через альфу.
     """
-    return app_icon(dark=True)
+    img = src.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    p = QPainter(img)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    p.fillRect(img.rect(), QColor(value, value, value))
+    p.end()
+    return QPixmap.fromImage(img)
 
 
-_PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+def outside_source() -> QPixmap:
+    """Исходник в том же сером, что и outside_icon.
 
-
-def light_taskbar() -> bool:
-    """Светлая ли панель задач Windows.
-
-    Отдельная от всего остального настройка: Windows позволяет держать тёмную
-    панель при светлых окнах и наоборот (ключи SystemUsesLightTheme и
-    AppsUseLightTheme независимы). Значение по умолчанию — тёмная: так стоит
-    в свежей Windows 10/11.
+    Нужен сборке: .ico внутри exe показывают проводник, «Пуск» и ярлыки — те же
+    чужие фоны, и красить его иначе, чем значок работающей программы, значило бы
+    получить два разных логотипа в соседних местах.
     """
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _PERSONALIZE) as key:
-            return bool(winreg.QueryValueEx(key, "SystemUsesLightTheme")[0])
-    except (ImportError, OSError):
-        return False
+    return _tinted(QPixmap(str(ICON_FILE)), _OUTSIDE_GREY)
 
 
-def tray_icon() -> QIcon:
-    """Иконка для трея — под цвет панели задач, а не под тему приложения.
+_outside_cache: QIcon | None = None
 
-    Значок живёт в области уведомлений, то есть на панели задач; тема самого
-    приложения на его фон никак не влияет.
+
+def outside_icon() -> QIcon:
+    """Значок вне окна: панель задач, «Пуск», Alt+Tab, проводник и трей.
+
+    Один серый на все случаи, без подстройки под тему. Внутри окна фон известен
+    точно — мы сами его рисуем, и там уместен максимальный контраст (app_icon).
+    Снаружи фон нам не принадлежит: панель задач Windows 11 бывает прозрачной
+    поверх обоев, есть режим высокой контрастности, есть удалённый рабочий
+    стол. Угадывать там не по чему, а серый читается на любом из этих фонов.
     """
-    return app_icon(dark=not light_taskbar())
+    global _outside_cache
+    if _outside_cache is not None:
+        return _outside_cache
+    icon = QIcon()
+    src = QPixmap(str(ICON_FILE))
+    if src.isNull():
+        return icon
+    src = _tinted(src, _OUTSIDE_GREY)
+    for size in _ICON_SIZES:
+        if size < src.width():
+            icon.addPixmap(_downscale(src, size))
+    icon.addPixmap(src)
+    _outside_cache = icon
+    return icon
 
 
 def _page_qss(bg: str) -> str:

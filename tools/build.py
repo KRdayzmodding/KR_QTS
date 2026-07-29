@@ -36,13 +36,14 @@ def make_icon(dst: Path) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import QBuffer, QByteArray
-    from PySide6.QtGui import QPixmap
 
     app = QApplication.instance() or QApplication([])   # noqa: F841 — нужен для QPixmap
     sys.path.insert(0, str(ROOT))
-    from ui.theme import ICON_FILE, _downscale
+    from ui.theme import ICON_FILE, _downscale, outside_source
 
-    src = QPixmap(str(ICON_FILE))
+    # тот же серый, что у значка работающей программы: .ico показывают
+    # проводник, «Пуск» и ярлыки — те же чужие фоны
+    src = outside_source()
     if src.isNull():
         raise SystemExit(f"не читается иконка: {ICON_FILE}")
 

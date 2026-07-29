@@ -42,7 +42,7 @@ from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
                               SERVER, CLIENT)
 from ui.packlog_window import PackLogWindow
-from ui.theme import app_icon, light_taskbar, tray_icon, window_icon
+from ui.theme import app_icon, outside_icon
 
 _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
                   "warning": "#e5c07b", "error": "#ff6b6b"}
@@ -178,7 +178,6 @@ class MainWindow(FluentWindow):
         self._quitting = False                 # выход только через меню трея
         self._starting = False                 # идёт запуск: кнопка «Запускается»
         self._launch_logged = False            # «Запуск завершён» — один раз на запуск
-        self._taskbar_light = light_taskbar()  # под что подобрана иконка трея
         # обновление: available -> downloading -> ready
         self._upd_release = None
         self._upd_state = ""
@@ -432,22 +431,18 @@ class MainWindow(FluentWindow):
         self._update_sources_button()
 
     def _apply_icon(self) -> None:
-        """Перевыставляет иконки по трём разным фонам.
+        """Перевыставляет иконки: снаружи окна серая, в шапке — под тему.
 
-        Окно — всегда светлая: её Windows берёт для панели задач и «Пуска», а их
-        фон от темы приложения не зависит. Шапка — под тему приложения, там фон
-        и правда меняется. Трей — под панель задач, это отдельная настройка
-        Windows, и с темой окон она совпадает не всегда.
+        Внутри окна фон известен точно, мы сами его рисуем, — там максимальный
+        контраст. Снаружи фон нам не принадлежит, и подстраиваться не под что,
+        см. ui.theme.outside_icon.
         """
-        plain = window_icon()
-        self.setWindowIcon(plain)
-        QApplication.instance().setWindowIcon(plain)
-        # строго после setWindowIcon: оно само шлёт в шапку светлую иконку,
-        # и наш вариант должен лечь поверх
+        outside = outside_icon()
+        self.setWindowIcon(outside)
+        QApplication.instance().setWindowIcon(outside)
+        # строго после setWindowIcon: оно само шлёт в шапку свою иконку по
+        # сигналу windowIconChanged, и наш вариант должен лечь поверх
         self.titleBar.setIcon(app_icon())
-        if getattr(self, "tray", None):
-            self.tray.setIcon(tray_icon())
-            self._taskbar_light = light_taskbar()
 
     def _log_on_top_changed(self, key: str, on: bool) -> None:
         """Галка «поверх всех» — своя у каждого окна логов."""
@@ -1074,11 +1069,6 @@ class MainWindow(FluentWindow):
                           "Нет модов, которым указаны сорсы"))
 
     def _update_status(self) -> None:
-        # цвет панели задач меняют мимо приложения, сигнала об этом нет —
-        # сверяем на том же такте, что и статусы (чтение ключа реестра дешевле
-        # всего остального в этом методе)
-        if getattr(self, "tray", None) and light_taskbar() != self._taskbar_light:
-            self._apply_icon()
         self._log_stopped()
         self._update_sources_button()
         # блок в журнале узнаёт о процессах отсюда же, а не отдельным путём
@@ -1331,7 +1321,7 @@ class MainWindow(FluentWindow):
         приложение, а прячет его: в цикле отладки мода менеджер нужен
         постоянно, но разворачивать его целиком ради одной кнопки незачем."""
         self.mini = MiniWindow(self)
-        self.tray = QSystemTrayIcon(tray_icon(), self)
+        self.tray = QSystemTrayIcon(outside_icon(), self)
         self.tray.setToolTip("KR Quick Test Server")
 
         menu = SystemTrayMenu(parent=self)
