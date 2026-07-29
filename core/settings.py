@@ -2,10 +2,43 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent.parent
+def _res_dir() -> Path:
+    """Папка встроенных ресурсов: data, lang, иконка. Только чтение.
+
+    В собранном виде PyInstaller распаковывает их к себе и кладёт путь в
+    sys._MEIPASS; из исходников это просто корень проекта.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) if base else Path(__file__).resolve().parent.parent
+
+
+def _app_dir() -> Path:
+    """Папка пользовательских данных: настройки, пресеты, загрузки.
+
+    Из исходников — корень проекта, как было. В собранном виде она обязана
+    лежать вне установки: папку программы обновление перезаписывает целиком, а
+    в Program Files ещё и писать нельзя без прав администратора.
+
+    Портативный режим: если рядом с exe есть папка config, работаем в ней —
+    так приложение можно носить на флешке и держать несколько независимых
+    копий. Иначе — %APPDATA%\\KR_ServerManager.
+    """
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parent.parent
+    near_exe = Path(sys.executable).resolve().parent
+    if (near_exe / "config").is_dir():
+        return near_exe
+    appdata = os.environ.get("APPDATA")
+    return Path(appdata) / "KR_ServerManager" if appdata else near_exe
+
+
+RES_DIR = _res_dir()
+APP_DIR = _app_dir()
 CONFIG_DIR = APP_DIR / "config"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 PRESETS_DIR = CONFIG_DIR / "presets"
@@ -156,10 +189,10 @@ class Settings:
     # (недативный Qt-диалог с мультивыбором своих «последних папок» не знает)
     recent_source_dirs: list[str] = field(default_factory=list)
 
-    # Окна логов сервера и клиента поверх остальных окон — состояние общее на
-    # оба окна: держат их поверх обычно ради одного и того же (смотреть логи,
-    # работая в редакторе), и разводить это по окнам смысла нет
-    logs_on_top: bool = False
+    # Окна логов поверх остальных окон — раздельно для сервера и клиента:
+    # поверх всего обычно держат одно из двух, второе в это время мешает
+    log_on_top_server: bool = False
+    log_on_top_client: bool = False
 
     # Steam Web API ключ (steamcommunity.com/dev/apikey) — для зависимостей модов;
     # пусто — зависимости читаются со страницы воркшопа
@@ -181,7 +214,7 @@ class Settings:
         )
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(cls) -> Settings:
         if SETTINGS_FILE.is_file():
             try:
                 data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))

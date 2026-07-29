@@ -6,11 +6,11 @@ import re
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from .presets import MODE_DIAG
-from .settings import Settings, APP_DIR
+from .settings import Settings, RES_DIR
 
-CATALOG_FILE = APP_DIR / "data" / "missions_catalog.json"
+CATALOG_FILE = RES_DIR / "data" / "missions_catalog.json"
 META_NAME = ".krsm_mission.json"
 TEMPLATE_PREFIX = "actual"  # actual.<world> — скачанный шаблон карты
 
@@ -148,7 +148,7 @@ def write_meta(mission_dir: Path, entry: CatalogEntry, sha: str | None,
 
 # ------------------------------------------------------------------ GitHub API
 
-def _api_json(url: str, timeout: int = 15):
+def _api_json(url: str, timeout: int = 15) -> Any:
     req = urllib.request.Request(url, headers=_UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
@@ -159,7 +159,8 @@ def resolve_entry_path(entry: CatalogEntry) -> str:
     if "{latestV}" not in entry.path:
         return entry.path
     items = _api_json(f"https://api.github.com/repos/{entry.repo}/contents/?ref={entry.branch}")
-    best, best_key = None, ()
+    best: str | None = None
+    best_key: tuple[int, ...] = ()
     for it in items:
         if it.get("type") != "dir":
             continue

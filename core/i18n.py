@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-LANG_DIR = Path(__file__).resolve().parent.parent / "lang"
+from .settings import RES_DIR
+
+LANG_DIR = RES_DIR / "lang"
 AVAILABLE = {"ru": "Русский", "en": "English", "de": "Deutsch"}
 
 _strings: dict[str, str] = {}

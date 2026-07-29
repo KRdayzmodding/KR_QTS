@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 from .presets import MODE_DIAG
-from .settings import Settings, APP_DIR
+from .settings import Settings, APP_DIR, RES_DIR
 
 DEBUG_DIR = "KR_Debug"
 PROFILE_SUBDIR = "profile"
@@ -23,7 +23,7 @@ MISSIONS_SUBDIR = "mpmissions"
 MODS_SUBDIR = "MODS"          # junction-ссылки на подключаемые моды
 MODS_DL_SUBDIR = "mods_dl"    # скачанные с GitHub моды (реальные файлы)
 
-TEMPLATE_CFG = APP_DIR / "data" / "serverDZ_template.cfg"
+TEMPLATE_CFG = RES_DIR / "data" / "serverDZ_template.cfg"
 
 # Первый символ — только буква: имя пресета уходит в имена папок миссии и
 # профиля, в имя конфига и дальше в конфиг сервера, а идентификатор,

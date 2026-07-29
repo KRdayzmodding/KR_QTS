@@ -2,7 +2,12 @@ __pycache__/
 *.pyc
 build/
 dist/
+# спеки PyInstaller обычно генерируются, но наша написана руками и нужна сборке
 *.spec
+!KR_ServerManager.spec
+
+# отчёты о падениях (core/crashguard) — локальные, у каждого свои
+logs/
 
 # Пользовательские данные — не коммитим личные настройки и пресеты
 config/settings.json
