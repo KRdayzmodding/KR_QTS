@@ -407,7 +407,8 @@ class AdvancedPresetDialog(ThemedDialog):
         if not valid_name(new_name):
             problem = tr("preset.bad_name_full",
                          "Недопустимое название. Разрешены только латинские буквы, "
-                         "цифры, «-» и «_» — без кириллицы и пробелов. "
+                         "цифры, «-» и «_» — без кириллицы и пробелов, "
+                         "и начинаться оно должно с буквы. "
                          "Например: my_test_server")
             self.name.setError(True)
             self.name.setToolTip(problem)
@@ -577,7 +578,8 @@ class LazyPresetWizard(ThemedWizard):
             if not valid_name(name):
                 problem = tr("preset.bad_name_full",
                              "Недопустимое название. Разрешены только латинские буквы, "
-                             "цифры, «-» и «_» — без кириллицы и пробелов. "
+                             "цифры, «-» и «_» — без кириллицы и пробелов, "
+                             "и начинаться оно должно с буквы. "
                              "Например: my_test_server")
             else:
                 problem = name_conflict(name)

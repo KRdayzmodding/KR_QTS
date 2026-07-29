@@ -25,14 +25,18 @@ MODS_DL_SUBDIR = "mods_dl"    # скачанные с GitHub моды (реал�
 
 TEMPLATE_CFG = APP_DIR / "data" / "serverDZ_template.cfg"
 
-_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+# Первый символ — только буква: имя пресета уходит в имена папок миссии и
+# профиля, в имя конфига и дальше в конфиг сервера, а идентификатор,
+# начинающийся с цифры или знака, — источник проблем.
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]*$")
 
 # actual.* — шаблоны карт; имя пресета не должно с ними пересекаться
 RESERVED_NAMES = {"actual"}
 
 
 def valid_name(name: str) -> bool:
-    """Только латиница, цифры, дефис и подчёркивание — никакой кириллицы."""
+    """Только латиница, цифры, дефис и подчёркивание — никакой кириллицы.
+    Первым символом — только буква."""
     return bool(_NAME_RE.fullmatch(name or ""))
 
 
@@ -173,6 +177,27 @@ def preset_base_name(name: str, mission_name: str = "") -> str:
     return f"{name}_{world}" if world else name
 
 
+TEST_SUFFIX = "TEST"
+
+
+def server_display_name(prefix: str, preset_name: str) -> str:
+    """Название сервера для hostname: «[префикс] имя пресета TEST».
+
+    TEST дописывается, только если этого слова ещё нет ни в префиксе, ни в
+    имени пресета — иначе выходило бы «[KR TEST] my test TEST».
+    """
+    prefix, preset_name = prefix.strip(), preset_name.strip()
+    parts = []
+    if prefix:
+        parts.append(f"[{prefix}]")
+    if preset_name:
+        parts.append(preset_name)
+    name = " ".join(parts)
+    if TEST_SUFFIX.lower() not in f"{prefix} {preset_name}".lower():
+        name = f"{name} {TEST_SUFFIX}".strip()
+    return name
+
+
 def create_preset_files(settings: Settings, branch: str, mode: str,
                         name: str, mission_name: str = "") -> tuple[str, str]:
     """Создаёт KR_Debug/<имя>_<карта>.cfg (из шаблона) и KR_Debug/profile/<имя>_<карта>.
@@ -192,10 +217,10 @@ def create_preset_files(settings: Settings, branch: str, mode: str,
             template = TEMPLATE_CFG.read_text(encoding="utf-8")
         except OSError:
             template = 'hostname = "{NAME}";\n'
-        # префикс проекта из настроек — чтобы не вписывать его в hostname вручную
-        # при создании каждого пресета; обрамление ("[...] TEST" и т.п.) задаёт
-        # сам шаблон cfg, {NAME} — это только "префикс + имя пресета"
-        name_value = f"{settings.project_prefix} {name}" if settings.project_prefix else name
+        # Название собирается здесь, а не в шаблоне: правило «[префикс] имя
+        # TEST» требует проверки, нет ли слова TEST уже в префиксе или имени,
+        # а подстановкой в шаблон такое не выразить.
+        name_value = server_display_name(settings.project_prefix, name)
         text = template.replace("{NAME}", name_value).replace(
             "{MISSION}", mission_name or "dayzOffline.chernarusplus")
         cfg_path.write_bytes(text.encode("utf-8"))  # UTF-8 без BOM

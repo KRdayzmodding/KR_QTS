@@ -1,21 +1,16 @@
-"""Мастер первого запуска: язык, пути (автопоиск), импорт старых батников."""
+"""Мастер первого запуска: язык, пути (автопоиск), Steam-настройки."""
 from __future__ import annotations
-
-from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWizardPage, QVBoxLayout, QFormLayout, QHBoxLayout, QFileDialog,
-    QListWidgetItem,
 )
-from PySide6.QtCore import Qt
 from qfluentwidgets import (
     ComboBox, LineEdit, PlainTextEdit, PushButton, ToolButton,
-    ListWidget, BodyLabel, CaptionLabel, FluentIcon as FIF,
+    BodyLabel, CaptionLabel, FluentIcon as FIF,
 )
 
 from core import autodetect, i18n
 from core.i18n import tr, AVAILABLE
-from core.presets import import_bats_from_dir, ServerPreset
 from core.settings import Settings, check_path
 from core.steam_urls import SETTINGS_APPS
 from ui.settings_page import make_install_button
@@ -27,7 +22,6 @@ class FirstRunWizard(ThemedWizard):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
-        self.imported: list[ServerPreset] = []
         self.setWindowTitle(tr("wizard.title", "KR Server Manager — первая настройка"))
         self.resize(720, 560)
 
@@ -171,38 +165,7 @@ class FirstRunWizard(ThemedWizard):
         l_steam.addRow("", admin_hint)
         self.addPage(p_steam)
 
-        # --- Шаг 4: импорт батников
-        p3 = QWizardPage()
-        p3.setTitle(tr("wizard.import_title", "Импорт старых батников"))
-        p3.setSubTitle(tr("wizard.import_sub",
-                          "Приложение разбирает строки запуска в батниках и пробует создать из них пресеты. "
-                          "Работает не со всеми батниками — проверьте, что распозналось, и снимите галки с ненужного."))
-        l3 = QVBoxLayout(p3)
-        h = QHBoxLayout()
-        self.bat_dir = LineEdit()
-        btn_dir = ToolButton(FIF.FOLDER)
-        btn_dir.clicked.connect(lambda: self._browse(self.bat_dir))
-        btn_scan = PushButton(FIF.SEARCH, tr("wizard.scan", "Найти батники"))
-        btn_scan.clicked.connect(self._scan_bats)
-        h.addWidget(self.bat_dir, 1)
-        h.addWidget(btn_dir)
-        h.addWidget(btn_scan)
-        l3.addLayout(h)
-        self.bat_list = ListWidget()
-        l3.addWidget(self.bat_list, 1)
-        h_sel = QHBoxLayout()
-        btn_all = PushButton(tr("wizard.select_all", "Выбрать всё"))
-        btn_all.clicked.connect(lambda: self._set_all_checked(True))
-        btn_none = PushButton(tr("wizard.select_none", "Убрать всё"))
-        btn_none.clicked.connect(lambda: self._set_all_checked(False))
-        h_sel.addWidget(btn_all)
-        h_sel.addWidget(btn_none)
-        h_sel.addStretch(1)
-        l3.addLayout(h_sel)
-        self.addPage(p3)
-        self._p3 = p3
-
-        # --- Шаг 5: финиш
+        # --- Шаг 4: финиш
         p4 = QWizardPage()
         p4.setTitle(tr("common.done", "Готово"))
         l4 = QVBoxLayout(p4)
@@ -212,7 +175,6 @@ class FirstRunWizard(ThemedWizard):
                                "и нажмите «Запустить».")))
         self.addPage(p4)
 
-        self.currentIdChanged.connect(self._page_changed)
 
         # Кнопка установки отправляет пользователя в Steam, и дальше мастер
         # ничего бы о загрузке не знал — поэтому следим за ней сами и
@@ -310,46 +272,6 @@ class FirstRunWizard(ThemedWizard):
                         content="", parent=self, duration=4000,
                         position=InfoBarPosition.TOP_RIGHT)
 
-    def _page_changed(self, _id: int) -> None:
-        # На страницу импорта подставляем Debug-папку клиента
-        if self.currentPage() is self._p3 and not self.bat_dir.text():
-            client = self.paths["client_stable"].text()
-            if client:
-                debug = Path(client) / "Debug"
-                self.bat_dir.setText(str(debug if debug.is_dir() else client))
-                self._scan_bats()
-
-    def _set_all_checked(self, checked: bool) -> None:
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for i in range(self.bat_list.count()):
-            self.bat_list.item(i).setCheckState(state)
-
-    def _scan_bats(self) -> None:
-        self.bat_list.clear()
-        directory = Path(self.bat_dir.text())
-        yes, no = tr("wizard.ok", "✓"), tr("wizard.miss", "—")
-
-        def mark(flag: bool) -> str:
-            return yes if flag else no
-
-        for report in import_bats_from_dir(directory):
-            preset = report.preset
-            item = QListWidgetItem(tr(
-                "wizard.bat_item",
-                "{name}  [{mode}]  конфиг {cfg}  миссия {mis}  профиль {prof}  "
-                "модов {n}+{ns}  клиент {cli}",
-                name=preset.name, mode=preset.mode,
-                cfg=mark(report.has_config), mis=mark(report.has_mission),
-                prof=mark(report.has_profiles), n=report.n_mods,
-                ns=report.n_server_mods, cli=mark(report.client_found)))
-            if not (report.has_config and report.has_mission):
-                item.setToolTip(tr("wizard.bat_partial",
-                                   "Распозналось не всё — после импорта дозаполните пресет в редакторе."))
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
-            item.setData(Qt.ItemDataRole.UserRole, preset)
-            self.bat_list.addItem(item)
-
     def accept(self) -> None:
         s = self.settings
         s.language = self.lang.currentData()
@@ -362,10 +284,4 @@ class FirstRunWizard(ThemedWizard):
         s.save()
         i18n.load(s.language)
 
-        for i in range(self.bat_list.count()):
-            item = self.bat_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                preset: ServerPreset = item.data(Qt.ItemDataRole.UserRole)
-                preset.save()
-                self.imported.append(preset)
         super().accept()
