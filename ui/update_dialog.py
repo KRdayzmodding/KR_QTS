@@ -6,12 +6,12 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QTextBrowser
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, BodyLabel, StrongBodyLabel, CaptionLabel,
-    ProgressBar, FluentIcon as FIF, isDarkTheme,
+    ProgressBar, IndeterminateProgressRing, FluentIcon as FIF, isDarkTheme,
 )
 
 from core.i18n import tr
@@ -27,9 +27,13 @@ def _size(n: int) -> str:
 class UpdateDialog(ThemedDialog):
     """Описание релиза, кнопка загрузки и её ход.
 
-    Окно не закрывается на время скачивания: прогресс виден здесь же, а если
-    закрыть — загрузка продолжится, о готовности скажет пункт в навигации.
+    Окно не закрывается по клику на «Скачать»: 68 мегабайт идут не мгновенно, и
+    исчезнувшее окно выглядит так, будто нажатие ничего не сделало. Ход виден
+    здесь же — крутящийся индикатор и проценты прямо на кнопке. Закрыть можно
+    в любой момент: загрузка продолжится, о готовности скажет пункт в навигации.
     """
+    download_requested = Signal()
+    restart_requested = Signal()
 
     def __init__(self, rel: Release, downloading: bool = False,
                  ready: bool = False, parent=None):
@@ -73,6 +77,14 @@ class UpdateDialog(ThemedDialog):
         btns.addStretch(1)
         btns.addWidget(b_later)
 
+        # крутится, пока идёт загрузка: проценты говорят «сколько осталось»,
+        # а вращение — «процесс жив», даже если счётчик замер на плохой сети
+        self.spinner = IndeterminateProgressRing(self)
+        self.spinner.setFixedSize(18, 18)
+        self.spinner.setStrokeWidth(3)
+        self.spinner.setVisible(False)
+        btns.addWidget(self.spinner)
+
         if ready:
             self.b_main = PrimaryPushButton(FIF.SYNC,
                                             tr("upd.restart", "Перезапустить и установить"))
@@ -89,24 +101,61 @@ class UpdateDialog(ThemedDialog):
                 self.status.setText(tr("upd.no_asset",
                                        "К релизу не приложен файл сборки — "
                                        "скачайте со страницы релиза."))
-        self.b_main.setEnabled(self.b_main.isEnabled() and not downloading)
         btns.addWidget(self.b_main)
         layout.addLayout(btns)
 
         if downloading:
-            self.status.setText(tr("upd.downloading", "Скачивание…"))
+            self.set_downloading()
 
     def _choose(self, what: str) -> None:
+        """Загрузка окно не закрывает — оно и есть индикатор. Перезапуск
+        закрывает: дальше приложение всё равно уходит."""
         self.action = what
-        self.accept()
+        if what == "restart":
+            self.restart_requested.emit()
+            self.accept()
+            return
+        self.set_downloading()
+        self.download_requested.emit()
+
+    def set_downloading(self) -> None:
+        self.spinner.setVisible(True)
+        self.bar.setVisible(True)
+        self.b_main.setEnabled(False)
+        self.b_main.setText(tr("upd.downloading", "Скачивание…"))
+        self.status.setText("")
 
     def set_progress(self, got: int, total: int) -> None:
+        self.spinner.setVisible(True)
         self.bar.setVisible(True)
         self.b_main.setEnabled(False)
         if total:
-            self.bar.setValue(int(got * 100 / total))
+            pct = int(got * 100 / total)
+            self.bar.setValue(pct)
+            self.b_main.setText(tr("upd.downloading_pct", "Скачивание… {p}%", p=pct))
         self.status.setText(tr("upd.progress", "Скачано {a} из {b}",
                                a=_size(got), b=_size(total)))
+
+    def set_ready(self) -> None:
+        """Загрузка кончилась — кнопка превращается в «перезапустить»."""
+        self.spinner.setVisible(False)
+        self.bar.setValue(100)
+        self.status.setText("")
+        self.b_main.setEnabled(True)
+        self.b_main.setIcon(FIF.SYNC)
+        self.b_main.setText(tr("upd.restart", "Перезапустить и установить"))
+        try:
+            self.b_main.clicked.disconnect()
+        except RuntimeError:
+            pass
+        self.b_main.clicked.connect(lambda: self._choose("restart"))
+
+    def set_failed(self, msg: str) -> None:
+        self.spinner.setVisible(False)
+        self.bar.setVisible(False)
+        self.b_main.setEnabled(True)
+        self.b_main.setText(tr("upd.retry", "Повторить"))
+        self.status.setText(tr("upd.failed_body", "Не удалось скачать: {m}", m=msg))
 
 
 class RestartDialog(ThemedDialog):

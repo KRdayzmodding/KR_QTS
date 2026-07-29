@@ -1225,15 +1225,17 @@ class MainWindow(FluentWindow):
             return
         from ui.update_dialog import UpdateDialog
         dlg = UpdateDialog(rel, downloading=self._upd_state == "downloading", parent=self)
+        # окно остаётся открытым на время загрузки и само служит индикатором,
+        # поэтому старт и завершение приходят сигналами, а не по коду выхода
+        dlg.download_requested.connect(lambda: self._start_download(rel))
+        dlg.restart_requested.connect(lambda: self._offer_restart(rel))
         self._upd_dialog = dlg
         # запомнили, что чейнджлог этой версии показан — больше не навязываем
         if self.settings.update_seen != rel.version:
             self.settings.update_seen = rel.version
             self.settings.save()
-        ok = dlg.exec()
+        dlg.exec()
         self._upd_dialog = None
-        if ok and dlg.action == "download":
-            self._start_download(rel)
 
     def _start_download(self, rel) -> None:
         if self._upd_dl and self._upd_dl.isRunning():
@@ -1259,11 +1261,18 @@ class MainWindow(FluentWindow):
         self._notify("success", tr("upd.done_title", "Обновление скачано"),
                      tr("upd.done_body", "Версия {v} установится при перезапуске.",
                         v=rel.version), duration=8000)
-        self._offer_restart(rel)
+        if self._upd_dialog:
+            # окно открыто — превращаем кнопку в «перезапустить» прямо в нём,
+            # второе окно поверх первого было бы навязчиво
+            self._upd_dialog.set_ready()
+        else:
+            self._offer_restart(rel)
 
     def _on_update_failed(self, msg: str) -> None:
         self._upd_state = "available"
         self._update_nav_item()
+        if self._upd_dialog:
+            self._upd_dialog.set_failed(msg)
         self._notify("error", tr("upd.failed", "Не удалось скачать обновление"), msg)
 
     def _offer_restart(self, rel) -> None:
