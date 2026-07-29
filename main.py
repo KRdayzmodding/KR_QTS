@@ -1,4 +1,4 @@
-"""KR Server Manager — точка входа."""
+"""KR Quick Test Server — точка входа."""
 from __future__ import annotations
 
 import sys
@@ -40,6 +40,8 @@ def main() -> int:
 
     window = MainWindow(settings)
     window.show()
+    # проверка версии — после показа окна: сеть не должна задерживать запуск
+    window.start_update_check()
     return app.exec()
 
 

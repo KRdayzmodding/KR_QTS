@@ -18,7 +18,7 @@ from qfluentwidgets import (
     SystemTrayMenu, Action, qconfig,
 )
 
-from core import filepatch, logsource, packer, packlog
+from core import filepatch, logsource, packer, packlog, updater
 from core.i18n import tr
 from core.launcher import LaunchWorker, dayz_running, kill_all, kill_pid
 from core.mods import ModRegistry
@@ -179,9 +179,16 @@ class MainWindow(FluentWindow):
         self._starting = False                 # идёт запуск: кнопка «Запускается»
         self._launch_logged = False            # «Запуск завершён» — один раз на запуск
         self._taskbar_light = light_taskbar()  # под что подобрана иконка трея
+        # обновление: available -> downloading -> ready
+        self._upd_release = None
+        self._upd_state = ""
+        self._upd_percent = 0
+        self._upd_worker = None
+        self._upd_dl = None
+        self._upd_dialog = None
         self.ignored_checks: set[str] = set()  # «игнорировать до перезапуска»
 
-        self.setWindowTitle("KR Server Manager")
+        self.setWindowTitle("KR Quick Test Server")
         # Иконка приложения уже задана в main.py, но заголовок FluentWindow
         # свой, не системный: он подхватывает картинку по сигналу
         # windowIconChanged, а при наследовании от QApplication тот не приходит
@@ -235,6 +242,15 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.settings_page, FIF.SETTING,
                              tr("menu.settings_nav", "Настройки"),
                              position=NavigationItemPosition.BOTTOM)
+        # Пункт обновления живёт в панели навигации: она видна с любой
+        # страницы, и признак остаётся на глазах постоянно, ничего не
+        # перекрывая и не требуя реакции. Появляется только когда есть что
+        # сказать — см. _update_nav_item.
+        self._upd_item = self.navigationInterface.addItem(
+            routeKey="update", icon=FIF.UPDATE, text=tr("upd.nav", "Обновление"),
+            onClick=self._open_update, selectable=False,
+            position=NavigationItemPosition.BOTTOM)
+        self._upd_item.setVisible(False)
         self.navigationInterface.addItem(
             routeKey="about", icon=FIF.INFO, text=tr("menu.about", "О программе"),
             onClick=self._about, selectable=False,
@@ -1130,6 +1146,134 @@ class MainWindow(FluentWindow):
         else:
             engine.setToolTip("")
 
+    # ------------------------------------------------------------ обновление
+
+    def start_update_check(self) -> None:
+        """Фоновая проверка версии. Зовётся после показа окна, не до.
+
+        Уже скачанное обновление важнее проверки: если оно ждёт перезапуска,
+        спрашивать GitHub незачем.
+        """
+        ready = updater.pending()
+        if ready:
+            self._upd_release = ready
+            self._upd_state = "ready"
+            self._update_nav_item()
+            return
+        if not self.settings.check_updates:
+            return
+        self._upd_worker = updater.CheckWorker(self)
+        self._upd_worker.done.connect(self._on_update_checked)
+        self._upd_worker.start()
+
+    def check_updates_now(self) -> None:
+        """Проверка по кнопке из настроек — вручную, невзирая на галку."""
+        if self._upd_worker and self._upd_worker.isRunning():
+            return
+        self._notify("info", tr("upd.checking", "Проверяю обновления…"), duration=3000)
+        self._upd_worker = updater.CheckWorker(self)
+        self._upd_worker.done.connect(self._on_manual_checked)
+        self._upd_worker.start()
+
+    def _on_manual_checked(self, rel) -> None:
+        if updater.is_update(rel):
+            self._on_update_checked(rel)
+            self._open_update()
+        elif rel is None:
+            self._notify("warning", tr("upd.check_failed",
+                                       "Не удалось проверить обновления"),
+                         tr("upd.check_failed_body",
+                            "Нет сети или релизы недоступны."))
+        else:
+            self._notify("success", tr("upd.uptodate", "Установлена последняя версия"),
+                         tr("upd.uptodate_body", "Версия {v}", v=VERSION))
+
+    def _on_update_checked(self, rel) -> None:
+        # None — нет сети, нет релизов или репозиторий закрыт: молчим
+        if not updater.is_update(rel):
+            return
+        self._upd_release = rel
+        self._upd_state = "available"
+        self._update_nav_item()
+        # окно само не открываем: человек мог запускать сервер в спешке.
+        # Пункт в навигации виден постоянно — этого достаточно.
+
+    def _update_nav_item(self) -> None:
+        """Подпись и цвет пункта под текущее состояние."""
+        item = self._upd_item
+        rel = self._upd_release
+        if not rel:
+            item.setVisible(False)
+            return
+        text = {
+            "available": tr("upd.nav_available", "Доступна версия {v}", v=rel.version),
+            "downloading": tr("upd.nav_downloading", "Скачивание… {p}%", p=self._upd_percent),
+            "ready": tr("upd.nav_ready", "Перезапустить для установки"),
+        }.get(self._upd_state, tr("upd.nav", "Обновление"))
+        item.setText(text)
+        item.setVisible(True)
+        if getattr(self, "mini", None):
+            self.mini.set_update_mark(self._upd_state == "ready")
+
+    def _open_update(self) -> None:
+        """Окно с описанием изменений — только по клику пользователя."""
+        rel = self._upd_release
+        if not rel:
+            return
+        if self._upd_state == "ready":
+            self._offer_restart(rel)
+            return
+        from ui.update_dialog import UpdateDialog
+        dlg = UpdateDialog(rel, downloading=self._upd_state == "downloading", parent=self)
+        self._upd_dialog = dlg
+        # запомнили, что чейнджлог этой версии показан — больше не навязываем
+        if self.settings.update_seen != rel.version:
+            self.settings.update_seen = rel.version
+            self.settings.save()
+        ok = dlg.exec()
+        self._upd_dialog = None
+        if ok and dlg.action == "download":
+            self._start_download(rel)
+
+    def _start_download(self, rel) -> None:
+        if self._upd_dl and self._upd_dl.isRunning():
+            return
+        self._upd_state = "downloading"
+        self._upd_percent = 0
+        self._update_nav_item()
+        self._upd_dl = updater.DownloadWorker(rel, self)
+        self._upd_dl.progress.connect(self._on_update_progress)
+        self._upd_dl.done.connect(lambda _p: self._on_update_downloaded(rel))
+        self._upd_dl.failed.connect(self._on_update_failed)
+        self._upd_dl.start()
+
+    def _on_update_progress(self, got: int, total: int) -> None:
+        self._upd_percent = int(got * 100 / total) if total else 0
+        self._update_nav_item()
+        if self._upd_dialog:
+            self._upd_dialog.set_progress(got, total)
+
+    def _on_update_downloaded(self, rel) -> None:
+        self._upd_state = "ready"
+        self._update_nav_item()
+        self._notify("success", tr("upd.done_title", "Обновление скачано"),
+                     tr("upd.done_body", "Версия {v} установится при перезапуске.",
+                        v=rel.version), duration=8000)
+        self._offer_restart(rel)
+
+    def _on_update_failed(self, msg: str) -> None:
+        self._upd_state = "available"
+        self._update_nav_item()
+        self._notify("error", tr("upd.failed", "Не удалось скачать обновление"), msg)
+
+    def _offer_restart(self, rel) -> None:
+        from ui.update_dialog import RestartDialog
+        dlg = RestartDialog(rel, self)
+        dlg.exec()
+        if dlg.restart_now:
+            self._append_log(tr("upd.restarting", "Перезапуск для установки обновления…"))
+            self.quit_app()
+
     def _about(self) -> None:
         import re
         from PySide6.QtCore import Qt as _Qt
@@ -1138,7 +1282,7 @@ class MainWindow(FluentWindow):
                   "Утилита для запуска тестовой среды DayZ Standalone "
                   "и отладки модов.\n\n"
                   "Лицензия GPLv3 — бесплатно навсегда.\n"
-                  "https://github.com/KRdayzmodding/KR_ServerManager\n\n"
+                  "https://github.com/KRdayzmodding/KR_QTS\n\n"
                   "by [Kramtsov Arms]", v=VERSION)
         # ссылки — кликабельными
         rich = re.sub(r"(https?://\S+)", r'<a href="\1">\1</a>',
@@ -1160,7 +1304,7 @@ class MainWindow(FluentWindow):
         постоянно, но разворачивать его целиком ради одной кнопки незачем."""
         self.mini = MiniWindow(self)
         self.tray = QSystemTrayIcon(tray_icon(), self)
-        self.tray.setToolTip("KR Server Manager")
+        self.tray.setToolTip("KR Quick Test Server")
 
         menu = SystemTrayMenu(parent=self)
         menu.addAction(Action(FIF.VIEW, tr("tray.restore", "Развернуть"),

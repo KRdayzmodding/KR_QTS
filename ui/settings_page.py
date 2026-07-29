@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QUrl, QRegularExpression, QThread, Signal
 from PySide6.QtGui import QDesktopServices, QRegularExpressionValidator
 from qfluentwidgets import (
-    LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox,
+    LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox, CheckBox,
     PushButton, PrimaryPushButton, ToolButton, BodyLabel, CaptionLabel,
     StrongBodyLabel, SimpleCardWidget, TransparentToolButton, TeachingTip,
     TeachingTipTailPosition, InfoBar, InfoBarPosition,
@@ -236,6 +236,18 @@ class SettingsPage(QScrollArea):
                                    if settings.theme in theme_codes else 0)
         self.theme.currentIndexChanged.connect(self._theme_changed)
         form_general.addRow(BodyLabel(tr("settings.theme_label", "Тема оформления")), self.theme)
+
+        # Сетевой запрос при старте должен быть отключаемым: у части людей
+        # рабочая машина без интернета, и молчаливый поход наружу их нервирует.
+        upd_row = QHBoxLayout()
+        self.check_updates = CheckBox(tr("settings.check_updates",
+                                         "Проверять обновления при запуске"))
+        self.check_updates.setChecked(settings.check_updates)
+        b_check_now = PushButton(FIF.SYNC, tr("settings.check_now", "Проверить сейчас"))
+        b_check_now.clicked.connect(self._check_updates_now)
+        upd_row.addWidget(self.check_updates, 1)
+        upd_row.addWidget(b_check_now)
+        form_general.addRow(BodyLabel(tr("settings.updates_label", "Обновления")), upd_row)
 
         # ------------------------------------------------- Клиент и сервер
         form_paths = section(tr("settings.section_paths", "Клиент и сервер"))
@@ -492,6 +504,13 @@ class SettingsPage(QScrollArea):
                                    "Не забудьте нажать «Сохранить»."),
                         parent=self, duration=5000, position=InfoBarPosition.TOP_RIGHT)
 
+    def _check_updates_now(self) -> None:
+        """Проверка по кнопке — идёт через главное окно: там же живёт пункт
+        в навигации, который надо обновить, и уже скачанное состояние."""
+        win = self.window()
+        if hasattr(win, "check_updates_now"):
+            win.check_updates_now()
+
     def _theme_changed(self, _idx: int) -> None:
         code = self.theme.currentData()
         setTheme({"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
@@ -656,6 +675,7 @@ class SettingsPage(QScrollArea):
         """
         return {
             "language": self.lang.currentData(),
+            "check_updates": self.check_updates.isChecked(),
             "project_prefix": self.project_prefix.text().strip(),
             "client_stable": self.p_client.text(),
             "client_exp": self.p_client_exp.text(),

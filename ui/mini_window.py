@@ -207,6 +207,17 @@ class MiniWindow(QWidget):
         self.mw.launch_page.preset_combo.setCurrentIndex(idx)
         self.sync()
 
+    def set_update_mark(self, ready: bool) -> None:
+        """Метка на «Развернуть», когда обновление ждёт перезапуска.
+
+        Места на текст в мини-окне нет, а знать надо: в развёрнутом окне
+        подробности покажет пункт в панели навигации.
+        """
+        self.b_restore.setText(tr("tray.restore", "Развернуть") + (" ●" if ready else ""))
+        self.b_restore.setToolTip(
+            tr("mini.update_ready", "Скачано обновление — нужен перезапуск") if ready
+            else tr("mini.restore_tip", "Вернуть основное окно"))
+
     def _make_dot(self, name: str) -> QLabel:
         dot = QLabel(self)
         dot.setFixedSize(_DOT, _DOT)
