@@ -69,7 +69,8 @@ _AUTO_FLAG_WORKSHOP_MAP: dict[str, tuple[str, ...]] = {
     "1559212036": ("Framework",),
     "2545327648": ("Framework",),
     "1625463737": ("Framework", "EXP"),
-    "1828439124": ("AdminTools",),
+    "1564026768": ("AdminTools",),   # Community-Online-Tools
+    "1828439124": ("AdminTools",),   # VPPAdminTools
     "2968284194": ("AdminTools",),
     "2829480906": ("Map",),
     "2469798930": ("Map",),

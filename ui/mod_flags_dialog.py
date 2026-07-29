@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, ToolButton, LineEdit, CheckBox, ListWidget,
-    BodyLabel, CaptionLabel, FluentIcon as FIF,
+    BodyLabel, CaptionLabel, FluentIcon as FIF, Theme,
 )
 
 from core.i18n import tr
@@ -43,8 +43,14 @@ def flag_font(d: ModFlagDef) -> QFont:
 
 
 def flag_icon(d: ModFlagDef) -> QIcon | None:
+    """Иконка флага под текущую тему.
+
+    Без явной темы FluentIcon отдаёт чёрный вариант — на тёмном фоне его
+    почти не видно. Theme.AUTO выбирает чёрный или белый по текущей теме
+    приложения.
+    """
     if d.icon and hasattr(FIF, d.icon):
-        return getattr(FIF, d.icon).icon()
+        return getattr(FIF, d.icon).icon(Theme.AUTO)
     return None
 
 

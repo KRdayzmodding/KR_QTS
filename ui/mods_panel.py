@@ -14,6 +14,7 @@ ui/mod_flags_dialog.py) назначаются через ПКМ по моду �
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -21,17 +22,18 @@ from PySide6.QtCore import Qt, QThread, Signal, QUrl, QSize, QStandardPaths, QDi
 from PySide6.QtGui import QColor, QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem, QHeaderView, QMenu,
-    QFileDialog, QListView, QTreeView, QAbstractItemView,
+    QFileDialog, QListView, QTreeView, QAbstractItemView, QScrollArea,
     QListWidgetItem,
 )
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, TransparentToolButton, TreeWidget, ListWidget, ComboBox,
     SearchLineEdit, BodyLabel, CaptionLabel, CheckBox, HyperlinkLabel,
     InfoBar, InfoBarPosition, IndeterminateProgressRing, MessageBox,
-    FluentIcon as FIF,
+    FluentIcon as FIF, qconfig,
 )
 
-from core import packer, steam_api, steam_urls
+from core import deps, packer, packlog, steam_api, steam_urls
+from core.launcher import dayz_running
 from core import i18n
 from core.i18n import tr
 from core.mods import (
@@ -42,6 +44,7 @@ from ui.mod_flags_dialog import (
     ModFlagsDialog, FlagAssignDialog, flag_icon, style_checkbox_by_flags, style_list_item_by_flags,
     _swatch_icon,
 )
+from ui import packing_log
 from ui.theme import ThemedDialog
 from core.presets import ModPreset
 from core.settings import Settings
@@ -75,7 +78,8 @@ class ModTreeItem(QTreeWidgetItem):
 class RebuildWorker(QThread):
     """Пересборка всех сорсов мода по кнопке «Ребилд» (не только устаревших)."""
     done = Signal(bool, str)
-    source_done = Signal(str, bool)   # имя папки сорса, успех — для краткого лога
+    source_start = Signal(str)        # имя pbo — строка таблицы переходит в [packing]
+    source_done = Signal(str, bool, int, int, int)   # имя pbo, успех, мс, warnings, errors
 
     def __init__(self, settings: Settings, mod: ModInfo, sources: list[str], parent=None):
         super().__init__(parent)
@@ -85,8 +89,12 @@ class RebuildWorker(QThread):
 
     def run(self) -> None:
         for src in self.sources:
+            name = packer.pbo_for_source(self.mod, src).name
+            self.source_start.emit(name)
+            t0 = time.monotonic()
             ok, output = packer.pack_source_auto(self.settings, self.mod, src)
-            self.source_done.emit(Path(src).name, ok)
+            w, e = packlog.counts(Path(src).name)
+            self.source_done.emit(name, ok, int((time.monotonic() - t0) * 1000), w, e)
             if not ok:
                 self.done.emit(False, output[-2000:])
                 return
@@ -113,120 +121,102 @@ class StaleCheckWorker(QThread):
             self.checked.emit(mod, outdated)
 
 
-class DependencyCheckWorker(QThread):
-    """Проверка зависимостей Steam-мода через steam_api (в фоне, не блокирует UI)."""
-    done = Signal(object, list)
+class DependencyResolveWorker(QThread):
+    """Обход графа зависимостей в фоне: для Steam-модов он ходит в сеть,
+    а глубина заранее неизвестна, так что блокировать UI нельзя."""
+    done = Signal(object)   # deps.DepResult
 
-    def __init__(self, mod: ModInfo, api_key: str, parent=None):
+    def __init__(self, roots: list[ModInfo], registry: ModRegistry,
+                 api_key: str, parent=None):
         super().__init__(parent)
-        self.mod = mod
+        self.roots = roots
+        self.registry = registry
         self.api_key = api_key
 
     def run(self) -> None:
         try:
-            deps = steam_api.resolve_dependencies_deep(self.mod.workshop_id, self.api_key)
-        except Exception:
-            deps = []
-        self.done.emit(self.mod, deps)
+            res = deps.resolve(self.roots, self.registry, self.api_key)
+        except Exception:  # noqa: BLE001 — сеть/парсинг не должны ронять UI
+            res = deps.DepResult()
+        self.done.emit(res)
 
 
 class DependencyDialog(ThemedDialog):
-    """Список зависимостей подключаемого мода. Установленные — отмечены и включаемы,
-    не установленные (нет в реестре) — серые, со ссылкой на страницу Workshop
-    для ручной подписки (автоматически скачать через Steam API нельзя, это
-    делает только сам клиент Steam). «Игнорировать» — мод всё равно подключается,
-    недостающее не считается блокером (уже подключён к этому моменту)."""
+    """Всё недостающее для подключаемых модов — одним списком.
 
-    def __init__(self, mod: ModInfo, dep_ids: list[str], registry: ModRegistry, parent=None):
+    Показывает результат полного обхода графа, а не один его уровень: моды из
+    реестра идут с галками и подключаются, отсутствующие — серыми. У воркшопных
+    есть ссылка на страницу (скачать за пользователя нельзя, подписка делается
+    только в клиенте Steam), у локальных её нет — о таком моде известен лишь
+    ключ. «Игнорировать» — исходные моды всё равно останутся подключёнными.
+    """
+
+    def __init__(self, roots: list[ModInfo], res, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(tr("mods.deps_title", "Зависимости мода «{m}»", m=mod.name))
-        self.resize(480, 320)
-        self._rows: list[tuple[ModInfo | None, CheckBox]] = []
-
-        layout = QVBoxLayout(self)
-        hint = BodyLabel(tr("mods.deps_hint",
-                            "Для работы «{m}» также необходимо следующее:", m=mod.name))
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        flag_defs = {d.id: d for d in load_flag_defs()}
-        for dep_id in dep_ids:
-            found = next((m for m in registry.all() if m.workshop_id == dep_id), None)
-            row = QHBoxLayout()
-            if found:
-                cb = CheckBox(found.name)
-                cb.setChecked(True)
-                style_checkbox_by_flags(cb, found, flag_defs)
-            else:
-                cb = CheckBox(tr("mods.deps_missing", "{id} — не подписан", id=dep_id))
-                cb.setChecked(False)
-                cb.setEnabled(False)
-            row.addWidget(cb, 1)
-            if not found:
-                link = HyperlinkLabel(parent=self)
-                link.setUrl(QUrl(steam_urls.workshop_item(dep_id)))
-                link.setText(tr("mods.deps_open_workshop", "Открыть в Workshop"))
-                row.addWidget(link)
-            layout.addLayout(row)
-            self._rows.append((found, cb))
-
-        note = CaptionLabel(tr("mods.deps_note",
-                               "Не подписанные моды нужно сначала подписать в Steam — "
-                               "ссылка откроет страницу мода. После подписки и скачивания "
-                               "нажмите «Обновить» на вкладке модов, чтобы подключить их."))
-        note.setWordWrap(True)
-        layout.addWidget(note)
-
-        btns = QHBoxLayout()
-        b_ignore = PushButton(tr("mods.deps_ignore", "Игнорировать"))
-        b_ignore.clicked.connect(self.reject)
-        b_connect = PrimaryPushButton(FIF.LINK, tr("mods.deps_connect", "Подключить"))
-        b_connect.clicked.connect(self.accept)
-        btns.addStretch(1)
-        btns.addWidget(b_ignore)
-        btns.addWidget(b_connect)
-        layout.addLayout(btns)
-
-    def selected_mods(self) -> list[ModInfo]:
-        return [m for m, cb in self._rows if m is not None and cb.isChecked()]
-
-
-class LocalDependencyDialog(ThemedDialog):
-    """Зависимости локального мода — уже подключаемые (есть в реестре, чек-бокс)
-    и полностью отсутствующие (их когда-то выбрали через «Зависимости…», но
-    мода с таким ключом сейчас нет ни на диске, ни в реестре — серые, без
-    ссылки, метаданных о них не сохраняется). «Игнорировать» — мод всё равно
-    подключается, недостающее не считается блокером."""
-
-    def __init__(self, mod: ModInfo, dep_mods: list[ModInfo], missing_keys: list[str],
-                parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("mods.deps_title", "Зависимости мода «{m}»", m=mod.name))
-        self.resize(420, 320)
+        names = ", ".join(m.name for m in roots[:3])
+        if len(roots) > 3:
+            names += f" (+{len(roots) - 3})"
+        self.setWindowTitle(tr("mods.deps_title", "Зависимости мода «{m}»", m=names))
+        self.resize(520, 380)
         self._rows: list[tuple[ModInfo, CheckBox]] = []
 
         layout = QVBoxLayout(self)
         hint = BodyLabel(tr("mods.deps_hint",
-                            "Для работы «{m}» также необходимо следующее:", m=mod.name))
+                            "Для работы «{m}» также необходимо следующее:", m=names))
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        # список может быть длинным: цепочка зависимостей разворачивается вглубь
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        inner = QWidget()
+        inner.setObjectName("depsList")
+        inner.setStyleSheet("QWidget#depsList{background:transparent;}")
+        box = QVBoxLayout(inner)
+        box.setContentsMargins(0, 0, 0, 0)
+
         flag_defs = {d.id: d for d in load_flag_defs()}
-        for dep_mod in dep_mods:
-            cb = CheckBox(dep_mod.name)
+        for mod in res.found:
+            cb = CheckBox(mod.name)
             cb.setChecked(True)
-            style_checkbox_by_flags(cb, dep_mod, flag_defs)
-            layout.addWidget(cb)
-            self._rows.append((dep_mod, cb))
-        for key in missing_keys:
+            style_checkbox_by_flags(cb, mod, flag_defs)
+            box.addWidget(cb)
+            self._rows.append((mod, cb))
+        for dep_id in res.missing_workshop:
+            row = QHBoxLayout()
+            cb = CheckBox(tr("mods.deps_missing", "{id} — не подписан", id=dep_id))
+            cb.setChecked(False)
+            cb.setEnabled(False)
+            row.addWidget(cb, 1)
+            link = HyperlinkLabel(parent=self)
+            link.setUrl(QUrl(steam_urls.workshop_item(dep_id)))
+            link.setText(tr("mods.deps_open_workshop", "Открыть в Workshop"))
+            row.addWidget(link)
+            box.addLayout(row)
+        for key in res.missing_local:
             cb = CheckBox(tr("mods.deps_local_missing", "{k} — не найден", k=key))
             cb.setChecked(False)
             cb.setEnabled(False)
-            layout.addWidget(cb)
+            box.addWidget(cb)
+        box.addStretch(1)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
+
+        if res.missing_workshop:
+            note = CaptionLabel(tr("mods.deps_note",
+                                   "Не подписанные моды нужно сначала подписать в Steam — "
+                                   "ссылка откроет страницу мода. После подписки и скачивания "
+                                   "нажмите «Обновить» на вкладке модов, чтобы подключить их."))
+            note.setWordWrap(True)
+            layout.addWidget(note)
 
         btns = QHBoxLayout()
         b_ignore = PushButton(tr("mods.deps_ignore", "Игнорировать"))
         b_ignore.clicked.connect(self.reject)
         b_connect = PrimaryPushButton(FIF.LINK, tr("mods.deps_connect", "Подключить"))
+        b_connect.setEnabled(bool(res.found))
         b_connect.clicked.connect(self.accept)
         btns.addStretch(1)
         btns.addWidget(b_ignore)
@@ -541,6 +531,8 @@ class ModsPanel(QWidget):
         self.registry: ModRegistry | None = None
         self.settings: Settings | None = None
         self.log_cb = None  # callable(msg, level="info") — консоль вкладки «Запуск»
+        self.pack_table = None  # ui.packing_log.PackingLog — живая таблица запаковки
+        self.packed_cb = None   # callable(list[str]) — что паковали, для окон логов
         self._building = False
         self._flat_view = True
         self._rebuild_workers: list[RebuildWorker] = []  # держим ссылки, иначе поток соберёт GC
@@ -629,6 +621,11 @@ class ModsPanel(QWidget):
                                "колонки сортирует по ней."))
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        # Иконки флагов рисуются под текущую тему в момент сборки списка, так
+        # что при переключении темы на лету они остались бы прежнего цвета —
+        # чёрные на тёмном фоне. Перестраиваем дерево.
+        qconfig.themeChanged.connect(lambda _t: self._rebuild())
 
     # ---------------------------------------------------------------- контекст
 
@@ -1110,6 +1107,17 @@ class ModsPanel(QWidget):
     def _rebuild_mod(self, mod: ModInfo, item: QTreeWidgetItem | None = None) -> None:
         if not self.settings or not mod.sources:
             return
+        # Запущенная игра держит PBO открытыми — запаковка не сможет их
+        # перезаписать. Проверяем в момент клика, а не блокируем кнопку:
+        # процессы могут стартовать и завершиться между перерисовками списка.
+        if dayz_running():
+            InfoBar.warning(
+                title=tr("mods.rebuild_busy", "Нельзя пересобрать при запущенной игре"),
+                content=tr("mods.rebuild_busy_body",
+                           "Остановите сервер и клиент: они держат PBO открытыми."),
+                parent=self.window(), duration=6000,
+                position=InfoBarPosition.TOP_RIGHT)
+            return
         if item is not None:
             # заменяем кнопку крутящимся индикатором — видно, что идёт сборка;
             # после завершения self.refresh() пересоздаст строку с обычной кнопкой
@@ -1122,16 +1130,26 @@ class ModsPanel(QWidget):
                     position=InfoBarPosition.TOP_RIGHT)
         if self.log_cb:
             self.log_cb(tr("mods.rebuild_log_start", "Пакуем мод «{n}»", n=mod.name))
+        names = [packer.pbo_for_source(mod, s).name for s in mod.sources]
+        if self.pack_table is not None:
+            self.pack_table.start(names)
+        if self.packed_cb is not None:
+            self.packed_cb(names)
         worker = RebuildWorker(self.settings, mod, list(mod.sources), self)
+        worker.source_start.connect(self._on_pack_source_start)
         worker.source_done.connect(self._on_pack_source_done)
         worker.done.connect(lambda ok, msg, m=mod: self._rebuild_done(ok, msg, m))
         self._rebuild_workers.append(worker)
         worker.start()
 
-    def _on_pack_source_done(self, name: str, ok: bool) -> None:
-        if self.log_cb:
-            mark = tr("mods.pack_mark_ok", "[ok]") if ok else tr("mods.pack_mark_failed", "[ошибка]")
-            self.log_cb(f"{name} {mark}", "info" if ok else "error")
+    def _on_pack_source_start(self, name: str) -> None:
+        if self.pack_table is not None:
+            self.pack_table.set_status(name, packing_log.PACKING)
+
+    def _on_pack_source_done(self, name: str, ok: bool, ms: int, w: int, e: int) -> None:
+        if self.pack_table is not None:
+            self.pack_table.set_status(name, packing_log.OK if ok else packing_log.FAIL,
+                                       ms, w, e)
 
     def _rebuild_done(self, ok: bool, msg: str, mod: ModInfo) -> None:
         if ok:

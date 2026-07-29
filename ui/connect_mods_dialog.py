@@ -15,13 +15,13 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
-from core import steam_api, steam_urls
+from core import deps, steam_api, steam_urls
 from core.i18n import tr
 from core.mods import ModRegistry, ModInfo, SOURCE_STEAM, load_flag_defs
 from core.presets import ServerPreset, ModPreset
 from core.settings import Settings
 from ui.mods_panel import (
-    DependencyCheckWorker, DependencyDialog, LocalDependencyDialog, SetsDialog,
+    DependencyResolveWorker, DependencyDialog, SetsDialog,
 )
 from ui.mod_flags_dialog import flag_icon, _swatch_icon
 from ui.steam_watch import SteamWatcher
@@ -203,7 +203,7 @@ class ConnectModsDialog(ThemedDialog):
         self.preset = preset
         self.settings = settings
         self._building = False
-        self._dep_workers: list[DependencyCheckWorker] = []
+        self._dep_workers: list[DependencyResolveWorker] = []
         self._collection_worker: CollectionFetchWorker | None = None
 
         self.setWindowTitle(tr("connect.title", "Подключить моды — {n}", n=preset.name))
@@ -404,10 +404,7 @@ class ConnectModsDialog(ThemedDialog):
             (p.server_mods if mod.is_server else p.mods).append(mod.name)
         p.save()
         if enabled and not was_enabled:
-            if mod.source == SOURCE_STEAM and mod.workshop_id:
-                self._check_dependencies(mod)
-            elif mod.dependencies:
-                self._check_local_dependencies(mod)
+            self._check_dependencies([mod])
 
     def _set_all(self, state: bool) -> None:
         p = self.preset
@@ -424,55 +421,43 @@ class ConnectModsDialog(ThemedDialog):
 
     # ---------------------------------------------------------------- зависимости
 
-    def _check_dependencies(self, mod: ModInfo) -> None:
-        if not self.settings:
+    def _check_dependencies(self, mods: list[ModInfo]) -> None:
+        """Запускает обход графа зависимостей для только что подключённых модов.
+
+        Обход общий для Steam и локальных модов и идёт вглубь: подключение мода
+        В, который зависит от А, а тот от Б, покажет и А, и Б сразу.
+        """
+        if not self.settings or not mods:
             return
-        worker = DependencyCheckWorker(mod, self.settings.steam_api_key, self)
-        worker.done.connect(self._on_dependencies_resolved)
+        worker = DependencyResolveWorker(mods, self.registry,
+                                         self.settings.steam_api_key, self)
+        worker.done.connect(lambda res, roots=mods: self._on_dependencies_resolved(roots, res))
         self._dep_workers.append(worker)
         worker.start()
 
-    def _on_dependencies_resolved(self, mod: ModInfo, dep_ids: list[str]) -> None:
+    def _on_dependencies_resolved(self, roots: list[ModInfo], res) -> None:
         self._dep_workers = [w for w in self._dep_workers if w.isRunning()]
-        if not dep_ids:
-            return
-
-        def already_connected(dep_id: str) -> bool:
-            found = next((m for m in self.registry.all() if m.workshop_id == dep_id), None)
-            return found is not None and (self.registry.index_of(found, self.preset.mods) is not None
-                                          or self.registry.index_of(found, self.preset.server_mods) is not None)
-
-        dep_ids = [d for d in dep_ids if not already_connected(d)]
-        if not dep_ids:
-            return  # все зависимости уже подключены — предлагать нечего
-        dlg = DependencyDialog(mod, dep_ids, self.registry, self)
-        if not dlg.exec():
-            return
-        self._connect_selected(dlg.selected_mods())
-
-    def _check_local_dependencies(self, mod: ModInfo) -> None:
-        """Зависимости локального мода заданы вручную — в отличие от Steam,
-        тут не нужен фоновый воркер (нет обращения к сети)."""
-        def already_connected(dep_mod: ModInfo) -> bool:
-            return self.registry.index_of(dep_mod, self.preset.mods) is not None \
-                or self.registry.index_of(dep_mod, self.preset.server_mods) is not None
-
-        pending = [self.registry.mods[k] for k in mod.dependencies
-                  if k in self.registry.mods and not already_connected(self.registry.mods[k])]
-        missing_keys = [k for k in mod.dependencies if k not in self.registry.mods]
-        if not pending and not missing_keys:
-            return
-        dlg = LocalDependencyDialog(mod, pending, missing_keys, self)
+        res = deps.filter_connected(res, self.registry,
+                                    self.preset.mods, self.preset.server_mods)
+        if res.empty:
+            return      # всё нужное уже подключено — беспокоить незачем
+        dlg = DependencyDialog(roots, res, self)
         if not dlg.exec():
             return
         self._connect_selected(dlg.selected_mods())
 
     def _connect_selected(self, dep_mods: list[ModInfo]) -> None:
+        """Подключает выбранные зависимости.
+
+        Повторный обход не запускаем: resolve() уже вернул всю цепочку целиком,
+        так что новых зависимостей у них быть не может.
+        """
         added = 0
         for dep_mod in dep_mods:
             if self.registry.index_of(dep_mod, self.preset.mods) is None \
                     and self.registry.index_of(dep_mod, self.preset.server_mods) is None:
-                self.preset.mods.append(dep_mod.name)
+                (self.preset.server_mods if dep_mod.is_server
+                 else self.preset.mods).append(dep_mod.name)
                 added += 1
         if added:
             self.preset.save()
@@ -528,6 +513,9 @@ class ConnectModsDialog(ThemedDialog):
         self.preset.server_mods = server_mods
         self.preset.save()
         self._rebuild()
+        # набор мог быть сохранён без зависимостей — проверяем то, что подключилось
+        self._check_dependencies([m for m in (self.registry.get(n) for n in mods + server_mods)
+                                  if m])
 
     # ---------------------------------------------------------------- коллекция
 
@@ -588,3 +576,5 @@ class ConnectModsDialog(ThemedDialog):
         if added:
             self.preset.save()
             self._rebuild()
+            # у модов коллекции могут быть зависимости вне её состава
+            self._check_dependencies(mods)
