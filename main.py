@@ -6,7 +6,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import setTheme, setThemeColor, Theme
 
-from core import crashguard, i18n, updater_apply
+from core import console, crashguard, i18n, updater_apply
 from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
@@ -18,6 +18,10 @@ _THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
 
 
 def main() -> int:
+    # До всего остального: консольные помощники pboProject наследуют консоль
+    # от нас, а в собранном виде её нет — и каждый заводит себе окно.
+    console.hide()
+
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("KRdayzmodding")
