@@ -224,6 +224,7 @@ class MainWindow(FluentWindow):
         for mon in self.monitors.values():
             mon.usage.connect(self._on_usage)
             mon.crashed.connect(self._on_crash)
+            mon.errored.connect(self._on_script_error)
             mon.danger.connect(self._on_memory_danger)
             mon.limit.connect(self._on_memory_limit)
         # какие pbo паковались в последний раз — только их логи и показываем
@@ -564,8 +565,19 @@ class MainWindow(FluentWindow):
         return (tr("common.server", "Сервер") if side == SERVER
                 else tr("common.client", "Клиент"))
 
+    def _on_script_error(self, side: str, report) -> None:
+        """Ошибка в скриптах: движок написал crash-лог, но работать продолжает.
+
+        NULL pointer и прочие исключения времени выполнения — это дефекты в
+        коде мода, а не сорванный запуск. Сервер после них живёт, за сессию их
+        набирается сколько угодно, и каждое окно поперёк экрана было бы
+        издевательством. Поэтому только счётчик рядом с состоянием стороны —
+        подробности человек посмотрит в логах, когда сам захочет.
+        """
+        self.launch_status.add_error(side, report)
+
     def _on_crash(self, side: str, report) -> None:
-        """Запуск сорвался — движок написал crash-лог.
+        """Запуск сорвался — скрипты не собрались.
 
         Это единственное место, где сказано, из-за чего именно: файл и строка.
         Поэтому и в журнал крупно, и отдельным окном — пропустить это нельзя,

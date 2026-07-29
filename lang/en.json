@@ -594,6 +594,7 @@
   "status.crash_title": "Launch failed: {s}",
   "status.crash_where": "File: {f}, line {n}",
   "status.died": "exited",
+  "status.errors": "errors: {n}",
   "status.failed": "failed to start",
   "status.mem_danger": "WARNING ({s}): layer {l} scripts are close to the memory limit ({p}%). If the limit is exceeded, the launch will fail.",
   "status.mem_danger_title": "{s}, layer {l}: {p}% of script memory",

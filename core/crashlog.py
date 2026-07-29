@@ -118,3 +118,25 @@ def newest_since(directory: Path, known: set[str]) -> Path | None:
     if not fresh:
         return None
     return max(fresh, key=lambda p: p.stat().st_mtime if p.exists() else 0)
+
+
+def all_since(directory: Path, known: set[str]) -> list[Path]:
+    """Все crash-логи, которых не было в снимке known, от старых к новым.
+
+    Нужны все, а не только свежий: исключения времени выполнения запуск не
+    срывают, их за сессию набирается сколько угодно, и каждое считается.
+    """
+    fresh = [Path(p) for p in crash_files(directory) - known]
+    return sorted(fresh, key=lambda p: p.stat().st_mtime if p.exists() else 0)
+
+
+def is_fatal(report: CrashReport) -> bool:
+    """Сорвался ли из-за этого запуск.
+
+    Не собравшийся модуль — да: без скомпилированных скриптов игра не
+    стартует вовсе. Исключение времени выполнения (Virtual Machine Exception,
+    NULL pointer to instance) — нет: движок продолжает работать, а это ошибка
+    в коде мода, каких за сессию бывает много. Путать их значит объявлять
+    рабочий сервер упавшим.
+    """
+    return report.kind == COMPILE

@@ -62,7 +62,12 @@ class _Side:
         self.proc = PROC_OFF
         self.seen_run = False       # процесс хоть раз был живым в эту сессию
         self.usage: dict[str, scriptmem.Usage] = {}
+        # Падение, из-за которого запуск действительно сорван, — только
+        # несобравшийся модуль. Исключения времени выполнения сюда не попадают:
+        # они запуск не срывают, их считает errors.
         self.crash: crashlog.CrashReport | None = None
+        self.errors = 0                      # ошибок в скриптах за эту сессию
+        self.last_error: crashlog.CrashReport | None = None
 
     @property
     def state(self) -> str:
@@ -96,7 +101,14 @@ class LaunchStatus:
     def _line_head(self, side: _Side) -> str:
         left = f"{side.name} ".ljust(_MIN_WIDTH, ".")
         text = html.escape(f"{side.title}: {left} [{side.state}]")
-        return f'<span style="color:#d4d4d4;">{text}</span>'
+        line = f'<span style="color:#d4d4d4;">{text}</span>'
+        if side.errors:
+            # Ошибки в скриптах запуск не срывают — это счётчик, а не приговор.
+            # Держим их рядом с состоянием: смотреть надо туда же, куда и на
+            # «запущен», а не искать отдельную строку.
+            cnt = html.escape(tr("status.errors", "ошибок: {n}", n=side.errors))
+            line += f' <span style="color:{_ERR};">· {cnt}</span>'
+        return line
 
     def _line_memory(self, side: _Side) -> str:
         parts = []
@@ -215,6 +227,16 @@ class LaunchStatus:
         self.sides[side].crash = report
         self._render()
 
+    def add_error(self, side: str, report) -> None:
+        """Ошибка в скриптах: считаем, но состояние стороны не трогаем."""
+        s = self.sides[side]
+        s.errors += 1
+        s.last_error = report
+        self._render()
+
+    def errors(self, side: str) -> int:
+        return self.sides[side].errors
+
 
 class _SessionTail:
     """Хвост логов, ограниченный текущей сессией.
@@ -252,7 +274,8 @@ class LaunchMonitor(QObject):
     usage = Signal(str, object)     # сторона, scriptmem.Usage
     danger = Signal(str, object)    # впервые перевалило за 95%
     limit = Signal(str, object)     # лимит достигнут
-    crashed = Signal(str, object)   # сторона, crashlog.CrashReport
+    crashed = Signal(str, object)   # сторона, crashlog.CrashReport — запуск сорван
+    errored = Signal(str, object)   # то же, но ошибка в скриптах: запуск идёт дальше
 
     def __init__(self, side: str, parent=None):
         super().__init__(parent)
@@ -309,15 +332,26 @@ class LaunchMonitor(QObject):
                 self.danger.emit(self.side, u)
 
     def _check_crash(self) -> None:
-        """Появился ли crash-лог этой сессии.
+        """Разбирает crash-логи, появившиеся за эту сессию.
 
-        Сообщаем один раз: движок дописывает файл не мгновенно, и без флага
-        одно падение расползлось бы в несколько одинаковых окон.
+        Их два разных вида, и путать их нельзя. Несобравшийся модуль срывает
+        запуск — о нём говорим один раз и громко: без скомпилированных скриптов
+        игра не стартует. Исключение времени выполнения (NULL pointer и прочее)
+        — обычная ошибка в коде мода: сервер работает дальше, таких за сессию
+        бывает много, и место им в счётчике, а не в объявлении о провале.
+
+        Разобранные файлы запоминаем: движок дописывает их не мгновенно, и без
+        этого одно падение расползлось бы в несколько одинаковых сообщений.
         """
-        if self._crashed or not self._dir:
+        if not self._dir:
             return
-        path = crashlog.newest_since(self._dir, self._known_crash)
-        if not path:
-            return
-        self._crashed = True
-        self.crashed.emit(self.side, crashlog.parse(path))
+        for path in crashlog.all_since(self._dir, self._known_crash):
+            self._known_crash.add(str(path))
+            report = crashlog.parse(path)
+            if crashlog.is_fatal(report):
+                if self._crashed:
+                    continue      # о сорванном запуске говорим один раз
+                self._crashed = True
+                self.crashed.emit(self.side, report)
+            else:
+                self.errored.emit(self.side, report)

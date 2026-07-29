@@ -594,6 +594,7 @@
   "status.crash_title": "Start fehlgeschlagen: {s}",
   "status.crash_where": "Datei: {f}, Zeile {n}",
   "status.died": "beendet",
+  "status.errors": "Fehler: {n}",
   "status.failed": "nicht gestartet",
   "status.mem_danger": "ACHTUNG ({s}): Die Skripte der Ebene {l} sind nahe am Speicherlimit ({p}%). Wird das Limit überschritten, schlägt der Start fehl.",
   "status.mem_danger_title": "{s}, Ebene {l}: {p}% des Skriptspeichers",
