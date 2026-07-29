@@ -17,6 +17,7 @@ Windows не даёт переписать файлы запущенного п�
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from .updater import UPDATE_DIR, Release, clear_pending, pending
 from .version import is_newer
 
 STAGING = UPDATE_DIR / "staging"
+_ATTEMPT = UPDATE_DIR / "attempted.json"
 
 # Папки пользователя внутри установки — в портативном режиме они там и лежат.
 KEEP = ("config", "logs", "update")
@@ -77,17 +79,58 @@ def preflight(rel: Release | None = None) -> str:
     return ""
 
 
-def settled() -> bool:
-    """Убирает отметку, если обновление уже установлено.
+def mark_attempt(version: str) -> None:
+    """Запоминает версию, которую сейчас отдаём помощнику.
 
-    Признак установки — что скачанная версия больше не новее работающей: значит
-    помощник отработал и запустил уже её. Вызывается при старте; заодно
-    подчищает архив, который иначе занимал бы под сотню мегабайт.
+    Нужна, чтобы после перезапуска отличить «установилось» от «не установилось»:
+    сам помощник доложить не может, его к тому времени уже нет.
+    """
+    UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ATTEMPT.write_text(json.dumps({"version": version}), encoding="utf-8")
+
+
+def _attempt() -> dict:
+    try:
+        data = json.loads(_ATTEMPT.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def blocked(version: str) -> bool:
+    """Версия, установка которой уже срывалась.
+
+    Требовать её повторно нельзя: обязательная проверка на первом запуске
+    превратила бы такую версию в замкнутый круг — требуем обновиться, установка
+    не срабатывает, версия прежняя, требуем снова. Программа не запустится
+    никогда.
+    """
+    a = _attempt()
+    return bool(a.get("failed")) and a.get("version") == version
+
+
+def settled() -> bool:
+    """Разбирает, чем кончилась установка, начатая до перезапуска.
+
+    Установилось — скачанная версия больше не новее работающей: снимаем отметку
+    и убираем архив, который иначе занимал бы под сотню мегабайт.
+
+    Не установилось — версия осталась прежней, хотя помощника мы запускали.
+    Причины бывают разные: к релизу приложили архив со старой сборкой, копирование
+    не прошло, файлы оказались заняты. Разбираться уже поздно, но повторять
+    бессмысленно: помечаем версию как несработавшую, чтобы её не требовали снова.
     """
     rel = pending()
-    if rel is not None and not is_newer(rel.version):
+    if rel is None:
+        return False
+    if not is_newer(rel.version):
         clear_pending()
+        _ATTEMPT.unlink(missing_ok=True)
         return True
+    if _attempt().get("version") == rel.version:
+        clear_pending()
+        _ATTEMPT.write_text(json.dumps({"version": rel.version, "failed": True}),
+                            encoding="utf-8")
     return False
 
 

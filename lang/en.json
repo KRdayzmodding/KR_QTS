@@ -641,6 +641,7 @@
   "upd.must_body": "The app is not set up yet, so it has to be updated now. Settings made on an old version may not be understood by the new one, and the first run is where old bugs show up most.",
   "upd.must_failed": "The update could not be installed: {m}\n\nContinuing on the current version.",
   "upd.must_noasset": "Version {v} is out, but the release has no build attached. Download it from the release page whenever convenient.",
+  "upd.must_stuck": "Version {v} could not be installed, so we continue on the current one. You can update later from the main window.",
   "upd.nav": "Update",
   "upd.nav_available": "Version {v} available",
   "upd.nav_downloading": "Downloading… {p}%",

@@ -58,6 +58,9 @@ def install(rel: Release, parent: QWidget | None = None) -> str:
                          "Программа не закрылась. Закройте её и обновитесь заново."),
                 failed=tr("upd.helper_failed",
                           "Не удалось скопировать файлы. Обновление не установлено."))
+            # Отмечаем до запуска: после него мы живём считанные секунды, и
+            # запись уже может не успеть лечь на диск.
+            updater_apply.mark_attempt(rel.version)
             updater_apply.launch_helper(script)
         except OSError as e:
             out["err"] = str(e)

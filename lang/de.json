@@ -641,6 +641,7 @@
   "upd.must_body": "Das Programm ist noch nicht eingerichtet, daher muss jetzt aktualisiert werden. Einstellungen einer alten Version versteht die neue möglicherweise nicht, und beim ersten Start fallen alte Fehler am stärksten auf.",
   "upd.must_failed": "Das Update konnte nicht installiert werden: {m}\n\nWir arbeiten mit der aktuellen Version weiter.",
   "upd.must_noasset": "Version {v} ist erschienen, dem Release liegt aber keine Programmdatei bei. Laden Sie sie bei Gelegenheit von der Release-Seite.",
+  "upd.must_stuck": "Version {v} konnte nicht installiert werden, wir arbeiten mit der aktuellen weiter. Sie können später über das Hauptfenster aktualisieren.",
   "upd.nav": "Update",
   "upd.nav_available": "Version {v} verfügbar",
   "upd.nav_downloading": "Wird geladen… {p}%",

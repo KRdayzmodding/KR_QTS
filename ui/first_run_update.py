@@ -26,7 +26,7 @@ from qfluentwidgets import (
     StrongBodyLabel,
 )
 
-from core import updater
+from core import updater, updater_apply
 from core.i18n import tr
 from core.updater import Release
 from core.version import APP_NAME
@@ -147,6 +147,14 @@ def ensure_current(parent: QWidget | None = None) -> bool:
 
     rel = _check(parent)
     if not updater.is_update(rel) or rel is None:
+        return True
+    if updater_apply.blocked(rel.version):
+        # Эту версию мы уже пробовали поставить, и она не встала. Требовать её
+        # снова — обречь человека на круг без выхода.
+        _tell(parent, tr("upd.must_stuck",
+                         "Версию {v} установить не удалось, поэтому продолжаем "
+                         "на текущей. Обновиться можно позже из главного окна.",
+                         v=rel.version))
         return True
     if not rel.downloadable:
         # Требовать нечего: к релизу не приложен архив, поставить его мы не можем.
