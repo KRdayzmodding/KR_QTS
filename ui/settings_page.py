@@ -518,8 +518,12 @@ class SettingsPage(QScrollArea):
         self.note.setText(tr("settings.detected", "Заполнено полей: {n}", n=filled))
 
     def _update_pbo_button_state(self) -> None:
-        """Полная запаковка требует и pboProject, и DayZ Tools: pboProject зовёт
-        бинаризатор/конвертеры из DayZ Tools, без них она падает на бинаризации."""
+        """Доступность настроек pboProject и обоих режимов запаковки.
+
+        Режимы оба идут через pboProject, а он зовёт бинаризатор и конвертеры из
+        DayZ Tools — без них падает на бинаризации. Поэтому доступность у них
+        общая, и подпись говорит, чего именно не хватает.
+        """
         pbo_ok = Path(find_pbo_project_exe(self.p_mikero.text())).is_file()
         tools_ok = bool(self.p_tools.text()) and Path(self.p_tools.text()).is_dir()
         full_ok = pbo_ok and tools_ok
@@ -534,18 +538,22 @@ class SettingsPage(QScrollArea):
               "pboProject не найден по указанному пути Mikero Tools — "
               "укажите правильный путь, чтобы открыть эти настройки."))
 
+        # Подписи режимов не трогаем: раньше здесь переписывался текст пункта 0,
+        # из-за чего «Обычная» превращалась во вторую «Полную» — остаток от
+        # времён, когда выбирали между своим пакером и pboProject.
+        for i in range(self.pack_engine.count()):
+            self.pack_engine.setItemEnabled(i, full_ok)
         if not pbo_ok:
-            label = tr("settings.engine_full_missing",
-                       "Полная, с проверками (pboProject) — недоступно, pboProject не найден")
+            tip = tr("settings.engine_no_pbo",
+                     "Запаковка недоступна: pboProject не найден по указанному пути.")
         elif not tools_ok:
-            label = tr("settings.engine_full_no_tools",
-                       "Полная, с проверками (pboProject) — недоступно, не найдены DayZ Tools")
+            tip = tr("settings.engine_no_tools",
+                     "Запаковка недоступна: не найдены DayZ Tools.")
         else:
-            label = tr("settings.engine_full", "Полная, с проверками (pboProject)")
-        self.pack_engine.setItemEnabled(0, full_ok)
-        if not full_ok and self.pack_engine.currentData() == "full":
-            self.pack_engine.setCurrentIndex(1)
-        self.pack_engine.setItemText(0, label)
+            tip = tr("settings.engine_tip",
+                     "Обычная переиспользует содержимое temp и собирает за "
+                     "секунды; полная чистит temp и пересобирает всё.")
+        self.pack_engine.setToolTip(tip)
 
     def _show_filepatch_help(self) -> None:
         TeachingTip.create(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog,
-    QGroupBox, QWizard, QWizardPage, QWidget,
+    QGroupBox, QWizardPage, QWidget,
 )
 from qfluentwidgets import (
     LineEdit, ComboBox, CheckBox, SpinBox, PushButton, PrimaryPushButton,
@@ -13,7 +13,7 @@ from qfluentwidgets import (
 )
 
 from core.i18n import tr
-from core.params import specs_for, FLAG, SWITCH, INT, STR, SERVER, CLIENT
+from core.params import specs_for, FLAG, SWITCH, INT, SERVER, CLIENT
 from core.presets import ServerPreset, MODE_DIAG, MODE_DEDICATED
 from core.settings import Settings, STABLE, EXPERIMENTAL
 from ui.mission_picker import MapPicker
@@ -62,10 +62,13 @@ _DEFAULT_PARAMS_CLIENT = {
 _DEFAULT_PARAMS_DIAG = {
     "filePatching": True, "battleye": False, "newErrorsAreWarnings": True,
 }
-_DEFAULT_TIME_LOGIN = 3   # TimeLogin/TimeLogout в db/globals.xml миссии, секунды
+# TimeLogin/TimeLogout в db/globals.xml миссии, секунды. Единица, а не
+# ванильные 15: при отладке сервер перезапускают десятки раз за сессию,
+# и каждый лишний тик ожидания входа платится живым временем.
+_DEFAULT_TIME_LOGIN = 1
 
 
-def _attach_map_mods(preset: ServerPreset, picker: "MapPicker") -> None:
+def _attach_map_mods(preset: ServerPreset, picker: MapPicker) -> None:
     """Моды карты (из репозитория миссии) автоматически включаются в пресет."""
     from pathlib import Path as _P
     entry = picker.catalog_entry()
@@ -90,7 +93,6 @@ class AdvancedPresetDialog(ThemedDialog):
                               if preset.path().exists() else "")
         self.setWindowTitle(tr("preset.edit_title", "Пресет: {n}", n=preset.name))
         self.resize(760, 680)
-        root_hint = settings.client_root(preset.branch)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -299,7 +301,8 @@ class AdvancedPresetDialog(ThemedDialog):
                         parent=self, duration=4000, position=InfoBarPosition.TOP_RIGHT)
 
     def _read_time_login(self) -> int:
-        """Актуальное значение из globals.xml миссии; иначе из пресета; иначе 15."""
+        """Актуальное значение из globals.xml миссии; иначе из пресета;
+        иначе значение по умолчанию."""
         from pathlib import Path as _P
         from core.layout import resolve_mission
         from core.missions import read_global_var
@@ -312,7 +315,7 @@ class AdvancedPresetDialog(ThemedDialog):
                     return int(float(val))
                 except ValueError:
                     pass
-        return p.time_login if p.time_login >= 0 else 15
+        return p.time_login if p.time_login >= 0 else _DEFAULT_TIME_LOGIN
 
     def _mission_ctx(self) -> None:
         self.map_picker.set_context(self.settings, self.branch.currentData(),

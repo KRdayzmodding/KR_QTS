@@ -229,7 +229,7 @@ class FirstRunWizard(ThemedWizard):
                      content="", parent=self, duration=4000,
                      position=InfoBarPosition.TOP_RIGHT)
 
-    def _browse(self, edit: QLineEdit) -> None:
+    def _browse(self, edit: LineEdit) -> None:
         p = QFileDialog.getExistingDirectory(self, "", edit.text())
         if p:
             edit.setText(p)
