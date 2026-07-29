@@ -217,6 +217,10 @@ class MainWindow(FluentWindow):
         # главное окно и мини-окно должны перейти на него, иначе останутся
         # с прежним списком модов
         self.mods_panel.registry_changed = self._registry_rescanned
+        # смена метки «серверный» перекладывает мод по строкам запуска прямо в
+        # файлах пресетов — тот, что открыт у нас, надо перечитать, иначе
+        # запустимся по устаревшему списку из памяти
+        self.mods_panel.presets_changed.connect(self._presets_changed_outside)
         self.pack_table = PackingLog(self.launch_page.launch_log)
         self.launch_status = LaunchStatus(self.launch_page.launch_log)
         # у сервера и клиента свои RPT в разных папках — свой наблюдатель на каждого
@@ -363,6 +367,10 @@ class MainWindow(FluentWindow):
                      duration=10000)
 
     # ------------------------------------------------------------------ пресеты
+
+    def _presets_changed_outside(self) -> None:
+        """Пресеты правили мимо нас — перечитать, сохранив выбранный."""
+        self._reload_presets(select=self.current.file_stem() if self.current else None)
 
     def _reload_presets(self, select: str | None = None) -> None:
         combo = self.launch_page.preset_combo

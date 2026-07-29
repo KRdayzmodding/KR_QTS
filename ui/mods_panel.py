@@ -578,6 +578,8 @@ class SetsDialog(ThemedDialog):
 
 
 class ModsPanel(QWidget):
+    presets_changed = Signal()   # пресеты правились на диске — окну пора перечитать
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.registry: ModRegistry | None = None
@@ -1004,6 +1006,23 @@ class ModsPanel(QWidget):
             return
         mod.is_server = item.checkState(COL_SERVER) == Qt.CheckState.Checked
         self.registry.save_flags()
+        # Метка — свойство мода, но подключён он в пресетах списком: -mod или
+        # -serverMod. Без переноса мод продолжал бы уходить не в ту строку
+        # запуска, и человек видел бы ту же ошибку, ради которой метку и ставил.
+        from core.presets import apply_server_flag
+        changed = apply_server_flag(mod.name, mod.is_server)
+        if changed:
+            # молча переписывать чужие пресеты нельзя — говорим, какие именно
+            InfoBar.success(
+                title=tr("mods.server_moved",
+                         "«{m}» перенесён в {where} в пресетах: {list}",
+                         m=mod.name,
+                         where=(tr("mods.server_line", "серверные моды") if mod.is_server
+                                else tr("mods.client_line", "клиентские моды")),
+                         list=", ".join(changed)),
+                content="", parent=self, duration=6000,
+                position=InfoBarPosition.TOP_RIGHT)
+            self.presets_changed.emit()
 
     def _item_dbl(self, item: QTreeWidgetItem, column: int) -> None:
         if column == COL_NAME:

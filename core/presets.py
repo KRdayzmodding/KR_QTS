@@ -122,3 +122,39 @@ class ModPreset:
                 except (OSError, json.JSONDecodeError):
                     continue
         return out
+
+
+def _same_mod(a: str, b: str) -> bool:
+    """Один ли это мод. Сравниваем как реестр: с «@» впереди и без регистра —
+    в пресетах имя могло быть записано и так и так."""
+    def norm(s: str) -> str:
+        s = s.strip()
+        return (s if s.startswith("@") else "@" + s).lower()
+    return norm(a) == norm(b)
+
+
+def apply_server_flag(mod_name: str, is_server: bool) -> list[str]:
+    """Раскладывает мод по строкам запуска во всех пресетах. Возвращает имена
+    тех, где что-то изменилось.
+
+    Признак «серверный» — свойство самого мода, а не пресета, но подключён мод
+    в пресете списком: -mod или -serverMod. Раньше метку меняли, а подключённые
+    экземпляры оставались где были — мод продолжал уходить не в ту строку
+    запуска, и человек видел ту же ошибку, ради которой метку и ставил.
+
+    Затрагиваются только пресеты, где мод уже подключён: молча добавлять его
+    туда, где его не было, нельзя.
+    """
+    changed: list[str] = []
+    for p in ServerPreset.load_all():
+        src, dst = (p.mods, p.server_mods) if is_server else (p.server_mods, p.mods)
+        moved = [n for n in src if _same_mod(n, mod_name)]
+        if not moved:
+            continue
+        src[:] = [n for n in src if not _same_mod(n, mod_name)]
+        for n in moved:
+            if not any(_same_mod(x, n) for x in dst):
+                dst.append(n)
+        p.save()
+        changed.append(p.name)
+    return changed
