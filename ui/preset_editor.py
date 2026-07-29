@@ -621,4 +621,31 @@ class LazyPresetWizard(ThemedWizard):
         preset.save()
         self.result_preset = preset
         self.map_picker.ensure_mission()  # миссии нет — стартует модальная загрузка
+        self._apply_default_time_login(preset)
         super().accept()
+
+    def _apply_default_time_login(self, preset: ServerPreset) -> None:
+        """Записывает наше умолчание в globals.xml только что созданной миссии.
+
+        Миссии приезжают с TimeLogin = 15. Редактор показывает фактическое
+        значение из миссии, а не из пресета — так и надо, иначе он врал бы про
+        то, что реально произойдёт на сервере. Но из-за этого умолчание в
+        коде до миссии не доходило: открыл пресет — увидел 15, сохранил — 15
+        уехало и в пресет.
+
+        Поэтому пишем сразу при создании, пока значение заведомо ничьё. Чужой
+        выбор при этом не затирается: существующие пресеты сюда не попадают.
+        """
+        from pathlib import Path as _P
+
+        from core.layout import resolve_mission
+        from core.missions import set_global_var
+        mission = resolve_mission(preset.mission, self.settings,
+                                  preset.branch, preset.mode)
+        if not mission or not _P(mission).is_dir():
+            return          # миссию не скачали — применится при первом запуске
+        try:
+            set_global_var(_P(mission), "TimeLogin", str(preset.time_login))
+            set_global_var(_P(mission), "TimeLogout", str(preset.time_login))
+        except OSError:
+            pass            # не записалось — не повод срывать создание пресета
