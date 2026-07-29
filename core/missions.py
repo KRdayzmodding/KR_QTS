@@ -55,7 +55,7 @@ def set_global_var(mission_dir: Path, name: str, value: str) -> bool:
         return True
     except OSError:
         return False
-_UA = {"User-Agent": "KR-ServerManager (github.com/KRdayzmodding/KR_ServerManager)"}
+_UA = {"User-Agent": "KR-QTS (github.com/KRdayzmodding/KR_QTS)"}
 
 
 @dataclass

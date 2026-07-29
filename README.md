@@ -1,8 +1,10 @@
-# KR Server Manager
+# KR Quick Test Server
 
 **RU** | [EN below](#en)
 
-**KR Server Manager** — инструмент для DayZ-мододелов и владельцев серверов, который собирает весь цикл локальной разработки в одно окно:
+**KR Quick Test Server** (KR QTS) — быстрый тестовый сервер DayZ и сборка модов, без единого батника.
+
+Запустить локальный тестовый сервер — задача, которая новичка отпугивает раньше, чем он успевает начать: десяток правил, набор батников, которые надо править под каждый мод и переключать между собой. QTS убирает это целиком и собирает весь цикл локальной разработки в одно окно:
 
 - пресеты запуска сервера (dedicated или Diag) и клиента, ветки Stable/Experimental;
 - подключение модов из Steam Workshop и локальных папок с автоматическими junction-ссылками;
@@ -16,8 +18,8 @@
 ### Установка
 
 ```
-git clone https://github.com/KRdayzmodding/KR_ServerManager.git
-cd KR_ServerManager
+git clone https://github.com/KRdayzmodding/KR_QTS.git
+cd KR_QTS
 pip install -r requirements.txt
 python main.py
 ```
@@ -34,7 +36,9 @@ GPLv3 — простыми словами: пользуйтесь бесплат
 
 ## EN
 
-**KR Server Manager** — an all-in-one tool for DayZ modders and server owners that puts the whole local development cycle in one window:
+**KR Quick Test Server** (KR QTS) — a quick DayZ test server and mod packing, without a single batch file.
+
+Getting a local test server running is what scares newcomers off before they even start: a dozen rules and a pile of batch files to edit per mod and switch between. QTS removes all of it and puts the whole local development cycle in one window:
 
 - launch presets for server (dedicated or Diag) and client, Stable/Experimental branches;
 - mod management for Steam Workshop and local mods with automatic junction links;
@@ -48,8 +52,8 @@ No more .bat files: set up a preset once — then it's a single "Launch" button.
 ### Install
 
 ```
-git clone https://github.com/KRdayzmodding/KR_ServerManager.git
-cd KR_ServerManager
+git clone https://github.com/KRdayzmodding/KR_QTS.git
+cd KR_QTS
 pip install -r requirements.txt
 python main.py
 ```

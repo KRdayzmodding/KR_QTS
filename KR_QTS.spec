@@ -39,7 +39,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="KR_ServerManager",
+    name="KR_QTS",
     debug=False,
     strip=False,
     upx=False,              # UPX ускоряет ложные срабатывания антивирусов
@@ -54,5 +54,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="KR_ServerManager",
+    name="KR_QTS",
 )

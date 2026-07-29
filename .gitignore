@@ -4,7 +4,7 @@ build/
 dist/
 # спеки PyInstaller обычно генерируются, но наша написана руками и нужна сборке
 *.spec
-!KR_ServerManager.spec
+!KR_QTS.spec
 
 # отчёты о падениях (core/crashguard) — локальные, у каждого свои
 logs/

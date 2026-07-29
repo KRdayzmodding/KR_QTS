@@ -22,7 +22,7 @@ class FirstRunWizard(ThemedWizard):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.settings = settings
-        self.setWindowTitle(tr("wizard.title", "KR Server Manager — первая настройка"))
+        self.setWindowTitle(tr("wizard.title", "KR Quick Test Server — первая настройка"))
         self.resize(720, 560)
 
         # --- Шаг 1: язык + префикс проекта

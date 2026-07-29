@@ -8,7 +8,7 @@
     build/icon.ico          иконка exe — из того же icon.tga, что и в окне
     build/version_info.txt  ресурс версии Windows (свойства файла)
 
-Результат — dist/KR_ServerManager/. Пользовательские данные там не лежат:
+Результат — dist/KR_QTS/. Пользовательские данные там не лежат:
 config и downloads приложение создаёт в %APPDATA%, см. core/settings.
 """
 from __future__ import annotations
@@ -83,9 +83,9 @@ def make_version_info(dst: Path) -> None:
       StringStruct('CompanyName', {PUBLISHER!r}),
       StringStruct('FileDescription', {APP_NAME!r}),
       StringStruct('FileVersion', {VERSION!r}),
-      StringStruct('InternalName', 'KR_ServerManager'),
+      StringStruct('InternalName', 'KR_QTS'),
       StringStruct('LegalCopyright', 'GPLv3'),
-      StringStruct('OriginalFilename', 'KR_ServerManager.exe'),
+      StringStruct('OriginalFilename', 'KR_QTS.exe'),
       StringStruct('ProductName', {APP_NAME!r}),
       StringStruct('ProductVersion', {VERSION!r}),
     ])]),
@@ -103,14 +103,14 @@ def main() -> int:
     print("  иконка и ресурс версии готовы")
 
     args = [sys.executable, "-m", "PyInstaller", "--noconfirm",
-            str(ROOT / "KR_ServerManager.spec")]
+            str(ROOT / "KR_QTS.spec")]
     if "--clean" in sys.argv:
         args.insert(3, "--clean")
     print("  PyInstaller…")
     rc = subprocess.run(args, cwd=ROOT).returncode
     if rc:
         return rc
-    out = ROOT / "dist" / "KR_ServerManager"
+    out = ROOT / "dist" / "KR_QTS"
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     print(f"\nготово: {out}  ({size / 1024 / 1024:.0f} МБ)")
     return 0

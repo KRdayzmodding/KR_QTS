@@ -26,7 +26,7 @@ def _app_dir() -> Path:
 
     Портативный режим: если рядом с exe есть папка config, работаем в ней —
     так приложение можно носить на флешке и держать несколько независимых
-    копий. Иначе — %APPDATA%\\KR_ServerManager.
+    копий. Иначе — %APPDATA%\\KR_QTS.
     """
     if not getattr(sys, "frozen", False):
         return Path(__file__).resolve().parent.parent
@@ -34,7 +34,7 @@ def _app_dir() -> Path:
     if (near_exe / "config").is_dir():
         return near_exe
     appdata = os.environ.get("APPDATA")
-    return Path(appdata) / "KR_ServerManager" if appdata else near_exe
+    return Path(appdata) / "KR_QTS" if appdata else near_exe
 
 
 RES_DIR = _res_dir()
@@ -193,6 +193,13 @@ class Settings:
     # поверх всего обычно держат одно из двух, второе в это время мешает
     log_on_top_server: bool = False
     log_on_top_client: bool = False
+
+    # Проверять новую версию на GitHub при запуске. Сетевой запрос на старте
+    # без возможности отключить — то, за что справедливо ругают, поэтому галка.
+    check_updates: bool = True
+    # Версия, чейнджлог которой пользователь уже открывал: пункт в навигации
+    # останется, но окно само не откроется второй раз
+    update_seen: str = ""
 
     # Steam Web API ключ (steamcommunity.com/dev/apikey) — для зависимостей модов;
     # пусто — зависимости читаются со страницы воркшопа

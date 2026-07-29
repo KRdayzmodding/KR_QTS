@@ -183,7 +183,7 @@ class MissionDownloadWorker(QThread):
         tmp_zip = Path(tmp_name)
         try:
             req = urllib.request.Request(url, headers={
-                "User-Agent": "KR-ServerManager (github.com/KRdayzmodding/KR_ServerManager)"})
+                "User-Agent": "KR-QTS (github.com/KRdayzmodding/KR_QTS)"})
             t0 = time.monotonic()
             got = 0
             with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_zip, "wb") as f:

@@ -10,7 +10,7 @@ import re
 import urllib.parse
 import urllib.request
 
-_UA = {"User-Agent": "KR-ServerManager (github.com/KRdayzmodding/KR_ServerManager)"}
+_UA = {"User-Agent": "KR-QTS (github.com/KRdayzmodding/KR_QTS)"}
 
 
 def _get(url: str, timeout: int = 20) -> str:
