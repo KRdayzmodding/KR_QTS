@@ -27,7 +27,7 @@ from .scriptmem import MODULES
 COMPILE, EXCEPTION, OTHER = "compile", "exception", "other"
 
 _HEAD_RE = re.compile(r"^\S+,\s+\d{2}\.\d{2}\s+\d{4}\s")
-_COMPILE_RE = re.compile(r"""Can't compile\s+"(?P<mod>\w+)"\s+script module""", re.I)
+_COMPILE_RE = re.compile(r"""Can't compile\s+"(?P<mod>\w+)"\s+script module""", re.IGNORECASE)
 # «KR/…/ar_buttstocks.c(11): Invalid statement ')'»
 _WHERE_RE = re.compile(r"^(?P<file>.+?)\((?P<line>\d+)\):\s*(?P<msg>.+)$")
 _REASON_RE = re.compile(r"^Reason:\s*(?P<msg>.+)$")

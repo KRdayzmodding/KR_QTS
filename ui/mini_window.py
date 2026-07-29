@@ -219,8 +219,11 @@ class MiniWindow(QWidget):
 
     def refresh_status(self) -> None:
         """Кружки и иконка кнопки — вызывается таймером главного окна."""
-        self._set_dot(self.dot_server, self.mw.process_state(self.mw.server_pid))
-        self._set_dot(self.dot_client, self.mw.process_state(self.mw.client_pid))
+        # состояние берём у главного окна, а не считаем своё: правило на все
+        # индикаторы одно, см. MainWindow.side_state
+        from ui.launch_status import SERVER, CLIENT
+        self._set_dot(self.dot_server, self.mw.side_state(SERVER))
+        self._set_dot(self.dot_client, self.mw.side_state(CLIENT))
         state = self.mw.launch_state()
         # POWER_BUTTON, а не CLOSE: крестик уже занят кнопкой «свернуть в трей»
         # в шапке, и два одинаковых значка рядом читались бы как одно действие

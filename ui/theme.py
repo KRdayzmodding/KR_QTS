@@ -12,16 +12,16 @@ ThemedDialog вместо голого QDialog, чтобы получать то
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import QDialog, QWizard
-from qfluentwidgets import FluentStyleSheet, setCustomStyleSheet
+from qfluentwidgets import FluentStyleSheet, isDarkTheme, setCustomStyleSheet
 
-from core.settings import APP_DIR
+from core.settings import RES_DIR
 
 _LIGHT_BG = "white"
 _DARK_BG = "rgb(43, 43, 43)"
 
-ICON_FILE = APP_DIR / "icon.tga"
+ICON_FILE = RES_DIR / "icon.tga"
 # Размеры, которые реально запрашиваются: 16 — системный заголовок и трей,
 # 18 — заголовок FluentWindow (см. FluentTitleBar.setIcon), 32 — панель задач,
 # 48/256 — проводник и Alt+Tab. Точное совпадение важно: не найдя нужный
@@ -44,17 +44,73 @@ def _downscale(src: QPixmap, size: int) -> QPixmap:
     return pm.scaled(size, size, ratio, mode)
 
 
-def app_icon() -> QIcon:
-    """Иконка приложения; пустая, если файла нет — падать из-за этого незачем."""
+def _inverted(src: QPixmap) -> QPixmap:
+    """Негатив с сохранением прозрачности.
+
+    Иконка монохромная (насыщенность нулевая по всей площади) и светлая: 84%
+    пикселей — серый около 224. На тёмной шапке она читается, на светлой
+    сливается с фоном. Инверсия переворачивает уровни серого, форму и
+    прозрачность не трогает — для цветного логотипа так делать было бы нельзя,
+    но здесь цвета нет.
+    """
+    img = src.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    img.invertPixels(QImage.InvertMode.InvertRgb)   # альфа не затрагивается
+    return QPixmap.fromImage(img)
+
+
+_icon_cache: dict[bool, QIcon] = {}
+
+
+def app_icon(dark: bool | None = None) -> QIcon:
+    """Иконка приложения под текущую тему; пустая, если файла нет.
+
+    Кешируется по теме: её запрашивают окно, трей и мини-окно, а пересчёт —
+    это девять уменьшений исходника половинками.
+    """
+    if dark is None:
+        dark = isDarkTheme()
+    if dark in _icon_cache:
+        return _icon_cache[dark]
     icon = QIcon()
     src = QPixmap(str(ICON_FILE))
     if src.isNull():
         return icon
+    if not dark:
+        src = _inverted(src)
     for size in _ICON_SIZES:
         if size < src.width():
             icon.addPixmap(_downscale(src, size))
     icon.addPixmap(src)
+    _icon_cache[dark] = icon
     return icon
+
+
+_PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+
+def light_taskbar() -> bool:
+    """Светлая ли панель задач Windows.
+
+    Отдельная от всего остального настройка: Windows позволяет держать тёмную
+    панель при светлых окнах и наоборот (ключи SystemUsesLightTheme и
+    AppsUseLightTheme независимы). Значение по умолчанию — тёмная: так стоит
+    в свежей Windows 10/11.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _PERSONALIZE) as key:
+            return bool(winreg.QueryValueEx(key, "SystemUsesLightTheme")[0])
+    except (ImportError, OSError):
+        return False
+
+
+def tray_icon() -> QIcon:
+    """Иконка для трея — под цвет панели задач, а не под тему приложения.
+
+    Значок живёт в области уведомлений, то есть на панели задач; тема самого
+    приложения на его фон никак не влияет.
+    """
+    return app_icon(dark=not light_taskbar())
 
 
 def _page_qss(bg: str) -> str:

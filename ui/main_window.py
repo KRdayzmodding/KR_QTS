@@ -15,7 +15,7 @@ from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF,
     ComboBox, CheckBox, PushButton, PrimaryPushButton, TransparentToolButton,
     BodyLabel, StrongBodyLabel, CardWidget, InfoBar, InfoBarPosition, MessageBox,
-    SystemTrayMenu, Action,
+    SystemTrayMenu, Action, qconfig,
 )
 
 from core import filepatch, logsource, packer, packlog
@@ -29,6 +29,7 @@ from core.settings import (
     check_path, find_pbo_project_exe, is_install,
 )
 from core.steam_urls import SETTINGS_APPS
+from core.version import APP_NAME, VERSION
 from ui.cfg_editor import CfgEditor
 from ui.log_window import LogWindow
 from ui.mods_panel import ModsPanel
@@ -38,11 +39,13 @@ from ui.settings_page import SettingsPage
 from ui.steam_watch import SteamWatcher, status_text
 from ui.mini_window import MiniWindow
 from ui.packing_log import PackingLog
-from ui.launch_status import LaunchStatus, LaunchMonitor, SERVER, CLIENT
+from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
+                              SERVER, CLIENT)
 from ui.packlog_window import PackLogWindow
-from ui.theme import app_icon
+from ui.theme import app_icon, light_taskbar, tray_icon
 
-_STATUS_COLORS = {"info": "#d4d4d4", "warning": "#e5c07b", "error": "#ff6b6b"}
+_STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
+                  "warning": "#e5c07b", "error": "#ff6b6b"}
 _CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
                 "border:1px solid #333;border-radius:6px;padding:4px;}")
 
@@ -50,7 +53,7 @@ _CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
 class LaunchInterface(QWidget):
     """Страница «Запуск»: пресет, ветка, галки, кнопки, статус, журнал запуска."""
 
-    def __init__(self, win: "MainWindow"):
+    def __init__(self, win: MainWindow):
         super().__init__()
         self.setObjectName("launchInterface")
         self.win = win
@@ -111,7 +114,8 @@ class LaunchInterface(QWidget):
         row2 = QHBoxLayout()
         self.btn_launch = PrimaryPushButton(FIF.PLAY, tr("main.launch_btn", "Запустить"))
         self.btn_launch.setMinimumHeight(38)
-        self.btn_logs = PushButton(FIF.DOCUMENT, tr("main.show_logs", "Показать логи"))
+        self.btn_logs = PushButton(FIF.DOCUMENT, tr("main.show_logs",
+                                                    "Логи клиента/сервера"))
         self.btn_logs.setMinimumHeight(38)
         row2.addWidget(self.btn_launch, 2)
         row2.addWidget(self.btn_logs, 1)
@@ -138,12 +142,9 @@ class LaunchInterface(QWidget):
         pack.addLayout(row_pack)
 
         row3 = QHBoxLayout()
-        self.btn_sources = PushButton(FIF.APPLICATION, tr("main.mods_with_sources",
-                                                          "Моды с сорсами"))
+        self.btn_sources = PushButton(FIF.SYNC, tr("main.mods_with_sources",
+                                                   "Перепаковка модов"))
         self.btn_sources.setMinimumHeight(38)
-        self.btn_sources.setToolTip(tr("main.mods_with_sources_tip",
-                                       "Локальные моды, у которых заданы папки сорсов — "
-                                       "оттуда же их можно перепаковать."))
         self.btn_packlogs = PushButton(FIF.ZIP_FOLDER, tr("main.show_packlogs",
                                                           "Логи запаковки"))
         self.btn_packlogs.setMinimumHeight(38)
@@ -176,6 +177,8 @@ class MainWindow(FluentWindow):
         self._alive: dict[str, bool] = {}      # для отметки об отключении в логе
         self._quitting = False                 # выход только через меню трея
         self._starting = False                 # идёт запуск: кнопка «Запускается»
+        self._launch_logged = False            # «Запуск завершён» — один раз на запуск
+        self._taskbar_light = light_taskbar()  # под что подобрана иконка трея
         self.ignored_checks: set[str] = set()  # «игнорировать до перезапуска»
 
         self.setWindowTitle("KR Server Manager")
@@ -184,32 +187,38 @@ class MainWindow(FluentWindow):
         # windowIconChanged, а при наследовании от QApplication тот не приходит
         # — без явной установки в шапке остаётся пустое место.
         self.setWindowIcon(app_icon())
+        # иконка монохромная и светлая: на светлой шапке её не видно, поэтому
+        # для светлой темы она инвертируется — и перевыставляется при смене
+        # темы на лету, включая случай «следовать теме Windows»
+        qconfig.themeChanged.connect(self._apply_icon)
         self.resize(1060, 720)
 
         self.log_server = LogWindow(tr("main.server_log", "Логи сервера"),
-                                    accent="#2e7d32", banner_text="SERVER")
+                                    accent="#2e7d32", banner_text="SERVER", key=SERVER)
         self.log_client = LogWindow(tr("main.client_log", "Логи клиента"),
-                                    accent="#1565c0", banner_text="CLIENT")
+                                    accent="#1565c0", banner_text="CLIENT", key=CLIENT)
         for win in (self.log_server, self.log_client):
-            win.set_on_top(settings.logs_on_top)
-            win.on_top_changed = self._logs_on_top_changed
+            win.set_on_top(getattr(settings, f"log_on_top_{win.key}", False))
+            win.on_top_changed = self._log_on_top_changed
 
         # Страницы
         self.launch_page = LaunchInterface(self)
         self.mods_panel = ModsPanel()
         self.mods_panel.setObjectName("modsInterface")
         self.mods_panel.log_cb = self._append_log
+        # вкладка модов пересобирает реестр в фоне и отдаёт новый экземпляр —
+        # главное окно и мини-окно должны перейти на него, иначе останутся
+        # с прежним списком модов
+        self.mods_panel.registry_changed = self._registry_rescanned
         self.pack_table = PackingLog(self.launch_page.launch_log)
         self.launch_status = LaunchStatus(self.launch_page.launch_log)
         # у сервера и клиента свои RPT в разных папках — свой наблюдатель на каждого
         self.monitors = {side: LaunchMonitor(side, self) for side in (SERVER, CLIENT)}
         for mon in self.monitors.values():
-            mon.usage.connect(self.launch_status.set_usage)
+            mon.usage.connect(self._on_usage)
             mon.crashed.connect(self._on_crash)
             mon.danger.connect(self._on_memory_danger)
             mon.limit.connect(self._on_memory_limit)
-        # «игрок вошёл» видно только в RPT сервера — клиент об этом молчит
-        self.monitors[SERVER].player_joined.connect(self._on_player_joined)
         # какие pbo паковались в последний раз — только их логи и показываем
         self._packed: list[str] = []
         self.packlog_windows = {k: PackLogWindow(k) for k in packlog.KINDS}
@@ -251,7 +260,7 @@ class MainWindow(FluentWindow):
 
         current_engine = settings.pack_engine if settings.repack_before_launch else ""
         idx = lp.pack_engine.findData(current_engine)
-        lp.pack_engine.setCurrentIndex(idx if idx >= 0 else 0)
+        lp.pack_engine.setCurrentIndex(max(idx, 0))
         lp.pack_engine.currentIndexChanged.connect(self._pack_engine_changed)
         self._update_branch_availability()
 
@@ -401,12 +410,24 @@ class MainWindow(FluentWindow):
         else:
             self.cfg_editor.set_path(None)
 
-    def _logs_on_top_changed(self, on: bool) -> None:
-        """Галка в одном окне логов ставит поверх и второе — состояние общее."""
-        self.settings.logs_on_top = on
+    def _registry_rescanned(self, registry: ModRegistry) -> None:
+        self.registry = registry
+        self._update_sources_button()
+
+    def _apply_icon(self) -> None:
+        """Перевыставляет иконки: окну — под тему приложения, трею — под панель
+        задач. Это разные настройки Windows, и совпадают они не всегда."""
+        icon = app_icon()
+        self.setWindowIcon(icon)
+        QApplication.instance().setWindowIcon(icon)
+        if getattr(self, "tray", None):
+            self.tray.setIcon(tray_icon())
+            self._taskbar_light = light_taskbar()
+
+    def _log_on_top_changed(self, key: str, on: bool) -> None:
+        """Галка «поверх всех» — своя у каждого окна логов."""
+        setattr(self.settings, f"log_on_top_{key}", on)
         self.settings.save()
-        for win in (self.log_server, self.log_client):
-            win.set_on_top(on)
 
     def _bind_log_dirs(self) -> None:
         p = self.current
@@ -625,6 +646,7 @@ class MainWindow(FluentWindow):
             Path(prof).mkdir(parents=True, exist_ok=True)
 
         self._starting = True
+        self._launch_logged = False
         self._update_launch_button()
         self._append_log(tr("main.launching", "— Запуск «{n}» ({b}) —", n=p.name, b=branch))
         self._log_launch_summary(p, cfg_path)
@@ -703,29 +725,56 @@ class MainWindow(FluentWindow):
 
     def _on_server_ready(self) -> None:
         """Сервер занял порт — с этого момента кнопка предлагает остановку,
-        не дожидаясь конца всей процедуры запуска (дальше ещё клиент)."""
+        не дожидаясь конца всей процедуры запуска (дальше ещё клиент).
+
+        Статус «запущен» здесь не ставим: занятый порт — ещё не готовность,
+        скрипты в этот момент только компилируются. Это делает 5_Mission.
+        """
         self._starting = False
-        self.launch_status.set_running(SERVER)
         self._update_launch_button()
 
     def _on_server_started(self, pid: int) -> None:
+        # В журнал не пишем: стартовавший процесс ещё ничего не значит, скрипты
+        # только начали компилироваться. PID виден в строке статуса, сама
+        # готовность — в блоке, по слою 5_Mission.
         self.server_pid = pid
-        self._append_log(tr("main.log_server_up", "Статус: сервер запущен (PID {p})", p=pid))
+        self.launch_status.set_connecting(SERVER)
         self._bind_log_dirs()
 
     def _on_client_started(self, pid: int) -> None:
         self.client_pid = pid
-        # Запущенным клиент считается не по факту старта процесса, а когда игрок
-        # вошёл в мир. Исключение — сервер запускаем не мы: тогда RPT, где это
-        # видно, нам недоступен, и лучше показать процесс, чем вечное «подключается».
-        if self.current and self.current.launch_server:
-            self.launch_status.set_connecting(CLIENT)
-        else:
-            self.launch_status.set_running(CLIENT)
-        self._append_log(tr("main.log_client_up", "Статус: клиент запущен (PID {p})", p=pid))
+        self.launch_status.set_connecting(CLIENT)
 
-    def _on_player_joined(self, _side: str) -> None:
-        self.launch_status.set_running(CLIENT)
+    def _on_usage(self, side: str, usage) -> None:
+        """Расход памяти слоя — и заодно признак готовности стороны.
+
+        Правило общее для сервера и клиента: 5_Mission компилируется последним,
+        пока его нет — сторона ещё грузится. Признак берётся из собственного
+        лога стороны, поэтому у клиента работает и когда сервер поднимаем не мы.
+        """
+        self.launch_status.set_usage(side, usage)
+        if usage.layer == READY_LAYER:
+            self.launch_status.set_running(side)
+            self._check_launch_complete()
+
+    def _check_launch_complete(self) -> None:
+        """«Запуск завершён» — когда готовы все стороны, которые запускали.
+
+        Раньше строка появлялась по возврату потока запуска, то есть сразу
+        после того, как процессы созданы: сервер в этот момент ещё компилирует
+        скрипты, а клиент висит на загрузке. Запускали одну сторону — ждём одну,
+        обе — ждём обе.
+        """
+        if self._launch_logged:
+            return
+        active = [k for k, side in self.launch_status.sides.items() if side.active]
+        # через side_state, а не через готовность напрямую: сторона, успевшая
+        # подняться и тут же упасть, завершённым запуском не считается
+        if not active or not all(self.side_state(k) == self.ST_RUN for k in active):
+            return
+        self._launch_logged = True
+        self._append_log(tr("main.launch_ok", "Запуск завершён."), "success")
+        self._notify("success", tr("main.launch_ok", "Запуск завершён."))
 
     def _launch_done(self, error: str | None) -> None:
         self._starting = False
@@ -734,8 +783,9 @@ class MainWindow(FluentWindow):
             self._append_log(error, "error")
             self._notify("error", tr("main.launch_failed", "Запуск не удался"), error)
         else:
-            self._append_log(tr("main.launch_ok", "Запуск завершён."))
-            self._notify("success", tr("main.launch_ok", "Запуск завершён."))
+            # про успех сообщит _check_launch_complete, когда стороны реально
+            # поднимутся: здесь процессы только созданы
+            self._check_launch_complete()
 
     def remember_packed(self, names: list[str]) -> None:
         """Запоминает состав последней запаковки (имена без .pbo — так же
@@ -826,9 +876,12 @@ class MainWindow(FluentWindow):
             else:
                 self.log_client.move(screen.left() + margin, screen.top() + margin * 2 + h)
 
-    # состояния процесса — общие для текстового статуса и кружков мини-окна
-    ST_RUN, ST_DEAD, ST_OFF = "run", "dead", "off"
-    STATE_COLORS = {ST_RUN: "#4caf50", ST_DEAD: "#ff6b6b", ST_OFF: "#777777"}
+    # Состояния стороны — общие для строки в шапке, кружков мини-окна и блока
+    # в журнале. Индикаторов трое, правило одно: считать их по отдельности —
+    # верный способ показать в одном месте «работает», а в другом «запускается».
+    ST_RUN, ST_STARTING, ST_DEAD, ST_OFF = "run", "starting", "dead", "off"
+    STATE_COLORS = {ST_RUN: "#4caf50", ST_STARTING: "#e5c07b",
+                    ST_DEAD: "#ff6b6b", ST_OFF: "#777777"}
 
     @staticmethod
     def process_state(pid: int | None) -> str:
@@ -837,7 +890,25 @@ class MainWindow(FluentWindow):
             return MainWindow.ST_RUN
         return MainWindow.ST_DEAD if pid else MainWindow.ST_OFF
 
+    def side_pid(self, side: str) -> int | None:
+        return self.server_pid if side == SERVER else self.client_pid
+
+    def side_state(self, side: str) -> str:
+        """Единственный источник состояния стороны для всех индикаторов.
+
+        Живого процесса мало: он появляется задолго до готовности — сервер ещё
+        компилирует скрипты, клиент висит на загрузке. Запущенной сторона
+        считается, когда в её логе появился расход памяти слоя 5_Mission: он
+        компилируется последним. До этого — «запускается».
+        """
+        proc = self.process_state(self.side_pid(side))
+        if proc != self.ST_RUN:
+            return proc
+        return self.ST_RUN if self.launch_status.is_ready(side) else self.ST_STARTING
+
     def server_running(self) -> bool:
+        """Есть ли что останавливать. Кнопка запуска смотрит именно на процесс,
+        а не на готовность: зависший на загрузке клиент тоже нужно уметь убить."""
         return self.process_state(self.server_pid) == self.ST_RUN
 
     def client_running(self) -> bool:
@@ -929,18 +1000,18 @@ class MainWindow(FluentWindow):
         lp = self.launch_page
         srv, cli = lp.chk_server.isChecked(), lp.chk_client.isChecked()
         if srv and cli:
-            n = kill_all()          # заодно подчистит осиротевшие процессы
+            kill_all()              # заодно подчистит осиротевшие процессы
         else:
-            n = 0
-            if srv and kill_pid(self.server_pid):
-                n += 1
-            if cli and kill_pid(self.client_pid):
-                n += 1
+            if srv:
+                kill_pid(self.server_pid)
+            if cli:
+                kill_pid(self.client_pid)
         if srv:
             self.server_pid = None
         if cli:
             self.client_pid = None
-        self._append_log(tr("main.stopped", "Завершено процессов: {n}", n=n))
+        # счётчик убитых процессов не пишем: следом идут строки статуса по
+        # каждой стороне, и они говорят то же самое, но конкретнее
         self._update_launch_button()
 
     def _log_stopped(self) -> None:
@@ -957,28 +1028,54 @@ class MainWindow(FluentWindow):
             if was and not alive:
                 self._append_log(tr("main.log_stopped", "Статус: {n} отключён", n=label),
                                  "warning")
-                side = SERVER if attr == "server_pid" else CLIENT
-                self.launch_status.set_stopped(side)
-                self.monitors[side].stop()
+                # статус блока обновит _update_status по состоянию процесса —
+                # здесь только глушим наблюдателя за логами
+                self.monitors[SERVER if attr == "server_pid" else CLIENT].stop()
             self._alive[attr] = alive
 
+    def _update_sources_button(self) -> None:
+        """Перепаковывать нечего, пока ни одному моду не заданы сорсы.
+
+        Кнопка в этом случае гаснет, но подсказка объясняет почему — иначе
+        неактивная кнопка выглядит поломкой.
+        """
+        mods = [m for m in self.registry.all() if m.sources] if self.registry else []
+        btn = self.launch_page.btn_sources
+        btn.setEnabled(bool(mods))
+        btn.setToolTip(tr("main.mods_with_sources_tip",
+                          "Локальные моды, у которых заданы папки сорсов — "
+                          "оттуда же их можно перепаковать.") if mods else
+                       tr("main.no_mods_with_sources",
+                          "Нет модов, которым указаны сорсы"))
+
     def _update_status(self) -> None:
+        # цвет панели задач меняют мимо приложения, сигнала об этом нет —
+        # сверяем на том же такте, что и статусы (чтение ключа реестра дешевле
+        # всего остального в этом методе)
+        if getattr(self, "tray", None) and light_taskbar() != self._taskbar_light:
+            self._apply_icon()
         self._log_stopped()
+        self._update_sources_button()
+        # блок в журнале узнаёт о процессах отсюда же, а не отдельным путём
+        for side in (SERVER, CLIENT):
+            self.launch_status.set_process_state(side, self.process_state(
+                self.side_pid(side)))
         self._update_launch_button()
 
-        def state(pid: int | None, name: str, color_run: str) -> str:
-            if pid and psutil.pid_exists(pid):
-                return (f'<span style="color:{color_run};">●</span> '
-                        + tr("main.st_run", "{n}: работает (PID {p})", n=name, p=pid))
-            if pid:
-                return ('<span style="color:#ff6b6b;">●</span> '
-                        + tr("main.st_dead", "{n}: завершился", n=name))
-            return ('<span style="color:#777;">●</span> '
-                    + tr("main.st_off", "{n}: не запущен", n=name))
+        def state(side: str, name: str) -> str:
+            st = self.side_state(side)
+            text = {
+                self.ST_RUN: tr("main.st_run", "{n}: работает (PID {p})",
+                                n=name, p=self.side_pid(side)),
+                self.ST_STARTING: tr("main.st_starting", "{n}: запускается (PID {p})",
+                                     n=name, p=self.side_pid(side)),
+                self.ST_DEAD: tr("main.st_dead", "{n}: завершился", n=name),
+            }.get(st, tr("main.st_off", "{n}: не запущен", n=name))
+            return f'<span style="color:{self.STATE_COLORS[st]};">●</span> {text}'
 
         self.launch_page.status_label.setText(
-            state(self.server_pid, tr("common.server", "Сервер"), "#4caf50") + "  "
-            + state(self.client_pid, tr("common.client", "Клиент"), "#4caf50"))
+            state(SERVER, tr("common.server", "Сервер")) + "  "
+            + state(CLIENT, tr("common.client", "Клиент")))
         self.launch_page.status_label.setTextFormat(Qt.TextFormat.RichText)
         if getattr(self, "mini", None) and not self.mini.isHidden():
             self.mini.refresh_status()
@@ -1037,15 +1134,16 @@ class MainWindow(FluentWindow):
         import re
         from PySide6.QtCore import Qt as _Qt
         text = tr("main.about",
+                  "Версия {v}\n\n"
                   "Утилита для запуска тестовой среды DayZ Standalone "
                   "и отладки модов.\n\n"
                   "Лицензия GPLv3 — бесплатно навсегда.\n"
                   "https://github.com/KRdayzmodding/KR_ServerManager\n\n"
-                  "by [Kramtsov Arms]")
+                  "by [Kramtsov Arms]", v=VERSION)
         # ссылки — кликабельными
         rich = re.sub(r"(https?://\S+)", r'<a href="\1">\1</a>',
                       html.escape(text)).replace("\n", "<br>")
-        box = MessageBox("KR Server Manager", text, self)  # сначала plain — для расчёта размеров
+        box = MessageBox(APP_NAME, text, self)  # сначала plain — для расчёта размеров
         box.contentLabel.setTextFormat(_Qt.TextFormat.RichText)
         box.contentLabel.setTextInteractionFlags(_Qt.TextInteractionFlag.TextBrowserInteraction)
         box.contentLabel.setOpenExternalLinks(True)
@@ -1061,7 +1159,7 @@ class MainWindow(FluentWindow):
         приложение, а прячет его: в цикле отладки мода менеджер нужен
         постоянно, но разворачивать его целиком ради одной кнопки незачем."""
         self.mini = MiniWindow(self)
-        self.tray = QSystemTrayIcon(app_icon(), self)
+        self.tray = QSystemTrayIcon(tray_icon(), self)
         self.tray.setToolTip("KR Server Manager")
 
         menu = SystemTrayMenu(parent=self)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import psutil
@@ -11,7 +12,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from . import packer, packlog
 from .i18n import tr
-from .mods import ModRegistry
+from .mods import ModInfo, ModRegistry
 from .params import specs_for, SERVER, CLIENT
 from .presets import ServerPreset, MODE_DIAG
 from .settings import Settings
@@ -65,7 +66,7 @@ def _proc_kind(proc: psutil.Process) -> str | None:
         return None
 
 
-def kill_kinds(kinds) -> int:
+def kill_kinds(kinds: Iterable[str]) -> int:
     """Гасит процессы DayZ только указанных видов ({"server"} / {"client"}).
 
     Нужно, чтобы запуск клиента не ронял уже работающий сервер: раньше перед
@@ -233,6 +234,34 @@ def port_is_free(port: int) -> bool:
         s.close()
 
 
+def _script_logs(profiles: str) -> set[str]:
+    """Снимок script-логов в папке профиля — что было до запуска."""
+    if not profiles or not Path(profiles).is_dir():
+        return set()
+    return {str(f) for f in Path(profiles).glob("script_*.log")}
+
+
+def scripts_ready(known: set[str], profiles: str = "") -> bool:
+    """Собрал ли сервер скрипты миссии.
+
+    Признак — строка про расход памяти слоя 5_Mission в script-логе этой
+    сессии. Слой компилируется последним, так что до него дело доходит, только
+    когда всё остальное уже поднялось. Файлы из known — прошлые сессии, их не
+    смотрим: там 5_Mission есть всегда, и ожидание завершилось бы мгновенно.
+    """
+    from . import scriptmem
+    for path in _script_logs(profiles) - known if profiles else set():
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            u = scriptmem.parse(line)
+            if u and u.layer == scriptmem.READY_LAYER:
+                return True
+    return False
+
+
 def _server_ready(proc: psutil.Process, port: int) -> bool:
     """Сервер готов, когда занял свой UDP-порт."""
     try:
@@ -260,7 +289,7 @@ class LaunchWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, preset: ServerPreset, settings: Settings, branch: str,
-                 registry: ModRegistry, parent: QObject | None = None):
+                 registry: ModRegistry, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.preset = preset
         self.settings = settings
@@ -277,8 +306,10 @@ class LaunchWorker(QThread):
         p, s, reg = self.preset, self.settings, self.registry
         client_root = s.client_root(self.branch)
 
-        selected = [reg.get(n) for n in (p.mods + p.server_mods)]
-        selected = [m for m in selected if m]
+        # get() возвращает None для мода, которого нет в реестре, — такие
+        # отсеиваем сразу, дальше по коду список считается полным
+        selected: list[ModInfo] = [m for m in (reg.get(n) for n in
+                                               (p.mods + p.server_mods)) if m]
 
         # 1. Перепаковка устаревших локальных модов (только если включено в настройках)
         if s.repack_before_launch:
@@ -374,21 +405,31 @@ class LaunchWorker(QThread):
             # командную строку в журнал не пишем: она длиннее ширины окна,
             # обрезается на середине и вытесняет всё остальное
             exe, args, cwd = build_server_command(p, s, self.branch, reg)
+            # снимок логов до старта: ждать готовности надо по файлу этой
+            # сессии, иначе прошлый лог с 5_Mission засчитается сразу
+            from .layout import resolve_profiles as _rp2
+            prof_dir = _rp2(p.profiles, s, self.branch, p.mode)
+            server_logs = _script_logs(prof_dir)
             server_proc = subprocess.Popen([exe] + args, cwd=cwd)
             self.server_started.emit(server_proc.pid)
 
-            # 6. Ожидание готовности
+            # 6. Ожидание готовности сервера.
+            #    Клиент не должен стартовать раньше: он тут же полезет
+            #    подключаться, а сервер в это время ещё компилирует скрипты.
+            #    Готовность — та же, по которой красятся индикаторы: занятый
+            #    порт И скомпилированный слой 5_Mission (он последний).
             ps_proc = psutil.Process(server_proc.pid)
             t0 = time.monotonic()
-            ready = False
+            port_ok = mission_ok = False
             while time.monotonic() - t0 < READY_TIMEOUT:
                 if server_proc.poll() is not None:
                     self.failed.emit(tr("launch.server_died",
                                         "Сервер завершился при запуске (код {code}). Смотрите RPT-лог.",
                                         code=server_proc.returncode))
                     return
-                if _server_ready(ps_proc, p.port):
-                    ready = True
+                port_ok = port_ok or _server_ready(ps_proc, p.port)
+                mission_ok = mission_ok or scripts_ready(server_logs, prof_dir)
+                if port_ok and mission_ok:
                     break
                 time.sleep(0.5)
             # Сигналим в обоих случаях: процесс жив (иначе вышли бы по failed),
@@ -396,10 +437,12 @@ class LaunchWorker(QThread):
             self.server_ready.emit()
             # про успех молчим — он виден по строке статуса «[запущен]»;
             # сообщаем только про нештатный случай
-            if not ready:
+            if not (port_ok and mission_ok):
+                missing = (tr("launch.wait_port", "не занял порт") if not port_ok
+                           else tr("launch.wait_scripts", "не собрал скрипты миссии"))
                 self.log.emit(tr("launch.server_slow",
-                                 "Сервер не занял порт за {sec} с — запускаю клиент на свой страх.",
-                                 sec=READY_TIMEOUT), "warning")
+                                 "Сервер {what} за {sec} с — запускаю клиент на свой страх.",
+                                 what=missing, sec=READY_TIMEOUT), "warning")
 
         # 7. Клиент
         if p.launch_client:

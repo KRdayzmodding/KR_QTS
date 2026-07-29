@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import html
-import re
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -36,11 +35,20 @@ _ENGINE = "#e5c07b"
 _MIN_WIDTH = 34
 _INDENT = "&nbsp;&nbsp;"
 
-# «Player "Kramtsov" (steamID=765… pos=<…>) is connected» — пишется в RPT
-# сервера в момент, когда игрок реально вошёл в мир. Запущенный процесс клиента
-# об этом ничего не говорит: окно может висеть на загрузке или не достучаться
-# до сервера вовсе.
-_JOIN_RE = re.compile(r'Player\s+".*?".*?\bis connected\b')
+# Правило готовности общее для сервера, клиента и ожидания в LaunchWorker —
+# поэтому сам слой объявлен в core/scriptmem.py
+READY_LAYER = scriptmem.READY_LAYER
+
+# Готовность стороны — то, что видно только из логов. Живёт отдельно от
+# состояния процесса: процесс может существовать, а клиент при этом ещё висеть
+# на загрузке.
+ST_LAUNCHING, ST_CONNECTING, ST_READY = "launching", "connecting", "ready"
+
+# Состояние процесса приходит снаружи и всегда главнее готовности: мёртвый
+# процесс «запущенным» быть не может, какие бы слои он до этого ни успел
+# скомпилировать. Значения — те же run/dead/off, что у индикаторов в шапке
+# главного окна и у кружков мини-окна: правило на все три индикатора одно.
+PROC_RUN, PROC_DEAD, PROC_OFF = "run", "dead", "off"
 
 
 class _Side:
@@ -49,10 +57,27 @@ class _Side:
     def __init__(self, title: str):
         self.title = title
         self.name = ""
-        self.state = ""
         self.active = False
+        self.ready = ST_LAUNCHING
+        self.proc = PROC_OFF
+        self.seen_run = False       # процесс хоть раз был живым в эту сессию
         self.usage: dict[str, scriptmem.Usage] = {}
         self.crash: crashlog.CrashReport | None = None
+
+    @property
+    def state(self) -> str:
+        """Подпись в квадратных скобках — одна на все источники."""
+        if self.crash:
+            return tr("status.failed", "не запустился")
+        if self.proc == PROC_DEAD:
+            return tr("status.died", "завершился")
+        if self.proc == PROC_OFF:
+            return (tr("status.stopped", "остановлен") if self.seen_run
+                    else tr("status.starting", "запускается"))
+        return {
+            ST_READY: tr("status.running", "запущен"),
+            ST_CONNECTING: tr("status.connecting", "подключается"),
+        }.get(self.ready, tr("status.starting", "запускается"))
 
 
 class LaunchStatus:
@@ -137,7 +162,9 @@ class LaunchStatus:
             side = self.sides[key]
             side.name = name
             side.active = bool(name)
-            side.state = tr("status.starting", "запускается")
+            side.ready = ST_LAUNCHING
+            side.proc = PROC_OFF
+            side.seen_run = False
             side.usage = {}
             side.crash = None
         self.view.appendHtml(self._html())
@@ -146,7 +173,7 @@ class LaunchStatus:
         self._block = self.view.document().blockCount() - 1
 
     def set_running(self, side: str) -> None:
-        self.sides[side].state = tr("status.running", "запущен")
+        self.sides[side].ready = ST_READY
         self._render()
 
     def set_connecting(self, side: str) -> None:
@@ -154,18 +181,34 @@ class LaunchStatus:
 
         Для клиента запущенный процесс ничего не значит: окно может висеть на
         загрузке или вовсе не достучаться до сервера. Запущенным считаем его с
-        момента, когда игрок реально оказался в игре.
+        момента, когда в его логе появится расход памяти слоя 5_Mission —
+        он компилируется последним.
         """
-        self.sides[side].state = tr("status.connecting", "подключается")
+        self.sides[side].ready = ST_CONNECTING
         self._render()
 
-    def set_stopped(self, side: str) -> None:
-        self.sides[side].state = tr("status.stopped", "остановлен")
+    def set_process_state(self, side: str, proc: str) -> None:
+        """Живёт ли процесс — то же, что показывают шапка и кружки мини-окна.
+
+        Приходит по таймеру главного окна, а не по событию: раньше блок узнавал
+        об остановке только через переход «был жив -> исчез», и процесс, умерший
+        до первой отметки, оставлял блок в «запускается» навсегда.
+        """
+        s = self.sides[side]
+        if s.proc == proc:
+            return
+        s.proc = proc
+        if proc == PROC_RUN:
+            s.seen_run = True
         self._render()
 
     def set_usage(self, side: str, usage: scriptmem.Usage) -> None:
         self.sides[side].usage[usage.layer] = usage
         self._render()
+
+    def is_ready(self, side: str) -> bool:
+        """Сторона отработала запуск — по ней и красятся все индикаторы."""
+        return self.sides[side].ready == ST_READY
 
     def set_crash(self, side: str, report) -> None:
         self.sides[side].crash = report
@@ -173,35 +216,51 @@ class LaunchStatus:
         self._render()
 
 
+class _SessionTail:
+    """Хвост логов, ограниченный текущей сессией.
+
+    Файлы, лежавшие в папке на момент старта, запоминаются и игнорируются:
+    иначе в статус уехали бы данные прошлого запуска — как раз того, ради
+    исправления которого запуск и повторяют.
+    """
+
+    def __init__(self, directory, pattern: str):
+        self.pattern = pattern
+        self._known = {str(f) for f in logsource.log_files(directory)
+                       if f.match(pattern)}
+        self._tailer = logsource.LogTailer(directory, pattern_filter=pattern)
+
+    def poll(self) -> list[str]:
+        lines = self._tailer.poll()
+        current = self._tailer.current
+        if current is None or str(current) in self._known:
+            return []       # файл этой сессии ещё не создан
+        return lines
+
+
 class LaunchMonitor(QObject):
     """Следит за папкой логов одной стороны: память слоёв и срыв запуска.
 
-    Два источника, оба обязательны. Память слоёв движок пишет только в RPT
-    (живой хвост окна логов читает script_*.log — там её нет). А причину
-    сорвавшегося запуска — только в отдельный crash_<дата>.log, и появляется
-    он ровно тогда, когда запуск не удался.
+    Источников два, и оба нужны:
 
-    Всё считается строго за текущую сессию: файлы, лежавшие в папке на момент
-    старта, запоминаются и игнорируются. Иначе первым же делом всплыл бы
-    crash-лог прошлого запуска — как раз тот, ради исправления которого запуск
-    и повторяют.
+    * script_*.log — расход памяти слоёв. Клиент пишет эти строки только сюда,
+      в его RPT их нет вовсе (у сервера они есть в обоих файлах). По ним же
+      видно готовность: 5_Mission компилируется последним;
+    * crash_<дата>.log — причина сорвавшегося запуска, с файлом и строкой.
+      Заводится ровно тогда, когда запуск не удался.
     """
     usage = Signal(str, object)     # сторона, scriptmem.Usage
     danger = Signal(str, object)    # впервые перевалило за 95%
     limit = Signal(str, object)     # лимит достигнут
     crashed = Signal(str, object)   # сторона, crashlog.CrashReport
-    player_joined = Signal(str)     # в RPT сервера появился подключившийся игрок
 
     def __init__(self, side: str, parent=None):
         super().__init__(parent)
         self.side = side
         self._dir = None
-        self._tailer: logsource.LogTailer | None = None
-        self._known: set[str] = set()         # RPT, существовавшие до запуска
+        self._tails: list[_SessionTail] = []
         self._known_crash: set[str] = set()   # crash-логи, существовавшие до запуска
-        self._file = None                     # RPT текущей сессии
         self._crashed = False
-        self._joined = False
         # слои, о которых уже сказали; раздельно, иначе слой, доросший до 96% и
         # потом упёршийся в лимит, второго — главного — сообщения бы не дал
         self._warned: set[str] = set()
@@ -216,39 +275,25 @@ class LaunchMonitor(QObject):
             return
         self._reset()
         self._dir = Path(directory)
-        self._known = {str(f) for f in logsource.log_files(directory)
-                       if f.suffix.upper() == ".RPT"}
         self._known_crash = crashlog.crash_files(self._dir)
-        self._tailer = logsource.LogTailer(directory, pattern_filter="*.RPT")
+        self._tails = [_SessionTail(directory, p) for p in ("script_*.log", "*.RPT")]
         self._timer.start()
 
     def stop(self) -> None:
         self._timer.stop()
-        self._tailer = None
+        self._tails = []
 
     def _reset(self) -> None:
-        self._file = None
         self._crashed = False
-        self._joined = False
         self._warned.clear()
         self._over.clear()
 
     def _poll(self) -> None:
-        if not self._tailer:
+        if not self._tails:
             return
         self._check_crash()
-        lines = self._tailer.poll()
-        current = self._tailer.current
-        if current is None or str(current) in self._known:
-            # RPT этого запуска ещё не создан — читаем пока старый, молчим
-            return
-        if current != self._file:
-            self._file = current
-
+        lines = [ln for tail in self._tails for ln in tail.poll()]
         for line in lines:
-            if not self._joined and _JOIN_RE.search(line):
-                self._joined = True
-                self.player_joined.emit(self.side)
             u = scriptmem.parse(line)
             if not u:
                 continue
