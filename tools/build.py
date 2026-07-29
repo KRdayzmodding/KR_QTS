@@ -95,6 +95,28 @@ def make_version_info(dst: Path) -> None:
 """, encoding="utf-8")
 
 
+def make_zip(folder: Path) -> Path:
+    """Архив сборки — то, что прикладывается к релизу на GitHub.
+
+    Внутри архива папка с именем программы, а не голые файлы: распаковав такой
+    архив куда попало, человек получит папку, а не вываленные в текущий каталог
+    полторы тысячи файлов.
+
+    Имя без версии в пути внутри — обновление распаковывается поверх установки,
+    и версия в именах папок только мешала бы.
+    """
+    import zipfile
+    dst = folder.parent / f"{folder.name}-{VERSION}.zip"
+    dst.unlink(missing_ok=True)
+    files = sorted(p for p in folder.rglob("*") if p.is_file())
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for i, f in enumerate(files, 1):
+            z.write(f, folder.name + "/" + str(f.relative_to(folder)).replace("\\", "/"))
+            if i % 200 == 0:
+                print(f"    упаковано {i}/{len(files)}")
+    return dst
+
+
 def main() -> int:
     BUILD.mkdir(exist_ok=True)
     print(f"{APP_NAME} {VERSION}")
@@ -112,7 +134,13 @@ def main() -> int:
         return rc
     out = ROOT / "dist" / "KR_QTS"
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
-    print(f"\nготово: {out}  ({size / 1024 / 1024:.0f} МБ)")
+    print(f"\nсобрано: {out}  ({size / 1024 / 1024:.0f} МБ)")
+
+    if "--no-zip" not in sys.argv:
+        print("  архив для релиза…")
+        z = make_zip(out)
+        print(f"\nготово: {z}  ({z.stat().st_size / 1024 / 1024:.0f} МБ)")
+        print("  приложите этот файл к релизу на GitHub")
     return 0
 
 
