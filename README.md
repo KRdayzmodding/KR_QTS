@@ -17,6 +17,22 @@
 
 ### Установка
 
+Скачайте архив со [страницы релизов](https://github.com/KRdayzmodding/KR_QTS/releases/latest), распакуйте куда угодно и запустите `KR_QTS.exe`. Установщик не нужен, Python не нужен.
+
+При первом запуске мастер настройки сам найдёт пути к DayZ, серверу и Mikero Tools по реестру Steam.
+
+Настройки хранятся в `%APPDATA%\KR_QTS`. Если положить рядом с `KR_QTS.exe` папку `config`, программа перейдёт в портативный режим и будет держать всё там — так её можно носить на флешке или держать несколько независимых копий.
+
+Новые версии программа проверяет сама и предлагает обновиться; загрузка и установка проходят из окна.
+
+### Требования
+
+Windows 10 или 11. Для сборки модов нужны Mikero Tools (pboProject), для запуска сервера — DayZ Server; и то и другое приложение поможет установить.
+
+### Запуск из исходников
+
+Нужен, если хотите править код:
+
 ```
 git clone https://github.com/KRdayzmodding/KR_QTS.git
 cd KR_QTS
@@ -24,7 +40,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Требуется Python 3.11+ и Windows. При первом запуске мастер настройки сам найдёт пути к DayZ, серверу и Mikero Tools.
+Требуется Python 3.11+. Собрать свою версию — `python tools/build.py`, результат появится в `dist/`.
 
 ### Лицензия
 
@@ -51,6 +67,22 @@ No more .bat files: set up a preset once — then it's a single "Launch" button.
 
 ### Install
 
+Grab the archive from the [releases page](https://github.com/KRdayzmodding/KR_QTS/releases/latest), unpack it anywhere and run `KR_QTS.exe`. No installer, no Python needed.
+
+On first run a setup wizard auto-detects your DayZ, server and Mikero Tools paths from the Steam registry.
+
+Settings live in `%APPDATA%\KR_QTS`. Put a `config` folder next to `KR_QTS.exe` and the app switches to portable mode, keeping everything there — handy for a USB stick or several independent copies.
+
+The app checks for new versions itself and offers to update; downloading and installing happen in-app.
+
+### Requirements
+
+Windows 10 or 11. Mod packing needs Mikero Tools (pboProject), running a server needs DayZ Server — the app can install both for you.
+
+### Running from source
+
+For those who want to hack on it:
+
 ```
 git clone https://github.com/KRdayzmodding/KR_QTS.git
 cd KR_QTS
@@ -58,7 +90,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Requires Python 3.11+ and Windows. On first run a setup wizard auto-detects your DayZ, server and Mikero Tools paths.
+Requires Python 3.11+. To build your own package run `python tools/build.py`; the result lands in `dist/`.
 
 ### License
 
