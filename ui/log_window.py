@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QLabel
 from qfluentwidgets import (
-    PushButton, RadioButton, SearchLineEdit, CaptionLabel, MessageBox,
+    PushButton, RadioButton, SearchLineEdit, CaptionLabel, CheckBox, MessageBox,
     FluentIcon as FIF, isDarkTheme, qconfig,
 )
 
@@ -114,6 +114,10 @@ class LogWindow(QWidget):
 
         bottom = QHBoxLayout()
         self.path_label = CaptionLabel("")
+        self.chk_on_top = CheckBox(tr("log.on_top", "Поверх всех окон"))
+        self.chk_on_top.setToolTip(tr("log.on_top_tip",
+                                      "Окно не будет уходить за игру и редактор."))
+        self.chk_on_top.toggled.connect(self._on_top_toggled)
         btn_clear = PushButton(FIF.ERASE_TOOL, tr("log.clear", "Очистить"))
         btn_clear.setToolTip(tr("log.clear_tip",
                                 "Очищает окно, файлы логов не трогает."))
@@ -125,6 +129,7 @@ class LogWindow(QWidget):
                                  "Удаляет все файлы логов в папке. Окно не очищается."))
         btn_delete.clicked.connect(self._delete_files)
         bottom.addWidget(self.path_label, 1)
+        bottom.addWidget(self.chk_on_top)
         bottom.addWidget(btn_clear)
         bottom.addWidget(btn_open)
         bottom.addWidget(btn_delete)
@@ -134,7 +139,33 @@ class LogWindow(QWidget):
         self.timer.setInterval(500)
         self.timer.timeout.connect(self._poll)
 
+        # кому сообщить о смене галки — главное окно сохраняет это в настройки
+        # и держит оба окна логов в одном состоянии
+        self.on_top_changed = None
+
     # ------------------------------------------------------------------ управление
+
+    def _on_top_toggled(self, on: bool) -> None:
+        self.set_on_top(on)
+        if self.on_top_changed:
+            self.on_top_changed(on)
+
+    def set_on_top(self, on: bool) -> None:
+        """Флаг «поверх всех» и синхронизация галки.
+
+        Смена флага у видимого окна прячет его — Qt пересоздаёт нативное окно,
+        поэтому show() обязателен, иначе окно просто исчезнет по клику.
+        """
+        if self.chk_on_top.isChecked() != on:
+            self.chk_on_top.blockSignals(True)
+            self.chk_on_top.setChecked(on)
+            self.chk_on_top.blockSignals(False)
+        if bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) == on:
+            return
+        visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, on)
+        if visible:
+            self.show()
 
     def _apply_bg(self) -> None:
         bg = "rgb(43, 43, 43)" if isDarkTheme() else "white"

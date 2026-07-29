@@ -1,6 +1,7 @@
 """Сборка командных строк и запуск сервера/клиента с умным ожиданием готовности."""
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 import psutil
 from PySide6.QtCore import QObject, QThread, Signal
 
-from . import packer
+from . import packer, packlog
 from .i18n import tr
 from .mods import ModRegistry
 from .params import specs_for, SERVER, CLIENT
@@ -33,6 +34,79 @@ def dayz_running() -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return False
+
+
+SERVER_EXE_NAME = "dayzserver_x64.exe"
+CLIENT_EXE_NAME = "dayz_x64.exe"
+DIAG_EXE_NAME = "dayzdiag_x64.exe"
+
+
+def _proc_kind(proc: psutil.Process) -> str | None:
+    """server | client | None (не наш процесс).
+
+    В diag-режиме сервер и клиент — один и тот же DayZDiag_x64.exe, отличается
+    только аргумент -server, поэтому по имени их не разделить. Если командную
+    строку прочитать не удалось, возвращаем None: лучше не тронуть чужой
+    процесс, чем случайно убить работающий сервер.
+    """
+    try:
+        name = (proc.name() or "").lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+    if name == SERVER_EXE_NAME:
+        return "server"
+    if name == CLIENT_EXE_NAME:
+        return "client"
+    if name != DIAG_EXE_NAME:
+        return None
+    try:
+        return "server" if any(a.lower() == "-server" for a in proc.cmdline()) else "client"
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+
+
+def kill_kinds(kinds) -> int:
+    """Гасит процессы DayZ только указанных видов ({"server"} / {"client"}).
+
+    Нужно, чтобы запуск клиента не ронял уже работающий сервер: раньше перед
+    каждым стартом безусловно звался kill_all(). Когда просят оба вида, имя
+    процесса и так однозначно — командную строку не читаем.
+    """
+    kinds = set(kinds)
+    if not kinds:
+        return 0
+    both = {"server", "client"} <= kinds
+    victims = []
+    for p in psutil.process_iter(["name"]):
+        try:
+            if (p.info["name"] or "").lower() not in PROC_NAMES:
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if both or _proc_kind(p) in kinds:
+            victims.append(p)
+    for p in victims:
+        try:
+            p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if victims:
+        psutil.wait_procs(victims, timeout=5)
+    return len(victims)
+
+
+def kill_pid(pid: int | None) -> bool:
+    """Гасит один процесс по pid — чтобы остановить только сервер или только
+    клиент, не трогая второй. True, если процесс был жив и убит."""
+    if not pid:
+        return False
+    try:
+        proc = psutil.Process(pid)
+        proc.kill()
+        proc.wait(timeout=5)
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+        return False
 
 
 def kill_all() -> int:
@@ -62,6 +136,25 @@ def resolve_path(value: str, client_root: str) -> str:
     return str(p) if p.is_absolute() else str(Path(client_root) / p)
 
 
+def rel_to(path: str, root: str) -> str:
+    """Путь относительно корня игры/сервера.
+
+    Миссия, моды, профиль и серверный конфиг передаются в DayZ именно
+    относительными: рабочей папкой процесса мы и так задаём корень, а
+    абсолютные пути раздували командную строку вдвое — в каждый мод повторно
+    вписывался весь путь до корня.
+
+    Относительный путь невозможен только между разными дисками — там
+    ничего не поделать, оставляем как есть.
+    """
+    if not path:
+        return path
+    try:
+        return os.path.relpath(path, root)
+    except ValueError:
+        return path
+
+
 def _params_args(preset: ServerPreset, target: str) -> list[str]:
     values = preset.params_server if target == SERVER else preset.params_client
     args = []
@@ -74,14 +167,14 @@ def _params_args(preset: ServerPreset, target: str) -> list[str]:
 
 
 def _mods_arg(names: list[str], registry: ModRegistry, root: str) -> str:
-    """Абсолютные пути junction-ссылок в <root>/KR_Debug/MODS."""
+    """Пути junction-ссылок в <root>/KR_Debug/MODS, относительно корня."""
     from .layout import mods_link_dir
     base = mods_link_dir(root)
     folders = []
     for n in names:
         mod = registry.get(n)
         folder = mod.folder_name if mod else (n if n.startswith("@") else "@" + n)
-        folders.append(str(base / folder))
+        folders.append(rel_to(str(base / folder), root))
     return ";".join(folders)
 
 
@@ -100,9 +193,9 @@ def build_server_command(preset: ServerPreset, settings: Settings, branch: str,
 
     from .layout import resolve_config, resolve_profiles, resolve_mission
     args += [
-        f"-config={resolve_config(preset.server_config, settings, branch, preset.mode)}",
-        f"-mission={resolve_mission(preset.mission, settings, branch, preset.mode)}",
-        f"-profiles={resolve_profiles(preset.profiles, settings, branch, preset.mode)}",
+        f"-config={rel_to(resolve_config(preset.server_config, settings, branch, preset.mode), cwd)}",
+        f"-mission={rel_to(resolve_mission(preset.mission, settings, branch, preset.mode), cwd)}",
+        f"-profiles={rel_to(resolve_profiles(preset.profiles, settings, branch, preset.mode), cwd)}",
         f"-port={preset.port}",
     ]
     if preset.mods:
@@ -158,7 +251,10 @@ class LaunchWorker(QThread):
     сервер -> ожидание готовности -> клиент.
     """
     log = Signal(str, str)          # message, level: info|warning|error
+    pack_plan = Signal(list)        # имена pbo, которые предстоит собрать
+    pack_status = Signal(str, str, int, int, int)  # pbo, состояние, мс, warnings, errors
     server_started = Signal(int)    # pid
+    server_ready = Signal()         # порт занят — сервер принимает клиент
     client_started = Signal(int)    # pid
     finished_ok = Signal()
     failed = Signal(str)
@@ -186,28 +282,35 @@ class LaunchWorker(QThread):
 
         # 1. Перепаковка устаревших локальных модов (только если включено в настройках)
         if s.repack_before_launch:
-            for mod, stale in packer.stale_mods(selected):
-                self.log.emit(tr("launch.pack_start", "Пакуем мод «{n}»", n=mod.name), "info")
+            plan = packer.stale_mods(selected)
+            # весь список объявляем заранее — сколько PBO предстоит собрать
+            # должно быть видно сразу, а не по мере готовности
+            self.pack_plan.emit([packer.pbo_for_source(m, src).name
+                                 for m, stale in plan for src in stale])
+            for mod, stale in plan:
                 mod_failed = False
                 for src in stale:
+                    name = packer.pbo_for_source(mod, src).name
+                    self.pack_status.emit(name, "packing", -1, 0, 0)
+                    t0 = time.monotonic()
                     ok, output = packer.pack_source_auto(s, mod, src)
-                    mark = tr("mods.pack_mark_ok", "[ok]") if ok else tr("mods.pack_mark_failed", "[ошибка]")
-                    self.log.emit(f"{Path(src).name} {mark}", "info" if ok else "error")
+                    w, e = packlog.counts(Path(src).name)
+                    self.pack_status.emit(name, "ok" if ok else "fail",
+                                          int((time.monotonic() - t0) * 1000), w, e)
                     if not ok:
                         if output:
                             self.log.emit(output[-4000:], "error")
                         mod_failed = True
                         break
                 if mod_failed:
-                    self.log.emit("=================", "info")
                     self.failed.emit(tr("launch.pack_failed",
                                         "Ошибка запаковки {mod}. Запуск отменён.", mod=mod.name))
                     return
-                self.log.emit(tr("launch.pack_end", "Запаковка мода «{n}» завершена", n=mod.name), "info")
-                self.log.emit("=================", "info")
 
-        # 2. Убираем старые процессы
-        killed = kill_all()
+        # 2. Убираем старые процессы — только тех видов, что сейчас запускаем.
+        #    Иначе перезапуск одного клиента ронял бы работающий сервер.
+        killed = kill_kinds({k for k, on in (("server", p.launch_server),
+                                             ("client", p.launch_client)) if on})
         if killed:
             self.log.emit(tr("launch.killed", "Завершено старых процессов: {n}", n=killed), "info")
 
@@ -238,12 +341,10 @@ class LaunchWorker(QThread):
             from .missions import set_global_var
             mission_path = resolve_mission(p.mission, s, self.branch, p.mode)
             if mission_path and _P(mission_path).is_dir():
-                ok1 = set_global_var(_P(mission_path), "TimeLogin", str(p.time_login))
-                ok2 = set_global_var(_P(mission_path), "TimeLogout", str(p.time_login))
-                if ok1 or ok2:
-                    self.log.emit(tr("launch.time_login",
-                                     "TimeLogin/TimeLogout = {v} с (db/globals.xml)",
-                                     v=p.time_login), "info")
+                # молча: значение задано в пресете, и повторять его в журнале
+                # при каждом запуске незачем
+                set_global_var(_P(mission_path), "TimeLogin", str(p.time_login))
+                set_global_var(_P(mission_path), "TimeLogout", str(p.time_login))
 
         # 4.6. Права админок (COT/VPP) в папке профиля — до старта сервера,
         #      иначе мод создаст свои файлы с заглушкой и перечитает их только
@@ -270,9 +371,9 @@ class LaunchWorker(QThread):
         # 5. Сервер
         server_proc = None
         if p.launch_server:
+            # командную строку в журнал не пишем: она длиннее ширины окна,
+            # обрезается на середине и вытесняет всё остальное
             exe, args, cwd = build_server_command(p, s, self.branch, reg)
-            self.log.emit(tr("launch.server_cmd", "Сервер: {cmd}",
-                             cmd=exe + " " + " ".join(args)), "info")
             server_proc = subprocess.Popen([exe] + args, cwd=cwd)
             self.server_started.emit(server_proc.pid)
 
@@ -290,11 +391,12 @@ class LaunchWorker(QThread):
                     ready = True
                     break
                 time.sleep(0.5)
-            if ready:
-                self.log.emit(tr("launch.server_ready",
-                                 "Сервер готов, порт {port} занят за {sec} с.",
-                                 port=p.port, sec=int(time.monotonic() - t0)), "info")
-            else:
+            # Сигналим в обоих случаях: процесс жив (иначе вышли бы по failed),
+            # клиент всё равно запускается — кнопке незачем висеть в «Запускается».
+            self.server_ready.emit()
+            # про успех молчим — он виден по строке статуса «[запущен]»;
+            # сообщаем только про нештатный случай
+            if not ready:
                 self.log.emit(tr("launch.server_slow",
                                  "Сервер не занял порт за {sec} с — запускаю клиент на свой страх.",
                                  sec=READY_TIMEOUT), "warning")
@@ -302,8 +404,6 @@ class LaunchWorker(QThread):
         # 7. Клиент
         if p.launch_client:
             exe, args, cwd = build_client_command(p, s, self.branch, reg)
-            self.log.emit(tr("launch.client_cmd", "Клиент: {cmd}",
-                             cmd=exe + " " + " ".join(args)), "info")
             client_proc = subprocess.Popen([exe] + args, cwd=cwd)
             self.client_started.emit(client_proc.pid)
 
