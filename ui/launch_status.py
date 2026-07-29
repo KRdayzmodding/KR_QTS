@@ -211,8 +211,8 @@ class LaunchStatus:
         return self.sides[side].ready == ST_READY
 
     def set_crash(self, side: str, report) -> None:
+        """Подпись менять не нужно: state её выводит сам, увидев crash."""
         self.sides[side].crash = report
-        self.sides[side].state = tr("status.failed", "не запустился")
         self._render()
 
 
