@@ -20,10 +20,10 @@ D:\\PDrive), поэтому ссылка продолжает работать, 
 """
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import junction
 from .i18n import tr
 from .mods import _is_link
 from .settings import CLIENT_EXE, SERVER_EXE, Settings, is_install
@@ -138,15 +138,9 @@ def _create(link: Path, target: Path) -> tuple[str, str]:
                             "{p}: тут уже есть настоящая папка — она не тронута",
                             p=link)
 
-    try:
-        res = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        if res.returncode != 0:
-            return "failed", f"{link}: {(res.stderr or res.stdout).strip()}"
-    except OSError as e:
-        return "failed", f"{link}: {e}"
+    err = junction.create(link, target)
+    if err:
+        return "failed", f"{link}: {err}"
     return "created", ""
 
 
@@ -209,7 +203,8 @@ def sync(settings: Settings) -> Report:
     rep = Report()
     roots = game_roots(settings)
     dead = stale_roots(settings)
-    alive, gone = [], []
+    alive: list[str] = []
+    gone: list[str] = []
     for entry in settings.filepatch_links:
         (alive if Path(entry).is_dir() else gone).append(entry)
 

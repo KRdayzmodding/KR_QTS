@@ -9,7 +9,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from . import missions
 from .missions import CatalogEntry
@@ -17,12 +17,42 @@ from .missions import CatalogEntry
 _CHUNK = 256 * 1024
 
 
+def safe_member(rel: str, root: Path) -> Path | None:
+    """Путь распаковки для элемента архива либо None, если он выходит за корень.
+
+    Имя внутри zip задаёт тот, кто собрал архив, а мы тянем архивы из чужих
+    репозиториев — авторов карт. Имя вида «../../evil.txt» без проверки уводит
+    запись куда угодно в пределах прав пользователя (Zip Slip): достаточно
+    попасть в папку автозагрузки. Угнанного аккаунта одного автора хватило бы
+    на всех, кто скачает эту карту.
+
+    Сравниваем нормализованные пути, а не resolve(): resolve ходит на диск и
+    разворачивает симлинки, а нам нужен ответ про имя, а не про то, что уже
+    лежит на диске.
+    """
+    if not rel or rel.startswith(("/", "\\")) or ":" in rel:
+        return None
+    # Составляющая из одних точек: «..» очевиден, но и «....» опасен — сам по
+    # себе он за корень не уводит, зато Windows режет точки в конце имён, и что
+    # получится, решает уже она. Проверка не должна зависеть от таких тонкостей.
+    # (одиночная «.» безобидна — это «текущая папка», её и пропускаем)
+    if any(len(p) > 1 and set(p) == {"."} for p in rel.replace("\\", "/").split("/")):
+        return None
+    dest = Path(os.path.normpath(str(root / rel)))
+    try:
+        dest.relative_to(root)
+    except ValueError:
+        return None
+    return dest
+
+
 class MissionCopyWorker(QThread):
     """Локальное создание миссии из шаблона actual.<world> (без сети)."""
     done = Signal(bool, str)  # ok, целевой путь или ошибка
 
     def __init__(self, src: Path, dst: Path, replace: bool = False,
-                 keep_storage: bool = True, parent=None):
+                 keep_storage: bool = True,
+                 parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.src = src
         self.dst = dst
@@ -69,7 +99,8 @@ class MissionDownloadWorker(QThread):
 
     def __init__(self, entry: CatalogEntry, target_dir: Path, target_name: str,
                  replace: bool = False, keep_storage: bool = True,
-                 mods_dir: Path | None = None, parent=None):
+                 mods_dir: Path | None = None,
+                 parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.entry = entry
         self.target_dir = target_dir
@@ -84,19 +115,30 @@ class MissionDownloadWorker(QThread):
     def _extract_subtree(zf: zipfile.ZipFile, names: list[str], prefix: str,
                          tmp_prefix: str) -> Path:
         extract_tmp = Path(tempfile.mkdtemp(prefix=tmp_prefix))
+        skipped = 0
         for n in names:
             if not n.startswith(prefix):
                 continue
             rel = n[len(prefix):]
             if not rel:
                 continue
-            dest = extract_tmp / rel
+            dest = safe_member(rel, extract_tmp)
+            if dest is None:
+                # молча пропустить нельзя: битый архив выглядел бы как «карта
+                # скачалась, но чего-то не хватает»
+                skipped += 1
+                print(f"[downloader] пропущен элемент архива вне каталога: {n!r}")
+                continue
             if n.endswith("/"):
                 dest.mkdir(parents=True, exist_ok=True)
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(n) as src, open(dest, "wb") as out:
                     shutil.copyfileobj(src, out)
+        if skipped:
+            raise RuntimeError(
+                f"Архив содержит {skipped} элемент(ов) с путями за пределами "
+                f"своей папки — установка прервана. Сообщите автору карты.")
         return extract_tmp
 
     def cancel(self) -> None:
@@ -167,7 +209,7 @@ class MissionDownloadWorker(QThread):
                 try:
                     zf = zipfile.ZipFile(tmp_zip)
                     break
-                except (OSError, PermissionError) as e:
+                except (OSError, PermissionError):
                     if attempt == 9:
                         raise
                     self.status.emit(tr("dl.locked",
@@ -175,6 +217,9 @@ class MissionDownloadWorker(QThread):
                                         n=attempt + 2))
                     time.sleep(1.5)
             mods_tmp: list[tuple[str, Path]] = []  # (имя @папки, temp-каталог)
+            # цикл попыток выше либо открыл архив, либо выбросил исключение —
+            # None сюда не доходит, но проверяющему это неоткуда узнать
+            assert zf is not None
             with zf:
                 names = zf.namelist()
                 if not names:
@@ -220,10 +265,14 @@ class MissionDownloadWorker(QThread):
             missions.write_meta(target, entry, sha, sub_path)
 
             # установка модов карты в KR_Debug/mods_dl (перезаписываются целиком)
+            # mods_tmp наполняется только внутри ветки «if self.mods_dir»,
+            # так что пустой список здесь означает, что папка не задана
+            mods_dir = self.mods_dir
             for mod_name, tmp_dir in mods_tmp:
+                assert mods_dir is not None
                 self.status.emit(tr("dl.mod_install", "Установка мода {m}…", m=mod_name))
-                self.mods_dir.mkdir(parents=True, exist_ok=True)
-                mod_target = self.mods_dir / mod_name
+                mods_dir.mkdir(parents=True, exist_ok=True)
+                mod_target = mods_dir / mod_name
                 if mod_target.exists():
                     shutil.rmtree(mod_target)
                 shutil.move(str(tmp_dir), str(mod_target))
