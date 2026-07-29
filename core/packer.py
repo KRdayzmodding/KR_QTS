@@ -1,9 +1,15 @@
-"""Запаковка модов через Mikero pboProject + проверка актуальности по таймштампам."""
+"""Запаковка модов через Mikero pboProject + проверка актуальности по таймштампам.
+
+Свой быстрый упаковщик убран: он собирал pbo с ошибками, и держать два
+движка ради этого смысла не было. Режим сборки задаёт FullBuild (+C):
+без него pboProject переиспользует temp и собирает инкрементально
+(секунды), с ним чистит temp и пересобирает всё (проверено: 3,6 с
+против 27,8 с на одном и том же моде).
+"""
 from __future__ import annotations
 
 import shlex
 import subprocess
-import threading
 from pathlib import Path
 
 from .mods import ModInfo
@@ -28,6 +34,17 @@ def _newest_mtime(directory: Path) -> float:
     except OSError:
         pass
     return newest
+
+
+def native(path: str | Path) -> str:
+    """Путь в родной для Windows форме, с обратными слэшами.
+
+    Пути сорсов хранятся так, как их когда-то выбрали, и нередко приходят с
+    прямыми слэшами (P:/KR/...). Для pboProject это существенно: у него свой
+    разбор командной строки, а префикс он вычисляет от корня диска P:.
+    str() от строки ничего не нормализует — нужен явный проход через Path.
+    """
+    return str(Path(path))
 
 
 def pbo_for_source(mod: ModInfo, source_dir: str) -> Path:
@@ -75,101 +92,100 @@ def clean_meta(source_dir: Path) -> int:
     return n
 
 
-def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
-    """Собирает один PBO. Возвращает (успех, вывод pboProject).
+def _pboproject_temp() -> Path:
+    """Папка, куда pboProject кладёт свои логи сборки.
 
-    Вывод самого pboProject в лог не транслируется построчно — он либо пуст,
-    либо состоит из служебного шума pboProject; вызывающий код показывает
-    только краткий статус по каждому сорсу (см. ui/mods_panel.py, core/launcher.py),
-    а этот полный текст — только при ошибке, для диагностики.
+    Настройка лежит в реестре относительно рабочего диска (обычно P:\\temp).
+    """
+    drive, temp = "P:\\", "temp"
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Mikero\pboProject\Settings") as k:
+            try:
+                drive = winreg.QueryValueEx(k, "prj_Pdrive")[0] or drive
+            except OSError:
+                pass
+            try:
+                temp = winreg.QueryValueEx(k, "drive_temp_folder")[0] or temp
+            except OSError:
+                pass
+    except (ImportError, OSError):
+        pass
+    p = Path(temp)
+    return p if p.is_absolute() else Path(drive) / temp
+
+
+def _pboproject_log(source_dir: str) -> str:
+    """Хвост лога сборки — единственная внятная диагностика pboProject."""
+    log = _pboproject_temp() / f"{Path(source_dir).name}.packing.log"
+    try:
+        return log.read_text(encoding="utf-8", errors="replace")[-4000:].strip()
+    except OSError:
+        return ""
+
+
+def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+    """Собирает один PBO. Возвращает (успех, текст для диагностики).
+
+    ВАЖНО: stdout/stderr pboProject перенаправлять нельзя — ни в pipe, ни даже
+    в DEVNULL. При любом перенаправлении он перестаёт применять префикс из
+    $PBOPREFIX$, и pbo собирается вообще без префикса. Проверено перебором:
+    8 прогонов из 8 с перехватом дают prefix=none, без перехвата — верный
+    префикс, причём cwd и CREATE_NO_WINDOW на это не влияют.
+
+    Перехват всё равно был бесполезен: в stdout pboProject не пишет ничего
+    (это GUI-приложение), а вся диагностика идёт в свой лог — его и читаем.
     """
     exe = settings.pbo_project_exe()
     if not Path(exe).is_file():
         return False, f"pboProject не найден: {exe}"
+    # проверяем и сорсы: иначе опечатка в пути выглядит как невнятный сбой
+    # самого тула, а не как понятная ошибка
+    if not Path(source_dir).is_dir():
+        return False, f"папка сорсов не найдена: {source_dir}"
 
     if settings.clean_meta:
         clean_meta(Path(source_dir))
 
-    args = [exe, str(source_dir)]
+    # +R — не пользовательская настройка, а обязательное условие: все опции
+    # CLI pboProject пишет в реестр, то есть каждый запуск молча переписывает
+    # настройки его GUI. С +R они восстанавливаются после сессии. Без этого
+    # «в GUI всё настроено правильно» перестаёт быть правдой после первой же
+    # сборки, и любая диагностика сравнивает состояние, испорченное ею самой.
+    #
+    # Ставится сразу за путём к сорсам, до пользовательских флагов: у Mikero
+    # свой разбор командной строки, и порядок опций для него значим.
+    args = [exe, native(source_dir), "+R"]
     # shlex (posix=True) — значения в кавычках с пробелами (пути, списки масок
     # исключений) остаются одним аргументом, а не рвутся построчным .split()
     try:
-        args += shlex.split(settings.pack_flags, posix=True)
+        flags = shlex.split(settings.pack_flags, posix=True)
     except ValueError:
-        args += settings.pack_flags.split()  # незакрытая кавычка и т.п.
-    # движок задаём явно: иначе используется то, что осталось в реестре
-    # с прошлой GUI-сессии pboProject (могло быть Arma3/OFP от другого проекта)
-    args += ["-E=dayz", f"-M={mod.path}"]
+        flags = settings.pack_flags.split()  # незакрытая кавычка и т.п.
+    # Режим сборки задаёт FullBuild (C), а не строка флагов: пользователь
+    # выбирает его на главной странице, и выбор должен побеждать.
+    flags = [f for f in flags if f not in ("+C", "-C")]
+    flags.append("+C" if settings.pack_engine == "full" else "-C")
+    args += flags
+    # Движок задаём явно по той же причине, что и +R: иначе берётся то, что
+    # осталось в реестре от прошлой GUI-сессии (могло быть Arma3/OFP).
+    args += ["-E=dayz", f"-M={native(mod.path)}"]
 
     try:
-        proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, errors="replace", bufsize=1,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except OSError as e:
-        return False, str(e)
-
-    # построчное чтение (не capture_output после завершения) — нужно, чтобы
-    # сторожевой таймер мог убить зависший процесс, не дожидаясь общего wait()
-    lines: list[str] = []
-    timed_out = False
-
-    def _kill_on_timeout() -> None:
-        nonlocal timed_out
-        timed_out = True
-        proc.kill()
-
-    watchdog = threading.Timer(600, _kill_on_timeout)
-    watchdog.start()
-    try:
-        for line in iter(proc.stdout.readline, ""):
-            lines.append(line.rstrip("\n"))
-        returncode = proc.wait()
-    finally:
-        watchdog.cancel()
-        proc.stdout.close()
-
-    output = "\n".join(lines)
-    if timed_out:
-        return False, "pboProject: превышено время сборки (10 минут)\n" + output[-2000:]
-    ok = returncode == 0 and pbo_for_source(mod, source_dir).is_file()
-    return ok, output.strip()
-
-
-def pack_source_fast(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
-    """Быстрая запаковка через входящий в комплект pbo_packer.exe.
-
-    Не подписывает pbo и не делает проверок ошибок pboProject — только для
-    локальной отладки (verifySignatures=0). Возвращает (успех, вывод)."""
-    exe = settings.pbo_packer_exe()
-    if not Path(exe).is_file():
-        return False, f"pbo_packer не найден: {exe}"
-
-    if settings.clean_meta:
-        clean_meta(Path(source_dir))
-
-    output = pbo_for_source(mod, source_dir)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    args = [exe, "pack", "-s", str(source_dir), "-o", str(output)]
-
-    try:
-        res = subprocess.run(
-            args, capture_output=True, text=True, errors="replace",
-            timeout=120, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        # без capture_output/DEVNULL — см. предупреждение в докстроке
+        res = subprocess.run(args, timeout=600,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired:
-        return False, "pbo_packer: превышено время сборки (2 минуты)"
+        return False, ("pboProject: превышено время сборки (10 минут)\n"
+                       + _pboproject_log(source_dir))
     except OSError as e:
         return False, str(e)
 
-    out = ((res.stdout or "") + (res.stderr or "")).strip()
-    ok = res.returncode == 0 and output.is_file()
-    return ok, out
+    ok = res.returncode == 0 and pbo_for_source(mod, source_dir).is_file()
+    return ok, "" if ok else _pboproject_log(source_dir)
 
 
 def pack_source_auto(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
-    """Выбирает движок запаковки по settings.pack_engine ('fast' | 'full')."""
-    if settings.pack_engine == "fast":
-        return pack_source_fast(settings, mod, source_dir)
+    """Единственный движок — pboProject; режим задаёт settings.pack_engine."""
     return pack_source(settings, mod, source_dir)

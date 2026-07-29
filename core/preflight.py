@@ -84,7 +84,6 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
              "Папка профиля не существует и будет создана: {p}", p=profiles))
 
     # Моды
-    stale_names = []
     for name in preset.mods + preset.server_mods:
         mod = registry.get(name)
         if not mod:
@@ -93,17 +92,21 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
             crit("mod_" + name, tr("check.mod_gone",
                  "Папка мода исчезла: {m} ({p})", m=name, p=mod.path))
     selected = [m for m in (registry.get(n) for n in preset.mods + preset.server_mods) if m]
-    for mod, _stale in packer.stale_mods(selected):
-        stale_names.append(mod.name)
-    if stale_names:
-        exe = settings.pbo_project_exe()
-        if not Path(exe).is_file():
-            crit("mikero", tr("check.mikero",
-                 "Моды {mods} требуют перепаковки, но pboProject не найден: {p}",
-                 mods=", ".join(stale_names), p=exe))
-        else:
-            warn("stale", tr("check.stale",
-                 "Будут перепакованы устаревшие моды: {mods}", mods=", ".join(stale_names)))
+    # Про устаревшие сорсы говорим, только когда перепаковка включена: при
+    # выключенной они ни во что не выльются, а при работе через filepatching
+    # это вообще штатное состояние — предупреждать не о чем.
+    if settings.repack_before_launch:
+        stale_names = [mod.name for mod, _ in packer.stale_mods(selected)]
+        if stale_names:
+            exe, tool = settings.pbo_project_exe(), "pboProject"
+            if not Path(exe).is_file():
+                crit("packer", tr("check.packer_missing",
+                     "Моды {mods} требуют перепаковки, но {tool} не найден: {p}",
+                     mods=", ".join(stale_names), tool=tool, p=exe))
+            else:
+                warn("stale", tr("check.stale",
+                     "Будут перепакованы устаревшие моды: {mods}",
+                     mods=", ".join(stale_names)))
 
     # Порт
     if preset.launch_server and not port_is_free(preset.port):

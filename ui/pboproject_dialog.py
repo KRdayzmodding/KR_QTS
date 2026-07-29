@@ -20,10 +20,56 @@ from qfluentwidgets import (
 from core.i18n import tr
 from ui.theme import ThemedDialog
 
-_SECTION_MAIN = ["P", "W", "S", "N"]
+_SECTION_MAIN = ["P", "N"]
 _SECTION_FILES = ["B", "C", "D", "H", "T", "G", "Q"]
 _SECTION_COMPRESS = ["Z", "O"]
-_SECTION_ADVANCED = ["$"]
+_SECTION_ADVANCED: list[str] = []
+
+
+class TriStateFlag(PushButton):
+    """Переключатель опции pboProject на три положения.
+
+    Пусто — опцию не передаём вовсе (pboProject возьмёт значение из своих
+    настроек GUI), «+» — включить, «−» — выключить. Третье положение здесь не
+    прихоть: у Mikero отсутствие ключа и ключ со знаком «минус» означают разное,
+    и обычная галка это состояние выразить не может.
+
+    Наружу выдаёт себя как ComboBox (currentData/setCurrentIndex) — остальной
+    диалог собирает строку флагов через них и менять его не пришлось.
+    """
+    _ORDER = (None, True, False)
+    _LOOK = {
+        None:  ("",  "#888888"),
+        True:  ("+", "#4caf50"),
+        False: ("−", "#ff6b6b"),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._value = None
+        self.setFixedSize(38, 30)
+        self.setToolTip(tr("pbo.tri_tip",
+                           "Клик переключает: пусто — не передавать опцию, "
+                           "«+» — включить, «−» — выключить."))
+        self.clicked.connect(self._cycle)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        text, color = self._LOOK[self._value]
+        self.setText(text)
+        self.setStyleSheet(f"PushButton{{font-size:15pt;font-weight:700;color:{color};}}")
+
+    def _cycle(self) -> None:
+        self._value = self._ORDER[(self._ORDER.index(self._value) + 1) % 3]
+        self._refresh()
+
+    # --- совместимость с прежним ComboBox
+    def currentData(self):
+        return self._value
+
+    def setCurrentIndex(self, index: int) -> None:
+        self._value = {0: None, 1: True, 2: False}.get(index)
+        self._refresh()
 
 
 def _bool_meta() -> dict[str, tuple[str, str]]:
@@ -38,10 +84,6 @@ def _bool_meta() -> dict[str, tuple[str, str]]:
               tr("pbo.k_tip", "Создаёт .bisign рядом с pbo и кладёт публичный ключ в keys/. "
                  "Если ниже указан приватный ключ, подпись включается автоматически "
                  "независимо от этого переключателя.")),
-        "W": (tr("pbo.w", "Предупреждения считать ошибками"),
-              tr("pbo.w_tip", "Сборка останавливается на любом предупреждении, а не только на ошибке.")),
-        "S": (tr("pbo.s", "Останавливаться на первой ошибке"),
-              tr("pbo.s_tip", "Иначе pboProject продолжит собирать остальные pbo, даже если один не собрался.")),
         "N": (tr("pbo.n", "Подробный лог"),
               tr("pbo.n_tip", "Много дополнительной информации в выводе — полезно при поиске "
                  "причины ошибки, но заметно замедляет сборку.")),
@@ -62,8 +104,6 @@ def _bool_meta() -> dict[str, tuple[str, str]]:
         "O": (tr("pbo.o", "Обфускация"),
               tr("pbo.o_tip", "Защищает от просмотра исходников в hex-редакторе, но обфусцированный "
                  "pbo нельзя будет распаковать обратно.")),
-        "$": (tr("pbo.dollar", "Разрешить PBO без префикса"),
-              tr("pbo.dollar_tip", "Редкая опция — не трогайте, если не уверены, зачем она нужна.")),
     }
 
 
@@ -104,6 +144,14 @@ def _parse(flags: str, bool_letters: set[str],
     except ValueError:
         tokens = flags.split()  # незакрытая кавычка и т.п. — не валим диалог
     for tok in tokens:
+        # Ключи, которые задавать нельзя, и которые могли остаться в старых
+        # сохранённых строках:
+        #   S — pboProject не принимает его ни в каком виде (rc=1, пустой вывод);
+        #   $ — разрешает собирать pbo без префикса, из-за него терялся $PBOPREFIX$;
+        #   W — в разных версиях это либо «warnings are errors», либо рабочий
+        #       диск; задавать опцию с неизвестным смыслом нельзя.
+        if tok in ("-S", "+S", "-$", "+$", "-W", "+W"):
+            continue
         m = re.match(r'^([+-])(\$|[A-Za-z])$', tok)
         if m and m.group(2).upper() in bool_letters:
             bools[m.group(2).upper()] = (m.group(1) == "+")
@@ -128,7 +176,7 @@ class PboProjectDialog(ThemedDialog):
         letter_by_key = {k: v[0] for k, v in text_meta.items()}
         bools, texts, extra = _parse(pack_flags, set(bool_meta), set(letter_by_key.values()))
 
-        self._combos: dict[str, ComboBox] = {}
+        self._combos: dict[str, TriStateFlag] = {}
         self._texts: dict[str, LineEdit] = {}
         self._letter_by_key = letter_by_key
 
@@ -223,15 +271,19 @@ class PboProjectDialog(ThemedDialog):
             combo.setCurrentIndex({None: 0, True: 1, False: 2}[val])
 
     def _add_bool_row(self, form: QFormLayout, letter: str, label_text: str, tip: str) -> None:
-        combo = ComboBox()
-        combo.addItem(tr("pbo.unset", "Не указано"), userData=None)
-        combo.addItem(tr("pbo.plus", "Включить (+)"), userData=True)
-        combo.addItem(tr("pbo.minus", "Выключить (-)"), userData=False)
+        flag = TriStateFlag()
         row_label = BodyLabel(f"{label_text} ({letter})")
         if tip:
             row_label.setToolTip(tip)
-        form.addRow(row_label, combo)
-        self._combos[letter] = combo
+            flag.setToolTip(f"{tip}\n\n{flag.toolTip()}")
+        # переключатель слева, подпись справа — глаз идёт по колонке значков,
+        # а не выискивает их в конце разных по длине строк
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(flag)
+        row.addWidget(row_label, 1)
+        form.addRow(row)
+        self._combos[letter] = flag
 
     def _add_text_row(self, form: QFormLayout, key: str, label_text: str, tip: str,
                       kind: str, value: str) -> None:

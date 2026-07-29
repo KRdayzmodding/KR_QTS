@@ -107,9 +107,30 @@ class Settings:
     admin_password: str = ""
 
     # Запаковка
-    pack_flags: str = "-P -K"   # доп. флаги pboProject
+    # Флаги pboProject. Знак обязателен у каждой опции (+ включено, - выключено):
+    # голая буква читается парсером Mikero как путь. Исключение — формы с «=».
+    # Отсутствие опции означает «взять текущее значение из настроек GUI», так
+    # что задавать имеет смысл только осознанно выбранное.
+    #
+    # Чего здесь намеренно нет:
+    #   -$ — управляет разрешением собирать pbo без префикса; при нём терялся
+    #        $PBOPREFIX$ и мод паковался без префикса вообще;
+    #   -W — в разных версиях это либо «warnings are errors», либо рабочий диск;
+    #   +N — подробный лог, объём вывода огромен и заметно замедляет сборку;
+    #   +R — не настройка пользователя, а обязательное условие, ставится в
+    #        core/packer.py вместе с -E/-M.
+    # -X — маски файлов, которые в pbo не попадают. «source» в списке не нужен:
+    # папка ~source\ не инспектируется никогда.
+    pack_flags: str = (
+        "-P -N +B -C -D -H -T +G -Q +Z -O -K "
+        "-X=*.h,*.hpp,*.png,*.cpp,thumbs.db,*.dep,*.bak,*.log,*.pew,"
+        "*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max,*.blend,*.blend1,*.blend2,"
+        "*.blend3,*.blend4,*.blend5,*.txa,.claude"
+    )
     clean_meta: bool = True     # удалять *.meta в сорсах перед сборкой
-    pack_engine: str = "fast"   # "full" — pboProject (с проверками), "fast" — pbo_packer (быстро, без проверок)
+    # Режим pboProject: "" — не перепаковывать, "normal" — инкрементально
+    # (переиспользует temp), "full" — FullBuild, чистит temp и собирает всё
+    pack_engine: str = "normal"
     repack_before_launch: bool = False   # перепаковывать изменённые локальные моды перед запуском
 
     # Общая папка загрузок (моды карт с GitHub); пусто — <папка программы>/downloads
@@ -117,6 +138,10 @@ class Settings:
 
     # Папки с локальными модами (@папки собственных сборок)
     local_mods_dirs: list[str] = field(default_factory=list)
+
+    # Положение мини-окна на экране — чтобы оно не прыгало в центр при каждом
+    # сворачивании в трей; пусто — открыть там, где решит система
+    mini_pos: list[int] = field(default_factory=list)
 
     # Папки скриптов на диске P:, подключённые ссылками для filepatching
     # (см. core/filepatch.py). Хранится исходный P:-путь, а не разрешённый:
@@ -131,6 +156,11 @@ class Settings:
     # (недативный Qt-диалог с мультивыбором своих «последних папок» не знает)
     recent_source_dirs: list[str] = field(default_factory=list)
 
+    # Окна логов сервера и клиента поверх остальных окон — состояние общее на
+    # оба окна: держат их поверх обычно ради одного и того же (смотреть логи,
+    # работая в редакторе), и разводить это по окнам смысла нет
+    logs_on_top: bool = False
+
     # Steam Web API ключ (steamcommunity.com/dev/apikey) — для зависимостей модов;
     # пусто — зависимости читаются со страницы воркшопа
     steam_api_key: str = ""
@@ -143,11 +173,6 @@ class Settings:
 
     def pbo_project_exe(self) -> str:
         return find_pbo_project_exe(self.mikero_tools)
-
-    def pbo_packer_exe(self) -> str:
-        """[KR] PBO Packer — ставится отдельно от приложения (см. ui/packer_download.py),
-        поэтому лежит своей папкой, а не среди данных приложения."""
-        return str(APP_DIR / "packer" / "pbo_packer.exe")
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

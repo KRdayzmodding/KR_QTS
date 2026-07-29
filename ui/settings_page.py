@@ -338,38 +338,21 @@ class SettingsPage(QScrollArea):
         self.b_pbo_settings.clicked.connect(self._open_pbo_settings)
         form_pack.addRow(BodyLabel(tr("settings.pbo_settings_label", "Запаковка PBO")), self.b_pbo_settings)
 
-        packer_row = QHBoxLayout()
-        self.b_get_packer = PushButton(FIF.DOWNLOAD, tr("settings.get_kr_packer",
-                                                        "Скачать [KR] PBO Packer"))
-        self.b_get_packer.clicked.connect(self._download_kr_packer)
-        self.b_packer_help = TransparentToolButton(FIF.HELP)
-        self.b_packer_help.setToolTip(tr("settings.kr_packer_what", "Что это?"))
-        self.b_packer_help.clicked.connect(self._show_packer_help)
-        packer_row.addWidget(self.b_get_packer)
-        packer_row.addWidget(self.b_packer_help)
-        packer_row.addStretch(1)
-        form_pack.addRow(BodyLabel(tr("settings.kr_packer_label", "[KR] PBO Packer")),
-                         packer_row)
-        self.packer_status = CaptionLabel("")
-        self.packer_status.setWordWrap(True)
-        form_pack.addRow("", self.packer_status)
-
         self.pack_engine = ComboBox()
-        self.pack_engine.addItem(tr("settings.engine_full", "Полная, с проверками (pboProject)"),
-                                 userData="full")
-        self.pack_engine.addItem(tr("settings.engine_fast", "Быстрая, без проверок (pbo_packer)"),
-                                 userData="fast")
-        self.pack_engine.setCurrentIndex(1 if settings.pack_engine == "fast" else 0)
+        self.pack_engine.addItem(tr("settings.engine_normal",
+                                    "Обычная — переиспользует temp"), userData="normal")
+        self.pack_engine.addItem(tr("settings.engine_full",
+                                    "Полная (FullBuild) — чистит temp"), userData="full")
+        self.pack_engine.setCurrentIndex(1 if settings.pack_engine == "full" else 0)
         self.pack_engine.setToolTip(tr("settings.engine_tip",
-                                       "pbo_packer в разы быстрее, но не проверяет ошибки и не "
-                                       "подписывает pbo — только для локальной отладки."))
+                                       "Обычная переиспользует содержимое temp и собирает за "
+                                       "секунды; полная чистит temp и пересобирает всё."))
         form_pack.addRow(BodyLabel(tr("settings.engine_label", "Способ запаковки модов")), self.pack_engine)
 
         # «полная» запаковка зависит и от pboProject, и от DayZ Tools
         self.p_mikero.edit.textChanged.connect(self._update_pbo_button_state)
         self.p_tools.edit.textChanged.connect(self._update_pbo_button_state)
         self._update_pbo_button_state()
-        self._update_packer_status()
 
         # ---------------------------------------------------- Filepatching
         form_fp = section(tr("settings.section_filepatch", "Filepatching"))
@@ -411,14 +394,32 @@ class SettingsPage(QScrollArea):
         btn_detect.clicked.connect(self._autodetect)
         btn_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
         btn_save.clicked.connect(self._save)
+        self.unsaved = BodyLabel(tr("settings.unsaved",
+                                    "Есть несохранённые изменения"))
+        self.unsaved.setStyleSheet("color:#e08f00;")
+        self.unsaved.hide()
         btns.addWidget(btn_detect)
         btns.addStretch(1)
+        btns.addWidget(self.unsaved)
         btns.addWidget(btn_save)
         layout.addLayout(btns)
 
         self.note = CaptionLabel("")
         layout.addWidget(self.note)
         layout.addStretch(1)
+
+        # Подписываемся на все поля разом: перечислять сигналы по одному —
+        # верный способ забыть новое поле и получить молча неверный индикатор.
+        for widget in (self.lang, self.pack_engine, self.theme):
+            widget.currentIndexChanged.connect(lambda _i: self._refresh_dirty())
+        for widget in (self.project_prefix, self.admin_pass, self.steam_key):
+            widget.textChanged.connect(lambda _t: self._refresh_dirty())
+        for widget in (self.workshop, self.admin_ids):
+            widget.textChanged.connect(self._refresh_dirty)
+        for row in (self.p_client, self.p_client_exp, self.p_server, self.p_server_exp,
+                    self.p_mikero, self.p_tools, self.p_tools_exp, self.p_downloads):
+            row.edit.textChanged.connect(lambda _t: self._refresh_dirty())
+        self._refresh_dirty()
 
         # Слежением за загрузками Steam владеет главное окно: качать можно
         # несколько компонентов сразу и уйти с этой страницы, а уведомление и
@@ -546,17 +547,6 @@ class SettingsPage(QScrollArea):
             self.pack_engine.setCurrentIndex(1)
         self.pack_engine.setItemText(0, label)
 
-    def _update_packer_status(self) -> None:
-        exe = Path(self.settings.pbo_packer_exe())
-        if exe.is_file():
-            self.packer_status.setText(tr("settings.kr_packer_present",
-                                          "Установлен: {p}", p=exe))
-        else:
-            self.packer_status.setText(tr("settings.kr_packer_missing",
-                                          "Не установлен — «Быстрая» запаковка будет недоступна."))
-
-    # ------------------------------------------------------- filepatching
-
     def _show_filepatch_help(self) -> None:
         TeachingTip.create(
             target=self.b_fp_help,
@@ -641,53 +631,63 @@ class SettingsPage(QScrollArea):
         self._filepatch_report(filepatch.remove_all(self.settings),
                                tr("filepatch.cleared", "Симлинки удалены"))
 
-    def _show_packer_help(self) -> None:
-        TeachingTip.create(
-            target=self.b_packer_help,
-            icon=FIF.HELP,
-            title=tr("settings.kr_packer_label", "[KR] PBO Packer"),
-            content=tr("settings.kr_packer_help",
-                       "Тулза для быстрой запаковки PBO. Её задача — только паковать: "
-                       "мод на ошибки она не проверяет. Если не уверены в работоспособности "
-                       "своего мода, лучше использовать pboProject."),
-            isClosable=True,
-            tailPosition=TeachingTipTailPosition.LEFT,
-            duration=-1,   # закрывается только крестиком, а не по таймеру
-            parent=self,
-        )
-
-    def _download_kr_packer(self) -> None:
-        from ui.packer_download import download_kr_packer
-        if download_kr_packer(self, self.settings):
-            self._update_packer_status()
-
     def _open_pbo_settings(self) -> None:
         dlg = PboProjectDialog(self._pack_flags, self._clean_meta, self)
         if dlg.exec():
-            self._pack_flags = dlg.result_flags() or "-P -K"
+            self._pack_flags = dlg.result_flags() or Settings().pack_flags
             self._clean_meta = dlg.result_clean_meta()
+            self._refresh_dirty()   # диалог сигналов полей не шлёт
+
+    def _form_values(self) -> dict:
+        """Что сейчас introduced в форме — в терминах полей Settings.
+
+        Один источник и для сохранения, и для проверки несохранённых изменений:
+        иначе индикатор рано или поздно разойдётся с тем, что реально пишется.
+        local_mods_dirs здесь нет намеренно — это поле редактируется на вкладке
+        «Моды», страница настроек его не трогает.
+        """
+        return {
+            "language": self.lang.currentData(),
+            "project_prefix": self.project_prefix.text().strip(),
+            "client_stable": self.p_client.text(),
+            "client_exp": self.p_client_exp.text(),
+            "server_stable": self.p_server.text(),
+            "server_exp": self.p_server_exp.text(),
+            "mikero_tools": self.p_mikero.text(),
+            "dayz_tools": self.p_tools.text(),
+            "dayz_tools_exp": self.p_tools_exp.text(),
+            "workshop_dirs": [x.strip() for x in self.workshop.toPlainText().splitlines() if x.strip()],
+            "admin_steamids": [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()],
+            "admin_password": self.admin_pass.text(),
+            "steam_api_key": self.steam_key.text().strip(),
+            "downloads_dir": self.p_downloads.text(),
+            "pack_flags": self._pack_flags,
+            "clean_meta": self._clean_meta,
+            "pack_engine": self.pack_engine.currentData(),
+        }
+
+    def reload_pack_flags(self) -> None:
+        """Подхватывает флаги, изменённые снаружи (окно настроек запаковки с
+        главной страницы). Без этого «Сохранить» здесь вернуло бы старое
+        значение из своей копии."""
+        self._pack_flags = self.settings.pack_flags
+        self._clean_meta = self.settings.clean_meta
+        self._refresh_dirty()
+
+    def is_dirty(self) -> bool:
+        return any(getattr(self.settings, k) != v for k, v in self._form_values().items())
+
+    def _refresh_dirty(self) -> None:
+        """Подсказка рядом с «Сохранить»: настройки применяются только по ней,
+        а диалог флагов pboProject закрывается по OK и выглядит применённым —
+        без этой пометки правки молча терялись при выходе."""
+        self.unsaved.setVisible(self.is_dirty())
 
     def _save(self) -> None:
         s = self.settings
-        s.language = self.lang.currentData()
-        s.project_prefix = self.project_prefix.text().strip()
-        s.client_stable = self.p_client.text()
-        s.client_exp = self.p_client_exp.text()
-        s.server_stable = self.p_server.text()
-        s.server_exp = self.p_server_exp.text()
-        s.mikero_tools = self.p_mikero.text()
-        s.dayz_tools = self.p_tools.text()
-        s.dayz_tools_exp = self.p_tools_exp.text()
-        s.workshop_dirs = [x.strip() for x in self.workshop.toPlainText().splitlines() if x.strip()]
-        # local_mods_dirs больше не редактируется на этой странице — управляется
-        # с вкладки «Моды» (кнопка «Добавить локальные моды»), не перезаписываем
-        s.admin_steamids = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
-        s.admin_password = self.admin_pass.text()
-        s.steam_api_key = self.steam_key.text().strip()
-        s.downloads_dir = self.p_downloads.text()
-        s.pack_flags = self._pack_flags
-        s.clean_meta = self._clean_meta
-        s.pack_engine = self.pack_engine.currentData()
+        for key, value in self._form_values().items():
+            setattr(s, key, value)
         s.save()
+        self._refresh_dirty()
         if self.on_saved:
             self.on_saved()
