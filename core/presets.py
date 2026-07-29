@@ -78,12 +78,12 @@ class ServerPreset:
             pass
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ServerPreset":
+    def from_dict(cls, data: dict) -> ServerPreset:
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known})
 
     @classmethod
-    def load_all(cls) -> list["ServerPreset"]:
+    def load_all(cls) -> list[ServerPreset]:
         out = []
         if PRESETS_DIR.is_dir():
             for f in sorted(PRESETS_DIR.glob("*.json")):
@@ -110,7 +110,7 @@ class ModPreset:
         )
 
     @classmethod
-    def load_all(cls) -> list["ModPreset"]:
+    def load_all(cls) -> list[ModPreset]:
         out = []
         if MOD_PRESETS_DIR.is_dir():
             for f in sorted(MOD_PRESETS_DIR.glob("*.json")):

@@ -32,7 +32,7 @@ class ParamSpec:
     def tooltip(self) -> str:
         return tr(f"param.{self.name}", _TOOLTIPS_RU.get(self.name, self.name))
 
-    def to_arg(self, value) -> str | None:
+    def to_arg(self, value: object) -> str | None:
         if value is None or value == "":
             return None
         if self.ptype == FLAG:

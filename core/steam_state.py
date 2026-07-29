@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from pathlib import Path
 
 # Биты AppState.StateFlags (нужные нам; остальные для наших задач не важны)
@@ -204,7 +205,7 @@ def app_state(appid: str) -> AppState | None:
     return None
 
 
-def app_states(appids) -> dict[str, AppState]:
+def app_states(appids: Iterable[str]) -> dict[str, AppState]:
     """Состояния сразу нескольких приложений за один обход библиотек."""
     res: dict[str, AppState] = {}
     pending = list(dict.fromkeys(appids))

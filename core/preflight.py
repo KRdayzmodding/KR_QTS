@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import packer
 from .i18n import tr
-from .launcher import resolve_path, port_is_free
+from .launcher import port_is_free
 from .mods import ModRegistry
 from .presets import ServerPreset, MODE_DIAG
 from .servercfg import needs_reencode
@@ -28,10 +28,10 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
     """Возвращает список найденных проблем (пустой список — всё в порядке)."""
     problems: list[Problem] = []
 
-    def crit(cid: str, msg: str):
+    def crit(cid: str, msg: str) -> None:
         problems.append(Problem(cid, CRITICAL, msg))
 
-    def warn(cid: str, msg: str):
+    def warn(cid: str, msg: str) -> None:
         problems.append(Problem(cid, WARNING, msg))
 
     client_root = settings.client_root(branch)

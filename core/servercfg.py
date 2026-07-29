@@ -84,7 +84,7 @@ def needs_reencode(path: Path) -> bool:
 
 
 class ServerCfg:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.text, self.encoding = read_text_any(path)
 
