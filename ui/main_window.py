@@ -42,7 +42,7 @@ from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
                               SERVER, CLIENT)
 from ui.packlog_window import PackLogWindow
-from ui.theme import app_icon, light_taskbar, tray_icon
+from ui.theme import app_icon, light_taskbar, tray_icon, window_icon
 
 _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
                   "warning": "#e5c07b", "error": "#ff6b6b"}
@@ -193,10 +193,11 @@ class MainWindow(FluentWindow):
         # свой, не системный: он подхватывает картинку по сигналу
         # windowIconChanged, а при наследовании от QApplication тот не приходит
         # — без явной установки в шапке остаётся пустое место.
-        self.setWindowIcon(app_icon())
         # иконка монохромная и светлая: на светлой шапке её не видно, поэтому
-        # для светлой темы она инвертируется — и перевыставляется при смене
-        # темы на лету, включая случай «следовать теме Windows»
+        # там она инвертируется. На панель задач и в «Пуск» уходит исходная —
+        # подробности в _apply_icon. Перевыставляется при смене темы на лету,
+        # включая случай «следовать теме Windows».
+        self._apply_icon()
         qconfig.themeChanged.connect(self._apply_icon)
         self.resize(1060, 720)
 
@@ -431,11 +432,19 @@ class MainWindow(FluentWindow):
         self._update_sources_button()
 
     def _apply_icon(self) -> None:
-        """Перевыставляет иконки: окну — под тему приложения, трею — под панель
-        задач. Это разные настройки Windows, и совпадают они не всегда."""
-        icon = app_icon()
-        self.setWindowIcon(icon)
-        QApplication.instance().setWindowIcon(icon)
+        """Перевыставляет иконки по трём разным фонам.
+
+        Окно — всегда светлая: её Windows берёт для панели задач и «Пуска», а их
+        фон от темы приложения не зависит. Шапка — под тему приложения, там фон
+        и правда меняется. Трей — под панель задач, это отдельная настройка
+        Windows, и с темой окон она совпадает не всегда.
+        """
+        plain = window_icon()
+        self.setWindowIcon(plain)
+        QApplication.instance().setWindowIcon(plain)
+        # строго после setWindowIcon: оно само шлёт в шапку светлую иконку,
+        # и наш вариант должен лечь поверх
+        self.titleBar.setIcon(app_icon())
         if getattr(self, "tray", None):
             self.tray.setIcon(tray_icon())
             self._taskbar_light = light_taskbar()

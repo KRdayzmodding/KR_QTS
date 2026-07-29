@@ -11,7 +11,7 @@ from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
 from ui.main_window import MainWindow
-from ui.theme import app_icon
+from ui.theme import window_icon
 from ui.wizard import FirstRunWizard
 
 _THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
@@ -26,7 +26,7 @@ def main() -> int:
     # исчезнувшее окно. У собранной версии stderr некуда выводить.
     crashguard.install(f"{APP_NAME} {VERSION}", APP_DIR / "logs")
     # общая для всех окон: мастер, главное окно и окна логов берут её сами
-    app.setWindowIcon(app_icon())
+    app.setWindowIcon(window_icon())
 
     settings = Settings.load()
     setTheme(_THEMES.get(settings.theme, Theme.AUTO))
