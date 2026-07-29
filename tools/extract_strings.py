@@ -24,7 +24,7 @@ for py in list((ROOT / "core").glob("*.py")) + list((ROOT / "ui").glob("*.py")) 
             strings[node.args[0].value] = node.args[1].value
 
 # Динамические ключи: подсказки параметров запуска и переменных cfg
-from core.params import _TOOLTIPS_RU
+from core.params import _TOOLTIPS_RU  # noqa: E402 — после настройки sys.path выше
 for name, text in _TOOLTIPS_RU.items():
     strings[f"param.{name}"] = text
 

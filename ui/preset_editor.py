@@ -573,7 +573,7 @@ class LazyPresetWizard(ThemedWizard):
         self.name.setError(False)
         self.name_error.setText("")
 
-    def validateCurrentPage(self) -> bool:  # noqa: N802 — API Qt
+    def validateCurrentPage(self) -> bool:  # имя метода задаёт Qt
         from core.layout import valid_name, name_conflict
         if self.currentId() == 0:
             name = self.name.text().strip()

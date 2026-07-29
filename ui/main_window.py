@@ -1352,7 +1352,7 @@ class MainWindow(FluentWindow):
         self._quitting = True
         self.close()
 
-    def closeEvent(self, event) -> None:  # noqa: N802 — API Qt
+    def closeEvent(self, event) -> None:  # имя метода задаёт Qt
         if not self._quitting:
             event.ignore()
             self.hide()

@@ -114,7 +114,7 @@ class DownloadWindow(ThemedDialog):
         else:
             self.close()
 
-    def closeEvent(self, event) -> None:  # noqa: N802 — API Qt
+    def closeEvent(self, event) -> None:  # имя метода задаёт Qt
         if self.worker.isRunning():
             self.worker.cancel()
             self.worker.wait(3000)

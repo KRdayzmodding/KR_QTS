@@ -464,7 +464,8 @@ class SourcesDialog(ThemedDialog):
         self.resize(560, 300)
         layout = QVBoxLayout(self)
         hint = BodyLabel(tr("mods.sources_hint",
-                            "Одна папка сорсов = один PBO в addons. Запаковщик сравнивает даты файлов сорсов с датой PBO."))
+                            "Одна папка сорсов = один PBO в addons. Запаковщик "
+                            "сравнивает даты файлов сорсов с датой PBO."))
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.lst = ListWidget()
