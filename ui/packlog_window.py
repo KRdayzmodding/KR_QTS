@@ -123,6 +123,13 @@ class PackLogWindow(QWidget):
             block = [self._summary(rep)]
             lines = rep.lines if full else rep.marked_lines()
             block += [self._line_html(ln) for ln in lines]
+            if rep.truncated and full:
+                # молча обрезать нельзя: конец лога — как раз то место, где
+                # обычно и лежит причина падения сборки
+                block.append(self._line_html(
+                    tr("packlog.truncated",
+                       "=== лог слишком велик: показаны первые {n} строк ===",
+                       n=packlog.MAX_LINES)))
             blocks.append("<br>".join(block))
         self.view.appendHtml("<br><br>".join(blocks) if blocks else
                              f'<span style="color:{_TEXT_COLOR};">'
