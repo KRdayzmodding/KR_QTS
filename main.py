@@ -9,6 +9,7 @@ from qfluentwidgets import setTheme, setThemeColor, Theme
 from core import crashguard, i18n, updater_apply
 from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
+from ui.first_run_update import ensure_current
 from ui.main_window import MainWindow
 from ui.theme import app_icon
 from ui.wizard import FirstRunWizard
@@ -38,6 +39,11 @@ def main() -> int:
     updater_apply.settled()
 
     if not settings.first_run_done:
+        # До мастера, а не после: настраивать всё на устаревшей версии, чтобы
+        # потом обновиться, — верный способ получить конфиг, которого новая
+        # версия не ждёт. Запереть эта проверка не может, см. модуль.
+        if not ensure_current():
+            return 0
         wizard = FirstRunWizard(settings)
         if not wizard.exec():
             return 0  # пользователь закрыл мастер — выходим без сохранения

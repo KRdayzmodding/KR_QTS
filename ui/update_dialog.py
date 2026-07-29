@@ -36,10 +36,11 @@ class UpdateDialog(ThemedDialog):
     restart_requested = Signal()
 
     def __init__(self, rel: Release, downloading: bool = False,
-                 ready: bool = False, parent=None):
+                 ready: bool = False, mandatory: bool = False, parent=None):
         super().__init__(parent)
         self.rel = rel
         self.action = ""          # что выбрал пользователь: download | restart
+        self.mandatory = mandatory
         self.setWindowTitle(tr("upd.title", "Обновление"))
         self.resize(560, 520)
 
@@ -48,6 +49,15 @@ class UpdateDialog(ThemedDialog):
             tr("upd.head", "Версия {new}", new=rel.version)))
         layout.addWidget(CaptionLabel(
             tr("upd.current", "У вас установлена {cur}", cur=VERSION)))
+        if mandatory:
+            why = BodyLabel(tr(
+                "upd.must_body",
+                "Программа ещё не настроена, поэтому обновиться нужно сейчас. "
+                "Настройки, сделанные на старой версии, новая может не понять, "
+                "а первый запуск — то место, где ошибки старых версий заметнее "
+                "всего."))
+            why.setWordWrap(True)
+            layout.addWidget(why)
 
         self.notes = QTextBrowser(self)
         self.notes.setOpenExternalLinks(True)
@@ -71,7 +81,9 @@ class UpdateDialog(ThemedDialog):
         b_page = PushButton(FIF.LINK, tr("upd.page", "Страница релиза"))
         b_page.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(rel.page)))
         b_page.setEnabled(bool(rel.page))
-        b_later = PushButton(tr("upd.later", "Позже"))
+        # На первом запуске отложить нечего: либо обновляемся, либо выходим.
+        b_later = PushButton(tr("upd.quit", "Выйти") if mandatory
+                             else tr("upd.later", "Позже"))
         b_later.clicked.connect(self.reject)
         btns.addWidget(b_page)
         btns.addStretch(1)
