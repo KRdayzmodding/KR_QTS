@@ -9,6 +9,7 @@ from qfluentwidgets import setTheme, setThemeColor, Theme
 from core import i18n
 from core.settings import Settings
 from ui.main_window import MainWindow
+from ui.theme import app_icon
 from ui.wizard import FirstRunWizard
 
 _THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
@@ -18,6 +19,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("KR Server Manager")
     app.setOrganizationName("KRdayzmodding")
+    # общая для всех окон: мастер, главное окно и окна логов берут её сами
+    app.setWindowIcon(app_icon())
 
     settings = Settings.load()
     setTheme(_THEMES.get(settings.theme, Theme.AUTO))

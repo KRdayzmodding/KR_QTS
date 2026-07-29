@@ -11,11 +11,50 @@ ThemedDialog вместо голого QDialog, чтобы получать то
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QDialog, QWizard
 from qfluentwidgets import FluentStyleSheet, setCustomStyleSheet
 
+from core.settings import APP_DIR
+
 _LIGHT_BG = "white"
 _DARK_BG = "rgb(43, 43, 43)"
+
+ICON_FILE = APP_DIR / "icon.tga"
+# Размеры, которые реально запрашиваются: 16 — системный заголовок и трей,
+# 18 — заголовок FluentWindow (см. FluentTitleBar.setIcon), 32 — панель задач,
+# 48/256 — проводник и Alt+Tab. Точное совпадение важно: не найдя нужный
+# размер, QIcon берёт ближайший и пересэмплирует его ещё раз — картинка мылится.
+_ICON_SIZES = (16, 18, 20, 24, 32, 48, 64, 128, 256)
+
+
+def _downscale(src: QPixmap, size: int) -> QPixmap:
+    """Уменьшение половинками до нужного размера.
+
+    Плавное масштабирование Qt билинейное: при уменьшении сразу в 14 раз
+    (256 -> 18) оно читает лишь малую часть пикселей исходника, и результат
+    выходит мылом. Пошаговое деление пополам усредняет всю картинку.
+    """
+    pm = src
+    mode = Qt.TransformationMode.SmoothTransformation
+    ratio = Qt.AspectRatioMode.KeepAspectRatio
+    while pm.width() // 2 > size:
+        pm = pm.scaled(pm.width() // 2, pm.height() // 2, ratio, mode)
+    return pm.scaled(size, size, ratio, mode)
+
+
+def app_icon() -> QIcon:
+    """Иконка приложения; пустая, если файла нет — падать из-за этого незачем."""
+    icon = QIcon()
+    src = QPixmap(str(ICON_FILE))
+    if src.isNull():
+        return icon
+    for size in _ICON_SIZES:
+        if size < src.width():
+            icon.addPixmap(_downscale(src, size))
+    icon.addPixmap(src)
+    return icon
 
 
 def _page_qss(bg: str) -> str:
