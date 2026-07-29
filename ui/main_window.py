@@ -1281,7 +1281,53 @@ class MainWindow(FluentWindow):
         dlg.exec()
         if dlg.restart_now:
             self._append_log(tr("upd.restarting", "Перезапуск для установки обновления…"))
+            self._install_update(rel)
+
+    def _install_update(self, rel) -> None:
+        """Распаковывает обновление и передаёт установку помощнику.
+
+        Заменить файлы работающей программы Windows не даёт, поэтому дальше
+        действует отдельный .cmd: он дожидается нашего выхода, копирует
+        распакованное поверх установки и запускает нас заново.
+        """
+        import sys
+        from pathlib import Path
+
+        from core import updater_apply
+        from ui.update_dialog import InstallDialog
+
+        err = updater_apply.preflight(rel)
+        if err:
+            self._notify("error",
+                         tr("upd.install_failed", "Обновление не установлено"), err)
+            return
+        target = updater_apply.install_dir()
+        if target is None:      # preflight это уже отсёк, но mypy прав: None возможен
+            return
+        exe = Path(sys.executable).name
+
+        dlg = InstallDialog(rel, self)
+        self._upd_extract = updater_apply.ExtractWorker(rel, exe, self)
+        self._upd_extract.progress.connect(dlg.set_progress)
+        self._upd_extract.failed.connect(dlg.set_failed)
+
+        def _extracted(root: str) -> None:
+            script = updater_apply.write_helper(
+                Path(root), target, exe,
+                title=APP_NAME,
+                message=tr("upd.helper_msg",
+                           "Устанавливается обновление, не закрывайте это окно…"),
+                stuck=tr("upd.helper_stuck",
+                         "Программа не закрылась. Закройте её и обновитесь заново."),
+                failed=tr("upd.helper_failed",
+                          "Не удалось скопировать файлы. Обновление не установлено."))
+            updater_apply.launch_helper(script)
+            dlg.accept()
             self.quit_app()
+
+        self._upd_extract.done.connect(_extracted)
+        self._upd_extract.start()
+        dlg.exec()
 
     def _about(self) -> None:
         import re

@@ -6,7 +6,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import setTheme, setThemeColor, Theme
 
-from core import crashguard, i18n
+from core import crashguard, i18n, updater_apply
 from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.main_window import MainWindow
@@ -32,6 +32,10 @@ def main() -> int:
     setThemeColor("#d0752b")  # оливково-оранжевый акцент под DayZ
 
     i18n.load(settings.language)
+
+    # Если помощник отработал, мы уже запущены из новых файлов — снимаем
+    # отметку и убираем архив, иначе он так и лежал бы сотней мегабайт.
+    updater_apply.settled()
 
     if not settings.first_run_done:
         wizard = FirstRunWizard(settings)

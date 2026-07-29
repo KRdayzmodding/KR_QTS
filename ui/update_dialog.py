@@ -158,6 +158,44 @@ class UpdateDialog(ThemedDialog):
         self.status.setText(tr("upd.failed_body", "Не удалось скачать: {m}", m=msg))
 
 
+class InstallDialog(ThemedDialog):
+    """Распаковка обновления перед перезапуском.
+
+    Закрыть нельзя: дальше идёт замена файлов программы, и бросить это на
+    середине — получить установку из половины старой версии и половины новой.
+    Распаковка укладывается в десяток секунд, ждать недолго.
+    """
+
+    def __init__(self, rel: Release, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("upd.install_title", "Установка обновления"))
+        self.resize(420, 160)
+        layout = QVBoxLayout(self)
+        layout.addWidget(StrongBodyLabel(
+            tr("upd.install_head", "Подготовка версии {v}", v=rel.version)))
+        note = BodyLabel(tr("upd.install_body",
+                            "Программа закроется и запустится заново сама."))
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        self.bar = ProgressBar(self)
+        layout.addWidget(self.bar)
+        self.status = CaptionLabel("")
+        layout.addWidget(self.status)
+
+    def set_progress(self, done: int, total: int) -> None:
+        if total:
+            self.bar.setValue(int(done * 100 / total))
+        self.status.setText(tr("upd.install_progress",
+                               "Распаковано {a} из {b} файлов", a=done, b=total))
+
+    def set_failed(self, msg: str) -> None:
+        self.status.setText(tr("upd.install_error", "Не удалось: {m}", m=msg))
+
+    def reject(self) -> None:
+        """Escape и крестик не работают, пока идёт распаковка."""
+
+
 class RestartDialog(ThemedDialog):
     """Обновление скачано — предложение перезапуститься."""
 
