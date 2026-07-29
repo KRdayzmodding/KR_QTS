@@ -13,17 +13,17 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QTreeWidgetItem, QHeaderView
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, TreeWidget, CheckBox, CaptionLabel,
+    PushButton, PrimaryPushButton, TreeWidget, CaptionLabel,
     FluentIcon as FIF,
 )
 
 from core import packer, packlog
 from core.i18n import tr
-from core.mods import ModInfo, ModRegistry, SOURCE_LOCAL
+from core.mods import ModInfo, ModRegistry, format_size
 from core.settings import Settings
 from ui.theme import ThemedDialog
 
-(COL_MOD, COL_SOURCES, COL_STATE) = range(3)
+(COL_MOD, COL_PBO, COL_SIZE, COL_STATE) = range(4)
 _ORANGE = QColor("#e08f00")
 _GREEN = QColor("#2e7d32")
 
@@ -68,7 +68,7 @@ class SourcesDialog(ThemedDialog):
         self.settings = settings
         self.selected_jobs: list[tuple[ModInfo, str]] = []
 
-        self.setWindowTitle(tr("sources.title", "Моды с сорсами"))
+        self.setWindowTitle(tr("sources.title", "Перепаковка модов"))
         self.resize(620, 460)
         layout = QVBoxLayout(self)
 
@@ -79,24 +79,25 @@ class SourcesDialog(ThemedDialog):
         layout.addWidget(hint)
 
         self.tree = TreeWidget(self)
-        self.tree.setColumnCount(3)
+        self.tree.setColumnCount(4)
         self.tree.setHeaderLabels([
             tr("mods.col_name", "Мод"),
-            tr("sources.col_sources", "Сорсов"),
+            tr("sources.col_pbo", "Количество PBO"),
+            tr("mods.col_size", "Размер"),
             tr("sources.col_state", "Состояние"),
         ])
         hdr = self.tree.header()
         hdr.setSectionResizeMode(COL_MOD, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(COL_SOURCES, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(COL_STATE, QHeaderView.ResizeMode.ResizeToContents)
+        for col in (COL_PBO, COL_SIZE, COL_STATE):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.tree, 1)
 
         self._fill()
 
         btns = QHBoxLayout()
-        b_all = PushButton(tr("mods.enable_all", "Включить все"))
+        b_all = PushButton(tr("sources.select_all", "Выбрать все"))
         b_all.clicked.connect(lambda: self._set_all(True))
-        b_none = PushButton(tr("mods.disable_all", "Выключить все"))
+        b_none = PushButton(tr("sources.select_none", "Снять выбор"))
         b_none.clicked.connect(lambda: self._set_all(False))
         btns.addWidget(b_all)
         btns.addWidget(b_none)
@@ -113,14 +114,15 @@ class SourcesDialog(ThemedDialog):
 
     def _fill(self) -> None:
         stale_by_mod = {id(m): set(s) for m, s in packer.stale_mods(
-            [m for m in self.registry.all() if m.source == SOURCE_LOCAL])}
+            [m for m in self.registry.all() if m.can_have_sources])}
         any_rows = False
         for mod in self.registry.all():
-            if mod.source != SOURCE_LOCAL or not mod.sources:
+            if not mod.can_have_sources or not mod.sources:
                 continue
             any_rows = True
             stale = stale_by_mod.get(id(mod), set())
-            item = QTreeWidgetItem([mod.name, str(len(mod.sources)), ""])
+            item = QTreeWidgetItem([mod.name, str(len(mod.sources)),
+                                    format_size(mod.size_bytes), ""])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             # по умолчанию отмечено то, что реально требует пересборки —
             # обычно именно это и нужно, а полный ребилд долгий

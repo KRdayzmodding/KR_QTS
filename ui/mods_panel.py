@@ -28,8 +28,7 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, TransparentToolButton, TreeWidget, ListWidget, ComboBox,
     SearchLineEdit, BodyLabel, CaptionLabel, CheckBox, HyperlinkLabel,
-    InfoBar, InfoBarPosition, IndeterminateProgressRing, MessageBox,
-    FluentIcon as FIF, qconfig,
+    InfoBar, InfoBarPosition, IndeterminateProgressRing, FluentIcon as FIF, qconfig,
 )
 
 from core import deps, packer, packlog, steam_api, steam_urls
@@ -38,6 +37,7 @@ from core import i18n
 from core.i18n import tr
 from core.mods import (
     ModRegistry, ModInfo, SOURCE_STEAM, SOURCE_LOCAL, SOURCE_GITHUB,
+    sort_key as mods_sort_key,
     validate_mod_dir, format_size, load_flag_defs,
 )
 from ui.mod_flags_dialog import (
@@ -101,6 +101,37 @@ class RebuildWorker(QThread):
         self.done.emit(True, "")
 
 
+class ScanWorker(QThread):
+    """Обход папок модов в фоне.
+
+    Реестр собирается в новый экземпляр, а не правится существующий: пока идёт
+    обход, старым продолжают пользоваться списки на экране, и подменять его
+    из чужого потока нельзя. Готовый отдаётся сигналом, главное окно меняет
+    ссылку у себя.
+    """
+    progress = Signal(str)      # имя мода, который сейчас читается
+    done = Signal(object)       # ModRegistry либо None, если отменили
+
+    def __init__(self, settings: Settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        registry = ModRegistry(self.settings)
+        try:
+            registry.scan(progress=self.progress.emit,
+                          cancel=lambda: self._cancelled)
+        except OSError:
+            # диск отвалился прямо во время обхода — оставляем прежний реестр
+            self.done.emit(None)
+            return
+        self.done.emit(None if self._cancelled else registry)
+
+
 class StaleCheckWorker(QThread):
     """Проверка актуальности Steam-модов: сравнивает time_updated в Workshop
     с локальной датой изменения файлов мода. Публичный эндпоинт, ключ не нужен."""
@@ -111,14 +142,18 @@ class StaleCheckWorker(QThread):
         self.mods = mods
 
     def run(self) -> None:
+        # один запрос на всю пачку, а не по запросу на мод: при недоступной
+        # сети иначе выходит N таймаутов подряд, и воркер живёт минутами
+        try:
+            times = steam_api.times_updated([m.workshop_id for m in self.mods])
+        except Exception:  # noqa: BLE001 — сеть/парсинг не должны ронять UI
+            return
         for mod in self.mods:
-            try:
-                remote = steam_api.get_time_updated(mod.workshop_id)
-            except Exception:  # noqa: BLE001 — сеть недоступна и т.п.: пропускаем
+            remote = times.get(mod.workshop_id, 0)
+            if not remote:
                 continue
             # запас 60с на расхождение часов/времени записи на диск
-            outdated = bool(remote) and remote > mod.mtime + 60
-            self.checked.emit(mod, outdated)
+            self.checked.emit(mod, remote > mod.mtime + 60)
 
 
 class DependencyResolveWorker(QThread):
@@ -178,7 +213,9 @@ class DependencyDialog(ThemedDialog):
         box.setContentsMargins(0, 0, 0, 0)
 
         flag_defs = {d.id: d for d in load_flag_defs()}
-        for mod in res.found:
+        # порядок обхода графа зависимостей случаен для глаза — приводим к
+        # тому же виду, что и остальные списки модов
+        for mod in sorted(res.found, key=mods_sort_key):
             cb = CheckBox(mod.name)
             cb.setChecked(True)
             style_checkbox_by_flags(cb, mod, flag_defs)
@@ -301,12 +338,23 @@ class DependencyPickerDialog(ThemedDialog):
         mods = [m for m in self._all_mods if not q or q in m.name.lower()]
         if tag:
             mods = [m for m in mods if tag in m.flags]
-        if self.sort_combo.currentData() == "tag":
-            def sort_key(m):
+        by_tag = self.sort_combo.currentData() == "tag"
+
+        def sort_key(m):
+            """Уже отмеченные зависимости — всегда наверху.
+
+            Окно про то, от чего зависит мод: выбранное должно быть перед
+            глазами, а не теряться среди сотни остальных. Флаги идут следом —
+            здесь они менее важны.
+            """
+            picked = 0 if m.folder_name.lower() in self._checked else 1
+            if by_tag:
                 ids = [f for f in m.flags if f in self._flag_defs]
-                return (0, self._flag_defs[ids[0]].name.lower(), m.name.lower()) if ids \
-                    else (1, "", m.name.lower())
-            mods = sorted(mods, key=sort_key)
+                tag_name = self._flag_defs[ids[0]].name.lower() if ids else "￿"
+                return (picked, tag_name, m.name.lower())
+            return (picked,) + mods_sort_key(m)
+
+        mods = sorted(mods, key=sort_key)
 
         self.lst.clear()
         for other in mods:
@@ -466,7 +514,10 @@ class HiddenModsDialog(ThemedDialog):
         layout.addWidget(hint)
         if not excluded_mods:
             layout.addWidget(CaptionLabel(tr("mods.hidden_empty", "Скрытых модов нет.")))
-        for key in excluded_mods:
+        # скрытые хранятся в порядке скрытия — показываем в общем порядке
+        for key in sorted(excluded_mods,
+                          key=lambda k: mods_sort_key(hidden[k]) if k in hidden
+                          else (2, (), k)):
             mod = hidden.get(key)
             if mod:
                 src = {SOURCE_STEAM: "Steam", SOURCE_LOCAL: "Локальный",
@@ -537,14 +588,18 @@ class ModsPanel(QWidget):
         self._flat_view = True
         self._rebuild_workers: list[RebuildWorker] = []  # держим ссылки, иначе поток соберёт GC
         self._stale_worker: StaleCheckWorker | None = None
+        self._scan_worker: ScanWorker | None = None
+        # кому сообщить, что реестр пересобран: главное окно держит свою ссылку
+        self.registry_changed = None
         self._misc_workers: list[QThread] = []  # разовые проверки из контекстного меню
         self._flag_defs: dict = {}  # id -> ModFlagDef, обновляется в _rebuild()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         top = QHBoxLayout()
-        b_refresh = PushButton(FIF.SYNC, tr("mods.refresh", "Обновить"))
-        b_refresh.clicked.connect(self.refresh)
+        self.b_refresh = PushButton(FIF.SYNC, tr("mods.refresh", "Обновить"))
+        self.b_refresh.clicked.connect(self._refresh_clicked)
+        b_refresh = self.b_refresh
         b_add_dir = PushButton(FIF.FOLDER_ADD, tr("mods.add_local", "Добавить локальные моды"))
         b_add_dir.setToolTip(tr("mods.add_dir_tip",
                                 "Папка с @модами или одиночная @папка мода."))
@@ -560,6 +615,11 @@ class ModsPanel(QWidget):
         for b in (b_refresh, b_add_dir, b_hidden, b_flags):
             top.addWidget(b)
         top.addStretch(1)
+        # что именно читается прямо сейчас — иначе кнопка «Отменить» без
+        # признаков жизни выглядит как зависание
+        self.status = CaptionLabel("")
+        self.status.setStyleSheet("color:#888888;")
+        top.addWidget(self.status)
         layout.addLayout(top)
 
         # Поиск и переключатель вида — в одной строке, прямо над заголовками
@@ -637,10 +697,43 @@ class ModsPanel(QWidget):
         self._check_stale()
 
     def refresh(self) -> None:
-        if self.registry:
-            self.registry.scan()
+        """Пересканировать моды. Обход идёт в фоне — список остаётся живым.
+
+        Читается размер и дата каждого файла каждого мода; на прогретом кеше
+        это десятки миллисекунд, на холодном или на внешнем диске — секунды.
+        Держать на этом главный поток нельзя: обновление зовётся после каждой
+        пересборки мода.
+        """
+        if not self.settings or (self._scan_worker and self._scan_worker.isRunning()):
+            return
+        self._scan_worker = ScanWorker(self.settings, self)
+        self._scan_worker.progress.connect(self._scan_progress)
+        self._scan_worker.done.connect(self._scan_done)
+        self.b_refresh.setText(tr("mods.refresh_busy", "Отменить"))
+        self.b_refresh.setIcon(FIF.CLOSE)
+        self._scan_worker.start()
+
+    def _scan_progress(self, name: str) -> None:
+        self.status.setText(tr("mods.scanning", "Обновление: {n}…", n=name))
+
+    def _scan_done(self, registry: ModRegistry | None) -> None:
+        self.b_refresh.setText(tr("mods.refresh", "Обновить"))
+        self.b_refresh.setIcon(FIF.SYNC)
+        self.status.setText("")
+        if registry is None:        # отменено или диск отвалился
+            return
+        self.registry = registry
+        if self.registry_changed:
+            self.registry_changed(registry)
         self._rebuild()
         self._check_stale()
+
+    def _refresh_clicked(self) -> None:
+        """Одна кнопка на два действия: пока идёт обход — отмена."""
+        if self._scan_worker and self._scan_worker.isRunning():
+            self._scan_worker.cancel()
+            return
+        self.refresh()
 
     def _check_stale(self) -> None:
         """Фоновая проверка актуальности всех Steam-модов относительно Workshop."""
@@ -708,6 +801,12 @@ class ModsPanel(QWidget):
         hdr = self.tree.header()
         sort_col = hdr.sortIndicatorSection() if self._flat_view else COL_NAME
         sort_order = hdr.sortIndicatorOrder() if self._flat_view else Qt.SortOrder.AscendingOrder
+        # прокрутка и выделенная строка: список пересобирается целиком после
+        # каждого ребилда мода, и без этого страница уезжала в начало — а мод,
+        # который только что пересобрали, обычно не первый в списке
+        scroll = self.tree.verticalScrollBar().value()
+        cur = self._item_mod(self.tree.currentItem()) if self.tree.currentItem() else None
+        cur_key = cur.folder_name.lower() if cur else ""
         self._building = True
         self.tree.setSortingEnabled(False)
         self.tree.clear()
@@ -761,6 +860,20 @@ class ModsPanel(QWidget):
                 gitem.setExpanded(expanded is None or gname in expanded)
         self._building = False
         self._apply_filter(self.search.text())
+        self._restore_view(scroll, cur_key)
+
+    def _restore_view(self, scroll: int, cur_key: str) -> None:
+        """Возвращает прокрутку и выделение после пересборки списка."""
+        if cur_key:
+            for item in self._iter_mod_items():
+                mod = self._item_mod(item)
+                if mod and mod.folder_name.lower() == cur_key:
+                    # без scrollTo: прокрутку восстанавливаем сами, а он бы
+                    # подвинул её к строке и свёл всю затею на нет
+                    self.tree.setCurrentItem(item)
+                    break
+        bar = self.tree.verticalScrollBar()
+        bar.setValue(min(scroll, bar.maximum()))
 
     def _make_mod_item(self, mod: ModInfo) -> ModTreeItem:
         name = mod.name
@@ -778,7 +891,9 @@ class ModsPanel(QWidget):
         item.setCheckState(COL_SERVER, Qt.CheckState.Checked if mod.is_server
                            else Qt.CheckState.Unchecked)
         # ключ сортировки: Серверный — по чекбоксу
-        item.setData(COL_NAME, Qt.ItemDataRole.UserRole + 1, mod.name.lower())
+        # ключ по имени с рангом флага впереди: сортировка по «Мод» —
+        # она же сортировка по умолчанию — держит помеченные сверху
+        item.setData(COL_NAME, Qt.ItemDataRole.UserRole + 1, mods_sort_key(mod))
         item.setData(COL_SERVER, Qt.ItemDataRole.UserRole + 1, 0 if mod.is_server else 1)
         item.setForeground(COL_FOLDER, _GREY)
         item.setForeground(COL_SOURCES, self._sources_color(mod))
@@ -851,12 +966,14 @@ class ModsPanel(QWidget):
         self.tree.setItemWidget(item, COL_REBUILD, btn)
 
     def _sources_text(self, mod: ModInfo) -> str:
-        if mod.source == SOURCE_STEAM:
+        # «не заданы» — приглашение их задать, а чужие моды мы не собираем:
+        # у воркшопных и скачанных с GitHub сорсов не бывает по определению
+        if not mod.can_have_sources:
             return tr("mods.sources_na", "не требуются")
         return tr("mods.sources_set", "Указаны") if mod.sources else tr("mods.no_sources", "не заданы")
 
     def _sources_color(self, mod: ModInfo) -> QColor:
-        if mod.source == SOURCE_STEAM:
+        if not mod.can_have_sources:
             return _GREY
         return _GREEN if mod.sources else _ORANGE
 
@@ -896,7 +1013,7 @@ class ModsPanel(QWidget):
         if column != COL_SOURCES:
             return
         mod = self._item_mod(item)
-        if not mod or mod.source == SOURCE_STEAM:
+        if not mod or not mod.can_have_sources:
             return
         dlg = SourcesDialog(mod, self.settings, self)
         if dlg.exec():
@@ -1020,10 +1137,31 @@ class ModsPanel(QWidget):
 
     def _bulk_context_menu(self, mods: list[ModInfo], pos) -> None:
         menu = QMenu(self)
-        act_flags = menu.addAction(tr("mods.ctx_flags_bulk", "Флаги… ({n})", n=len(mods)))
+        n = len(mods)
+        act_flags = menu.addAction(tr("mods.ctx_flags_bulk", "Флаги… ({n})", n=n))
+        # обновления есть только у воркшопных: у локальных и скачанных с
+        # GitHub спрашивать не у кого
+        steam = [m for m in mods if m.source == SOURCE_STEAM and m.workshop_id]
+        act_update = menu.addAction(tr("mods.ctx_check_updates_bulk",
+                                       "Проверить обновления ({n})", n=len(steam))) \
+            if steam else None
+        act_open = menu.addAction(tr("mods.ctx_open_mod_bulk",
+                                     "Открыть расположение модов ({n})", n=n))
+        menu.addSeparator()
+        act_remove = menu.addAction(tr("mods.ctx_remove_bulk",
+                                       "Убрать из списка ({n})", n=n))
         chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
         if chosen is act_flags:
             self._assign_flags(mods)
+        elif chosen is act_update:
+            for mod in steam:
+                self._check_single_mod(mod)
+        elif chosen is act_open:
+            self._open_paths([m.path for m in mods])
+        elif chosen is act_remove:
+            self._remove_from_list(mods)
 
     def _assign_flags(self, mods: list[ModInfo]) -> None:
         if not self.registry:
@@ -1057,6 +1195,22 @@ class ModsPanel(QWidget):
         if Path(path).is_dir():
             os.startfile(path)  # noqa: S606 — открытие проводника по своей же папке мода
 
+    @staticmethod
+    def _open_paths(paths: list[str]) -> None:
+        """Проводник по нескольким модам.
+
+        Одинаковые родительские папки схлопываем: у десятка воркшопных модов
+        родитель один, и открывать его десять раз — десять одинаковых окон.
+        """
+        seen: set[str] = set()
+        for path in paths:
+            p = Path(path)
+            target = str(p.parent) if p.parent.is_dir() else path
+            if target in seen:
+                continue
+            seen.add(target)
+            ModsPanel._open_path(target)
+
     def _check_single_mod(self, mod: ModInfo) -> None:
         worker = StaleCheckWorker([mod], self)
         worker.checked.connect(self._on_stale_checked)
@@ -1069,16 +1223,23 @@ class ModsPanel(QWidget):
                     content="", parent=self.window(), duration=3000,
                     position=InfoBarPosition.TOP_RIGHT)
 
-    def _remove_from_list(self, mod: ModInfo) -> None:
+    def _remove_from_list(self, mods: ModInfo | list[ModInfo]) -> None:
         if not self.settings:
             return
-        key = mod.folder_name.lower()
-        if key not in self.settings.excluded_mods:
-            self.settings.excluded_mods.append(key)
-            self.settings.save()
+        if isinstance(mods, ModInfo):
+            mods = [mods]
+        if not mods:
+            return
+        for mod in mods:
+            key = mod.folder_name.lower()
+            if key not in self.settings.excluded_mods:
+                self.settings.excluded_mods.append(key)
+        self.settings.save()
         self.refresh()
-        InfoBar.success(title=tr("mods.ctx_removed", "«{n}» убран из списка", n=mod.name),
-                        content="", parent=self.window(), duration=3000,
+        title = (tr("mods.ctx_removed", "«{n}» убран из списка", n=mods[0].name)
+                 if len(mods) == 1 else
+                 tr("mods.ctx_removed_bulk", "Убрано из списка: {n}", n=len(mods)))
+        InfoBar.success(title=title, content="", parent=self.window(), duration=3000,
                         position=InfoBarPosition.TOP_RIGHT)
 
     def _open_hidden_mods(self) -> None:

@@ -5,10 +5,11 @@ import json
 import os
 import re
 import shutil
-import subprocess
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
 
+from . import junction
 from .settings import (
     Settings, MOD_SOURCES_FILE, MOD_DEPENDENCIES_FILE, MOD_FLAGS_FILE, MOD_FLAG_DEFS_FILE,
 )
@@ -89,6 +90,47 @@ def save_flag_defs(defs: list[ModFlagDef]) -> None:
     data = [{"id": d.id, "name": d.name, "color": d.color, "bold": d.bold,
             "italic": d.italic, "underline": d.underline, "icon": d.icon} for d in defs]
     MOD_FLAG_DEFS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    invalidate_flag_order()
+
+
+# Порядок флагов = порядок их описаний в настройках флагов. Кешируется:
+# sort_key зовётся на каждый мод в каждом списке, читать файл столько раз
+# незачем. Сбрасывается при сохранении описаний.
+_FLAG_ORDER: dict[str, int] | None = None
+
+
+def invalidate_flag_order() -> None:
+    global _FLAG_ORDER
+    _FLAG_ORDER = None
+
+
+def flag_order() -> dict[str, int]:
+    global _FLAG_ORDER
+    if _FLAG_ORDER is None:
+        _FLAG_ORDER = {d.id: i for i, d in enumerate(load_flag_defs())}
+    return _FLAG_ORDER
+
+
+def sort_key(mod: ModInfo) -> tuple:
+    """Порядок модов по умолчанию — один на все списки в приложении.
+
+    Помеченные флагами идут первыми: флаг ставят как раз тому, что нужно
+    держать на виду (карты, фреймворки, админки), и искать их глазами среди
+    сотни воркшопных подписок неудобно.
+
+    Внутри помеченных моды группируются по флагам — вперемешку они дают ту же
+    кашу, от которой уходили. Порядок групп берётся из настроек флагов, так
+    что его задаёт сам пользователь.
+
+    Группа — весь набор флагов мода, а не старший из них: иначе «STALKER +
+    Мои» встал бы вперемешку с просто «Мои», раз старший флаг у них общий.
+    Флаги без описания уходят в конец помеченных.
+    """
+    if not mod.flags:
+        return (1, (), mod.name.lower())
+    order = flag_order()
+    ranks = tuple(sorted(order[f] for f in mod.flags if f in order))
+    return (0, ranks or (len(order),), mod.name.lower())
 
 
 @dataclass
@@ -115,6 +157,17 @@ class ModInfo:
     @property
     def valid(self) -> bool:
         return not self.problem
+
+    @property
+    def can_have_sources(self) -> bool:
+        """Можно ли привязать к моду папки сорсов.
+
+        Сорсы — это то, что мы сами пересобираем в pbo. Мод карты, скачанный
+        приложением с GitHub, приходит уже собранным и обновляется целиком
+        новой загрузкой; собирать его из сорсов мы не умеем и не должны.
+        Воркшопные моды не наши по той же причине.
+        """
+        return self.source == SOURCE_LOCAL
 
     @property
     def pbo_count(self) -> int:
@@ -207,7 +260,8 @@ def validate_mod_dir(p: Path) -> str:
 def _is_link(p: Path) -> bool:
     """True для junction/symlink."""
     try:
-        return p.is_junction() or p.is_symlink()  # Python 3.12+: is_junction
+        # is_junction появился в Python 3.12; на 3.11 отработает ветка ниже
+        return p.is_junction() or p.is_symlink()  # type: ignore[attr-defined]
     except AttributeError:
         try:
             return p.is_symlink() or bool(p.stat(follow_symlinks=False).st_reparse_tag)
@@ -216,7 +270,7 @@ def _is_link(p: Path) -> bool:
 
 
 class ModRegistry:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.mods: dict[str, ModInfo] = {}   # ключ — folder_name без учёта регистра
         self.hidden: dict[str, ModInfo] = {}  # скрытые вручную — для HiddenModsDialog
@@ -224,9 +278,20 @@ class ModRegistry:
 
     # ------------------------------------------------------------- сканирование
 
-    def scan(self) -> list[ModInfo]:
+    def scan(self, progress: Callable[[str], None] | None = None,
+             cancel: Callable[[], bool] | None = None) -> list[ModInfo]:
+        """Пересобирает реестр модов, обходя все папки на диске.
+
+        progress зовётся с именем очередного мода, cancel — признак «бросай».
+        Оба нужны фоновому обходу: считаются размер и дата каждого файла в
+        каждом моде (у автора этих строк — 1750 файлов на 18.8 ГБ), и на
+        холодном кеше или внешнем диске это уже не доли секунды.
+        """
         self.mods = {}
         sources_map = self._load_sources_map()
+
+        def stop() -> bool:
+            return bool(cancel and cancel())
 
         # 1. Steam Workshop
         for wdir in self.settings.workshop_dirs:
@@ -236,7 +301,11 @@ class ModRegistry:
             for item in wpath.iterdir():
                 if not item.is_dir():
                     continue
+                if stop():
+                    return self.all()
                 name = _read_meta_name(item) or item.name
+                if progress:
+                    progress(name)
                 pbo_names, size_bytes, mtime = scan_mod_stats(item)
                 mod = ModInfo(
                     name=name, path=str(item), source=SOURCE_STEAM, group="Steam",
@@ -269,6 +338,8 @@ class ModRegistry:
             scan_dirs.append((dl, SOURCE_GITHUB, "GitHub"))
 
         def _add_local(item: Path, source: str, group: str) -> None:
+            if progress:
+                progress(item.name)
             key = item.name.lower()
             dup = ""
             if key in self.mods and self.mods[key].source == SOURCE_STEAM:
@@ -283,6 +354,8 @@ class ModRegistry:
             )
 
         for rpath, source, group in scan_dirs:
+            if stop():
+                return self.all()
             for item in rpath.iterdir():
                 # is_dir() уже возвращает False для битых ссылок — отдельно
                 # проверять _is_link не нужно, а рабочие junction-ссылки на
@@ -319,9 +392,17 @@ class ModRegistry:
         name_to_flag_id = {d.name.lower(): d.id for d in load_flag_defs()}
         auto_dirty = False
         for key, mod in self.mods.items():
-            if mod.source != SOURCE_STEAM or not mod.workshop_id or key in flags_map:
+            if key in flags_map:
                 continue
-            tag_names = _AUTO_FLAG_WORKSHOP_MAP.get(mod.workshop_id)
+            tag_names: tuple[str, ...] | None
+            if mod.source == SOURCE_GITHUB:
+                # в mods_dl лежит только то, что приложение само качало под
+                # пустую карту — это всегда мод карты
+                tag_names = ("Map",)
+            elif mod.source == SOURCE_STEAM and mod.workshop_id:
+                tag_names = _AUTO_FLAG_WORKSHOP_MAP.get(mod.workshop_id)
+            else:
+                tag_names = None
             if not tag_names:
                 continue
             for tname in tag_names:
@@ -342,7 +423,7 @@ class ModRegistry:
         return self.all()
 
     def all(self) -> list[ModInfo]:
-        return sorted(self.mods.values(), key=lambda m: m.name.lower())
+        return sorted(self.mods.values(), key=sort_key)
 
     def get(self, name: str) -> ModInfo | None:
         n = name if name.startswith("@") else "@" + name
@@ -441,16 +522,8 @@ class ModRegistry:
             else:
                 # настоящая папка с таким именем уже есть — используем её
                 return True, ""
-        try:
-            res = subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            if res.returncode != 0:
-                return False, (res.stderr or res.stdout).strip()
-        except OSError as e:
-            return False, str(e)
-        return True, ""
+        err = junction.create(link, target)
+        return (False, err) if err else (True, "")
 
     def copy_keys(self, mod: ModInfo, server_root: str) -> None:
         """Копирует .bikey мода в keys сервера (для verifySignatures)."""

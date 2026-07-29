@@ -17,7 +17,7 @@ from qfluentwidgets import (
 
 from core import deps, steam_api, steam_urls
 from core.i18n import tr
-from core.mods import ModRegistry, ModInfo, SOURCE_STEAM, load_flag_defs
+from core.mods import sort_key as mods_sort_key, ModRegistry, ModInfo, SOURCE_STEAM, load_flag_defs
 from core.presets import ServerPreset, ModPreset
 from core.settings import Settings
 from ui.mods_panel import (
@@ -340,9 +340,10 @@ class ConnectModsDialog(ThemedDialog):
                       | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(COL_NAME, Qt.CheckState.Checked if enabled
                            else Qt.CheckState.Unchecked)
-        # ключ сортировки: Мод — подключённые впереди
+        # ключ сортировки: подключённые впереди, дальше — общий порядок
+        # (группы по флагам, потом всё остальное по алфавиту)
         item.setData(COL_NAME, Qt.ItemDataRole.UserRole + 1,
-                     (0 if enabled else 1, mod.name.lower()))
+                     (0 if enabled else 1,) + mods_sort_key(mod))
         item.setData(COL_NAME, Qt.ItemDataRole.UserRole, mod.folder_name.lower())
         flag_ids = [fid for fid in mod.flags if fid in flag_defs]
         if flag_ids:
