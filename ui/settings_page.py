@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog, QScrollArea,
 )
-from PySide6.QtCore import QUrl, QRegularExpression, QThread, Signal
+from PySide6.QtCore import QUrl, QRegularExpression
 from PySide6.QtGui import QDesktopServices, QRegularExpressionValidator
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox, CheckBox,
@@ -16,12 +16,13 @@ from qfluentwidgets import (
 
 from pathlib import Path
 
-from core import autodetect, filepatch, steam_api, steam_urls
+from core import autodetect, filepatch, steam_urls
 from core.i18n import tr, AVAILABLE
 from core.settings import (
     Settings, find_pbo_project_exe, check_path, PATH_MISSING, PATH_NOT_INSTALLED,
 )
 from ui.pboproject_dialog import PboProjectDialog
+from ui.steamid_list import SteamIdList
 
 _VPP_PASS_MAXLEN = 32
 
@@ -31,23 +32,6 @@ EXTERNAL_DOWNLOADS: dict[str, tuple[str, str]] = {
     "mikero_tools": ("https://mikero.bytex.digital/Downloads",
                      "Mikero Tools (DePboTools)"),
 }
-
-
-class _ResolveSteamIdWorker(QThread):
-    """Определение SteamID64 по ссылке — в фоне: ходит в сеть."""
-    done = Signal(str, str)   # SteamID64 (пусто — не вышло), исходный ввод
-
-    def __init__(self, value: str, api_key: str, parent=None):
-        super().__init__(parent)
-        self.value = value
-        self.api_key = api_key
-
-    def run(self) -> None:
-        try:
-            sid = steam_api.resolve_steamid(self.value, self.api_key)
-        except Exception:  # noqa: BLE001 — сеть/парсинг не должны ронять приложение
-            sid = ""
-        self.done.emit(sid, self.value)
 
 
 class PathRow(QVBoxLayout):
@@ -284,19 +268,12 @@ class SettingsPage(QScrollArea):
 
         # ------------------------------------------------------------ Steam
         form_steam = section(tr("settings.section_steam", "Steam"))
-        self.admin_ids = PlainTextEdit()
-        self.admin_ids.setPlainText("\n".join(settings.admin_steamids))
-        self.admin_ids.setMaximumHeight(64)
+        # ключ берём с живого поля: его могли вписать только что, не сохранив
+        self.admin_ids = SteamIdList(list(settings.admin_steamids),
+                                     lambda: self.steam_key.text().strip())
         self.admin_ids.setToolTip(tr("settings.admins_tip",
-                                     "SteamID64 админов — по одному на строку. Используется модами-админками."))
+                                     "SteamID64 админов. Используется модами-админками."))
         form_steam.addRow(BodyLabel(tr("settings.admins", "Админские SteamID")), self.admin_ids)
-        self.b_resolve = PushButton(FIF.SEARCH, tr("settings.admins_resolve",
-                                                   "Добавить по ссылке на профиль…"))
-        self.b_resolve.setToolTip(tr("settings.admins_resolve_tip",
-                                     "Определяет SteamID64 по ссылке вида "
-                                     "steamcommunity.com/id/<имя> или /profiles/<id>."))
-        self.b_resolve.clicked.connect(self._resolve_steamid)
-        form_steam.addRow("", self.b_resolve)
 
         self.admin_pass = PasswordLineEdit()
         self.admin_pass.setMaxLength(_VPP_PASS_MAXLEN)
@@ -426,8 +403,8 @@ class SettingsPage(QScrollArea):
             widget.currentIndexChanged.connect(lambda _i: self._refresh_dirty())
         for widget in (self.project_prefix, self.admin_pass, self.steam_key):
             widget.textChanged.connect(lambda _t: self._refresh_dirty())
-        for widget in (self.workshop, self.admin_ids):
-            widget.textChanged.connect(self._refresh_dirty)
+        self.workshop.textChanged.connect(self._refresh_dirty)
+        self.admin_ids.changed.connect(lambda: self._refresh_dirty())
         for row in (self.p_client, self.p_client_exp, self.p_server, self.p_server_exp,
                     self.p_mikero, self.p_tools, self.p_tools_exp, self.p_downloads):
             row.edit.textChanged.connect(lambda _t: self._refresh_dirty())
@@ -469,40 +446,6 @@ class SettingsPage(QScrollArea):
         row.set_status("")
         if force or not row.text():
             row.edit.setText(path)
-
-    def _resolve_steamid(self) -> None:
-        from PySide6.QtWidgets import QInputDialog
-        value, ok = QInputDialog.getText(
-            self, tr("settings.admins_resolve", "Добавить по ссылке на профиль…"),
-            tr("settings.admins_resolve_prompt",
-               "Ссылка на профиль Steam (или ник из ссылки /id/):"))
-        if not ok or not value.strip():
-            return
-        self.b_resolve.setEnabled(False)
-        self._resolve_worker = _ResolveSteamIdWorker(value, self.steam_key.text().strip(), self)
-        self._resolve_worker.done.connect(self._steamid_resolved)
-        self._resolve_worker.start()
-
-    def _steamid_resolved(self, sid: str, source: str) -> None:
-        self.b_resolve.setEnabled(True)
-        if not sid:
-            InfoBar.error(title=tr("settings.admins_resolve_failed",
-                                   "Не удалось определить SteamID"),
-                          content=source, parent=self, duration=6000,
-                          position=InfoBarPosition.TOP_RIGHT)
-            return
-        lines = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
-        if sid in lines:
-            InfoBar.info(title=tr("settings.admins_resolve_dup", "{id} уже в списке", id=sid),
-                         content="", parent=self, duration=4000,
-                         position=InfoBarPosition.TOP_RIGHT)
-            return
-        lines.append(sid)
-        self.admin_ids.setPlainText("\n".join(lines))
-        InfoBar.success(title=tr("settings.admins_resolve_ok", "Добавлен {id}", id=sid),
-                        content=tr("settings.admins_resolve_save",
-                                   "Не забудьте нажать «Сохранить»."),
-                        parent=self, duration=5000, position=InfoBarPosition.TOP_RIGHT)
 
     def _check_updates_now(self) -> None:
         """Проверка по кнопке — идёт через главное окно: там же живёт пункт
@@ -685,7 +628,7 @@ class SettingsPage(QScrollArea):
             "dayz_tools": self.p_tools.text(),
             "dayz_tools_exp": self.p_tools_exp.text(),
             "workshop_dirs": [x.strip() for x in self.workshop.toPlainText().splitlines() if x.strip()],
-            "admin_steamids": [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()],
+            "admin_steamids": self.admin_ids.values(),
             "admin_password": self.admin_pass.text(),
             "steam_api_key": self.steam_key.text().strip(),
             "downloads_dir": self.p_downloads.text(),

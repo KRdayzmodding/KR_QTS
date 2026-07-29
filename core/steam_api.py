@@ -22,6 +22,8 @@ def _get(url: str, timeout: int = 20) -> str:
 _STEAMID64_RE = re.compile(r"^\d{17}$")
 _PROFILE_URL_RE = re.compile(r"steamcommunity\.com/profiles/(\d{17})", re.IGNORECASE)
 _VANITY_URL_RE = re.compile(r"steamcommunity\.com/id/([^/?#\s]+)", re.IGNORECASE)
+# Допустимые символы имени профиля Steam; длина взята с запасом в обе стороны.
+_VANITY_RE = re.compile(r"^[A-Za-z0-9_-]{2,32}$")
 
 
 def parse_steamid_input(value: str) -> tuple[str, str]:
@@ -41,8 +43,14 @@ def parse_steamid_input(value: str) -> tuple[str, str]:
     m = _VANITY_URL_RE.search(value)
     if m:
         return "vanity", m.group(1)
-    # голое имя без ссылки — считаем vanity, если это не мусор с разделителями
-    if "/" not in value and " " not in value:
+    # Голое имя профиля. Набор символов у Steam ограничен буквами, цифрами,
+    # дефисом и подчёркиванием — это единственное, чем имя отличается от
+    # случайно вставленного пути, куска команды или обрывка текста.
+    #
+    # Строка из одних цифр именем не считается: длину, отличную от семнадцати,
+    # человек получает, промахнувшись при вводе SteamID, а не набрав имя. Гнать
+    # такое в сеть значит ответить «профиль не найден» вместо «цифр не хватает».
+    if _VANITY_RE.match(value) and not value.isdigit():
         return "vanity", value
     return "", ""
 

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QWizardPage, QVBoxLayout, QFormLayout, QHBoxLayout, QFileDialog,
 )
 from qfluentwidgets import (
-    ComboBox, LineEdit, PlainTextEdit, PushButton, ToolButton,
+    ComboBox, LineEdit, PushButton, ToolButton,
     BodyLabel, CaptionLabel, FluentIcon as FIF,
 )
 
@@ -15,6 +15,7 @@ from core.settings import Settings, check_path
 from core.steam_urls import SETTINGS_APPS
 from ui.settings_page import make_install_button
 from ui.steam_watch import SteamWatcher, status_text
+from ui.steamid_list import SteamIdList
 from ui.theme import ThemedWizard
 
 
@@ -145,22 +146,13 @@ class FirstRunWizard(ThemedWizard):
                                "Поле необязательное и легко заполняется позже в «Настройках» — "
                                "но про него проще не забыть сразу."))
         l_steam = QFormLayout(p_steam)
-        self.admin_ids = PlainTextEdit()
-        self.admin_ids.setPlainText("\n".join(settings.admin_steamids))
-        self.admin_ids.setMaximumHeight(64)
-        self.admin_ids.setPlaceholderText(tr("wizard.admin_ph", "SteamID64 — по одному на строку"))
+        self.admin_ids = SteamIdList(list(settings.admin_steamids),
+                                     lambda: self.settings.steam_api_key)
         l_steam.addRow(tr("settings.admins", "Админские SteamID"), self.admin_ids)
-        self.b_resolve = PushButton(FIF.SEARCH, tr("settings.admins_resolve",
-                                                   "Добавить по ссылке на профиль…"))
-        self.b_resolve.setToolTip(tr("settings.admins_resolve_tip",
-                                     "Определяет SteamID64 по ссылке вида "
-                                     "steamcommunity.com/id/<имя> или /profiles/<id>."))
-        self.b_resolve.clicked.connect(self._resolve_steamid)
-        l_steam.addRow("", self.b_resolve)
         admin_hint = CaptionLabel(tr("wizard.admin_hint",
                                      "Используется модами-админками (COT, VPPAdminTools, LBmaster) для выдачи "
-                                     "прав. Проще всего — вставить ссылку на свой профиль Steam "
-                                     "кнопкой выше, SteamID64 определится сам."))
+                                     "прав. Проще всего — нажать «+» и вставить ссылку на свой профиль "
+                                     "Steam, SteamID64 определится сам."))
         admin_hint.setWordWrap(True)
         l_steam.addRow("", admin_hint)
         self.addPage(p_steam)
@@ -234,44 +226,6 @@ class FirstRunWizard(ThemedWizard):
         if p:
             edit.setText(p)
 
-    def _resolve_steamid(self) -> None:
-        """SteamID64 по ссылке на профиль — тот же механизм, что в «Настройках».
-        Ключ на этом шаге ещё не введён (его тут и нет), поэтому резолв идёт
-        публичными способами — им ключ не нужен."""
-        from PySide6.QtWidgets import QInputDialog
-        from ui.settings_page import _ResolveSteamIdWorker
-        value, ok = QInputDialog.getText(
-            self, tr("settings.admins_resolve", "Добавить по ссылке на профиль…"),
-            tr("settings.admins_resolve_prompt",
-               "Ссылка на профиль Steam (или ник из ссылки /id/):"))
-        if not ok or not value.strip():
-            return
-        self.b_resolve.setEnabled(False)
-        self._resolve_worker = _ResolveSteamIdWorker(value, self.settings.steam_api_key, self)
-        self._resolve_worker.done.connect(self._steamid_resolved)
-        self._resolve_worker.start()
-
-    def _steamid_resolved(self, sid: str, source: str) -> None:
-        from qfluentwidgets import InfoBar, InfoBarPosition
-        self.b_resolve.setEnabled(True)
-        if not sid:
-            InfoBar.error(title=tr("settings.admins_resolve_failed",
-                                   "Не удалось определить SteamID"),
-                          content=source, parent=self, duration=6000,
-                          position=InfoBarPosition.TOP_RIGHT)
-            return
-        lines = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
-        if sid in lines:
-            InfoBar.info(title=tr("settings.admins_resolve_dup", "{id} уже в списке", id=sid),
-                         content="", parent=self, duration=4000,
-                         position=InfoBarPosition.TOP_RIGHT)
-            return
-        lines.append(sid)
-        self.admin_ids.setPlainText("\n".join(lines))
-        InfoBar.success(title=tr("settings.admins_resolve_ok", "Добавлен {id}", id=sid),
-                        content="", parent=self, duration=4000,
-                        position=InfoBarPosition.TOP_RIGHT)
-
     def accept(self) -> None:
         s = self.settings
         s.language = self.lang.currentData()
@@ -279,7 +233,7 @@ class FirstRunWizard(ThemedWizard):
         for key, edit in self.paths.items():
             setattr(s, key, edit.text().strip())
         s.workshop_dirs = self._workshop_dirs
-        s.admin_steamids = [x.strip() for x in self.admin_ids.toPlainText().splitlines() if x.strip()]
+        s.admin_steamids = self.admin_ids.values()
         s.first_run_done = True
         s.save()
         i18n.load(s.language)
