@@ -30,9 +30,20 @@ TAIL_PATTERNS = ("script_*.log", "server_console.log")
 #   RPT    — полный журнал движка: всё подряд, включая ругань на текстуры
 KINDS: dict[str, tuple[str, ...]] = {
     "script": ("script_*.log",),
+    "console": ("server_console.log",),
     "crash": ("crash_*.log",),
     "rpt": ("*.RPT",),
 }
+
+# Строка, с которой движок начинает каждую сессию в server_console.log. Файл
+# общий для всех запусков, и без этой отметки нельзя отличить сегодняшнюю
+# сессию от вчерашней.
+CONSOLE_SESSION_MARK = "SteamGameServer_Init"
+
+# Виды, которые есть только у сервера. Консоль пишет он один — её задаёт
+# logFile в serverDZ.cfg; у клиента такого файла нет вовсе, и предлагать этот
+# пункт в его окне значило бы обещать несуществующее.
+SERVER_ONLY_KINDS = ("console",)
 
 
 def files_of_kind(directory: Path | None, kind: str) -> list[Path]:
@@ -123,9 +134,23 @@ class LogTailer:
     приходил следующим тактом отдельной строкой.
     """
 
-    def __init__(self, directory: Path, pattern_filter: str | None = None) -> None:
+    def __init__(self, directory: Path, pattern_filter: str | None = None,
+                 start_from: str = "begin") -> None:
+        """start_from — откуда читать вновь выбранный файл:
+
+        «begin» — с начала. Годится для логов, которые движок заводит заново
+            на каждый запуск: весь файл и есть текущая сессия.
+        «end» — только то, что допишется дальше. Для файлов, которые движок
+            ведёт непрерывно между запусками: server_console.log за день
+            накапливает несколько тысяч строк от разных сессий, и вываливать
+            их целиком значит показать вчерашнее как сегодняшнее.
+        любая другая строка — считается признаком начала сессии: читаем с
+            последнего её вхождения. Так текущая сессия находится и в общем
+            файле, даже если сервер запущен до нас.
+        """
         self.directory = directory
         self.pattern_filter = pattern_filter  # например "*.RPT", None = все
+        self.start_from = start_from
         self.current: Path | None = None
         self._pos = 0          # сколько байт файла уже прочитано
         self._tail = b""       # недописанная строка, ждём её конца
@@ -142,6 +167,25 @@ class LogTailer:
         self._pos = 0
         self._tail = b""
         self._sig = b""
+        if path is None or self.start_from == "begin":
+            return
+        try:
+            size = path.stat().st_size
+            if self.start_from == "end":
+                self._pos = size
+                return
+            # признак начала сессии: ищем его последнее вхождение
+            with open(path, "rb") as f:
+                data = f.read()
+            mark = self.start_from.encode("utf-8", "replace")
+            at = data.rfind(mark)
+            if at >= 0:
+                # отступаем к началу строки, иначе первая выйдет обрезанной
+                self._pos = data.rfind(b"\n", 0, at) + 1
+            else:
+                self._pos = size
+        except OSError:
+            self._pos = 0
 
     def poll(self) -> list[str]:
         """Новые целые строки с момента прошлого вызова.

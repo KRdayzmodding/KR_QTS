@@ -199,8 +199,12 @@ class LogWindow(QWidget):
         # и менять его логично до того, как что-то искать.
         self.kind_combo = ComboBox()
         for value, label in (("script", tr("log.kind_script", "Скрипты")),
+                             ("console", tr("log.kind_console", "Консоль")),
                              ("crash", tr("log.kind_crash", "Падения")),
                              ("rpt", tr("log.kind_rpt", "RPT"))):
+            # консоль пишет только сервер — в окне клиента такого файла нет
+            if value in logsource.SERVER_ONLY_KINDS and key != "server":
+                continue
             self.kind_combo.addItem(label, userData=value)
         self.kind_combo.setMinimumWidth(120)
         self.kind_combo.setToolTip(tr("log.kind_tip",

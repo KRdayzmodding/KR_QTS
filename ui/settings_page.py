@@ -241,16 +241,6 @@ class SettingsPage(QScrollArea):
         self.p_server_exp = PathRow(settings.server_exp, self, "server_exp")
         self.p_tools = PathRow(settings.dayz_tools, self, "dayz_tools")
         self.p_tools_exp = PathRow(settings.dayz_tools_exp, self, "dayz_tools_exp")
-        # Окно сервера показывает ровно то, что пишется в server_console.log,
-        # а его приложение читает и так — прятать можно без потери сведений.
-        self.hide_server_window = CheckBox(tr("settings.hide_server_window",
-                                              "Скрывать окно сервера при запуске"))
-        self.hide_server_window.setChecked(settings.hide_server_window)
-        self.hide_server_window.setToolTip(tr(
-            "settings.hide_server_window_tip",
-            "Сервер работает как обычно, но своего окна не показывает. Всё, что "
-            "в нём видно, есть в логах сервера."))
-        form_paths.addRow("", self.hide_server_window)
         form_paths.addRow(BodyLabel(tr("settings.client", "DayZ")), self.p_client)
         form_paths.addRow(BodyLabel(tr("settings.server", "DayZ Server")), self.p_server)
         form_paths.addRow(BodyLabel(tr("settings.client_exp", "DayZ Experimental")), self.p_client_exp)
@@ -629,7 +619,6 @@ class SettingsPage(QScrollArea):
         return {
             "language": self.lang.currentData(),
             "check_updates": self.check_updates.isChecked(),
-            "hide_server_window": self.hide_server_window.isChecked(),
             "project_prefix": self.project_prefix.text().strip(),
             "client_stable": self.p_client.text(),
             "client_exp": self.p_client_exp.text(),

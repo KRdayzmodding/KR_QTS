@@ -9,16 +9,16 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QApplication,
-    QSystemTrayIcon,
+    QSystemTrayIcon, QSplitter,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF,
     ComboBox, CheckBox, PushButton, PrimaryPushButton, TransparentToolButton,
-    BodyLabel, StrongBodyLabel, CardWidget, InfoBar, InfoBarPosition, MessageBox,
+    BodyLabel, StrongBodyLabel, CaptionLabel, CardWidget, InfoBar, InfoBarPosition, MessageBox,
     SystemTrayMenu, Action, qconfig,
 )
 
-from core import filepatch, logsource, packer, packlog, updater
+from core import filepatch, logsource, packer, packlog, updater, winconsole
 from core.i18n import tr
 from core.launcher import LaunchWorker, dayz_running, kill_all, kill_pid
 from core.mods import ModRegistry
@@ -45,7 +45,8 @@ from ui.packlog_window import PackLogWindow
 from ui.theme import app_icon, link_html, outside_icon
 
 _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
-                  "warning": "#e5c07b", "error": "#ff6b6b"}
+                  "warning": "#e5c07b", "error": "#ff6b6b",
+}
 # Пауза перед показом накопившихся сообщений: за неё прилетает вся пачка
 # событий одного обвала, и человек читает их одним окном, а не вереницей.
 _ALERT_MERGE_MS = 400
@@ -109,6 +110,13 @@ class LaunchInterface(QWidget):
         self.chk_client = CheckBox(tr("common.client", "Клиент"))
         row.addWidget(self.chk_server)
         row.addWidget(self.chk_client)
+        self.chk_hide_window = CheckBox(tr("main.hide_server_window",
+                                           "Скрыть окно сервера"))
+        self.chk_hide_window.setToolTip(tr(
+            "main.hide_server_window_tip",
+            "Сервер запустится без своего окна. Всё, что оно показывает, будет "
+            "выводиться сюда, в журнал запуска."))
+        row.addWidget(self.chk_hide_window)
         row.addStretch(1)
         self.status_label = StrongBodyLabel("")
         row.addWidget(self.status_label)
@@ -158,12 +166,35 @@ class LaunchInterface(QWidget):
         row3.addWidget(self.btn_packlogs, 1)
         pack.addLayout(row3)
 
-        # Журнал запуска
+        # Журнал запуска и — когда окно сервера спрятано — его консоль под ним.
+        # Двумя областями, а не одной лентой: это разные потоки. Наш журнал
+        # редкий и осмысленный, консоль сервера частая и подробная; смешав их,
+        # мы утопили бы первое во втором.
         self.launch_log = QPlainTextEdit()
         self.launch_log.setReadOnly(True)
         self.launch_log.setFont(QFont("Consolas", 9))
         self.launch_log.setStyleSheet(_CONSOLE_QSS)
-        layout.addWidget(self.launch_log, 1)
+
+        self.console_box = QWidget()
+        cbox = QVBoxLayout(self.console_box)
+        cbox.setContentsMargins(0, 0, 0, 0)
+        cbox.setSpacing(4)
+        cbox.addWidget(CaptionLabel(tr("main.server_console", "Консоль сервера")))
+        self.console_log = QPlainTextEdit()
+        self.console_log.setReadOnly(True)
+        self.console_log.setMaximumBlockCount(5000)
+        self.console_log.setFont(QFont("Consolas", 9))
+        self.console_log.setStyleSheet(_CONSOLE_QSS)
+        cbox.addWidget(self.console_log, 1)
+        # появляется только у сервера, запущенного без своего окна
+        self.console_box.setVisible(False)
+
+        self.log_split = QSplitter(Qt.Orientation.Vertical)
+        self.log_split.addWidget(self.launch_log)
+        self.log_split.addWidget(self.console_box)
+        self.log_split.setStretchFactor(0, 1)
+        self.log_split.setStretchFactor(1, 1)
+        layout.addWidget(self.log_split, 1)
 
 
 class MainWindow(FluentWindow):
@@ -176,6 +207,13 @@ class MainWindow(FluentWindow):
         self.current: ServerPreset | None = None
         # модальные сообщения из наблюдателей — по очереди, см. _alert
         self._adopted = False           # стороны подхвачены, а не запущены нами
+        # консоль сервера в журнал — когда его окно спрятано, см. _console_start
+        self._console_tailer: logsource.LogTailer | None = None
+        self._console_win: winconsole.WindowConsole | None = None
+        self._console_prof: Path | None = None
+        self._console_timer = QTimer(self)
+        self._console_timer.setInterval(500)
+        self._console_timer.timeout.connect(self._console_poll)
         self._alerts: list[tuple[str, str]] = []
         self._alert_busy = False
         self.worker: LaunchWorker | None = None
@@ -277,6 +315,8 @@ class MainWindow(FluentWindow):
         lp.b_del.clicked.connect(self._delete_preset)
         lp.b_connect_mods.clicked.connect(self._open_connect_mods)
         lp.chk_server.toggled.connect(self._launch_flags_changed)
+        lp.chk_hide_window.setChecked(settings.hide_server_window)
+        lp.chk_hide_window.toggled.connect(self._hide_window_changed)
         lp.chk_server.toggled.connect(lambda _v: self._update_launch_button())
         lp.chk_client.toggled.connect(lambda _v: self._update_launch_button())
         lp.chk_client.toggled.connect(self._launch_flags_changed)
@@ -539,6 +579,8 @@ class MainWindow(FluentWindow):
                                 s=self._side_name(side), pid=r.pid, n=r.preset), "success")
         self._bind_log_dirs(adopt=True)
         self._start_monitors_for_adopted()
+        if self.server_pid:
+            self._console_start()
         self._update_launch_button()
 
     def _start_monitors_for_adopted(self) -> None:
@@ -673,6 +715,84 @@ class MainWindow(FluentWindow):
         color = _STATUS_COLORS.get(level, "#d4d4d4")
         self.launch_page.launch_log.appendHtml(
             f'<span style="color:{color};">{html.escape(msg)}</span>')
+
+    def _hide_window_changed(self, on: bool) -> None:
+        """Запоминаем выбор: он относится к следующему запуску, а не к разовому."""
+        self.settings.hide_server_window = on
+        self.settings.save()
+
+    def _console_start(self) -> None:
+        """Начинает выводить консоль сервера в журнал запуска.
+
+        Нужна ровно тогда, когда окно сервера спрятано: то, что человек привык
+        видеть в нём, должно появиться там, куда он смотрит. При видимом окне
+        это был бы дубль — те же строки в двух местах.
+
+        Источник — server_console.log, его задаёт logFile в serverDZ.cfg. Это
+        тот же поток, что показывает окно сервера, слово в слово.
+        """
+        self._console_stop()
+        p = self.current
+        if not p or not self.settings.hide_server_window:
+            return
+        from core.layout import resolve_profiles
+        prof = resolve_profiles(p.profiles, self.settings, self._branch(), p.mode)
+        if not prof:
+            return
+        self.launch_page.console_log.clear()
+        self.launch_page.console_box.setVisible(True)
+        self._console_prof = Path(prof)
+        # Сначала пробуем читать окно сервера: файл отстаёт на десятки секунд,
+        # окно обновляется сразу. Если окна не найдётся — уйдём на файл сами,
+        # см. _console_fallback.
+        if self.server_pid:
+            self._console_win = winconsole.WindowConsole(self.server_pid, self)
+            self._console_win.lines.connect(self._console_lines)
+            self._console_win.unavailable.connect(self._console_fallback)
+            self._console_win.start()
+        else:
+            self._console_fallback()
+
+    def _console_fallback(self) -> None:
+        """Окна нет — читаем файл. Хуже по свежести, но работает всегда.
+
+        Файл общий для всех запусков сервера, за день в нём накапливается
+        несколько тысяч строк от разных сессий. Свой запуск читаем с конца —
+        всё, что допишется, наше. Подхваченный — с последней отметки начала
+        сессии: его начало было до нас, но в файле оно помечено.
+        """
+        if self._console_prof is None:
+            return
+        self._console_tailer = logsource.LogTailer(
+            self._console_prof, pattern_filter="server_console.log",
+            start_from=logsource.CONSOLE_SESSION_MARK if self._adopted else "end")
+        self._console_timer.start()
+
+    def _console_stop(self) -> None:
+        self._console_timer.stop()
+        self._console_tailer = None
+        self._console_prof = None
+        if self._console_win is not None:
+            self._console_win.stop()
+            self._console_win = None
+        self.launch_page.console_box.setVisible(False)
+
+    def _console_lines(self, lines: list) -> None:
+        view = self.launch_page.console_log
+        for line in lines:
+            color = _STATUS_COLORS.get(logsource.classify(line), "#d4d4d4")
+            view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
+
+    def _console_poll(self) -> None:
+        if self._console_tailer is None:
+            return
+        view = self.launch_page.console_log
+        for line in self._console_tailer.poll():
+            line = line.rstrip()
+            if not line:
+                continue
+            color = _STATUS_COLORS.get(logsource.classify(line), "#d4d4d4")
+            view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
 
     def _append_alarm(self, msg: str) -> None:
         """Крупная красная строка в журнале — для того, что нельзя проглядеть.
@@ -934,6 +1054,7 @@ class MainWindow(FluentWindow):
         self.server_pid = pid
         self.launch_status.set_connecting(SERVER)
         self._bind_log_dirs()
+        self._console_start()
 
     def _on_client_started(self, pid: int) -> None:
         self.client_pid = pid
@@ -1174,7 +1295,10 @@ class MainWindow(FluentWindow):
             # и перепаковка при следующем запуске всё равно не пройдёт
             self._lockable = [(w, w.toolTip())
                               for w in (lp.preset_combo, lp.branch_combo,
-                                        lp.b_new, lp.b_del, lp.pack_engine)]
+                                        lp.b_new, lp.b_del, lp.pack_engine,
+                                        # окно уже создано или нет — на ходу
+                                        # этот выбор ничего не изменит
+                                        lp.chk_hide_window)]
         tip = tr("main.locked_running", "Недоступно, пока запущен сервер или клиент")
         for widget, own_tip in self._lockable:
             widget.setEnabled(not locked)
@@ -1225,6 +1349,8 @@ class MainWindow(FluentWindow):
                 # статус блока обновит _update_status по состоянию процесса —
                 # здесь только глушим наблюдателя за логами
                 self.monitors[SERVER if attr == "server_pid" else CLIENT].stop()
+                if attr == "server_pid":
+                    self._console_stop()   # сервера нет — читать его консоль нечем
             self._alive[attr] = alive
 
     def _update_sources_button(self) -> None:
