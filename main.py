@@ -1,6 +1,7 @@
 """KR Quick Test Server — точка входа."""
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -11,10 +12,19 @@ from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
 from ui.main_window import MainWindow
+from ui import single_instance
 from ui.theme import outside_icon
 from ui.wizard import FirstRunWizard
 
 _THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
+
+
+def _greet(channel, window) -> None:
+    """Пришла вторая копия: разворачиваем окно вместо второго запуска."""
+    conn = channel.nextPendingConnection()
+    if conn is not None:
+        conn.disconnectFromServer()
+    window.restore_from_tray()
 
 
 def main() -> int:
@@ -31,6 +41,13 @@ def main() -> int:
     crashguard.install(f"{APP_NAME} {VERSION}", APP_DIR / "logs")
     # общая для всех окон: мастер, главное окно и окна логов берут её сами
     app.setWindowIcon(outside_icon())
+
+    # До чтения настроек: вторая копия не должна успеть ничего ни прочитать,
+    # ни записать — иначе два менеджера начнут спорить за одни файлы.
+    user = os.environ.get("USERNAME", "")
+    if single_instance.already_running(user):
+        return 0            # первая копия уже показалась, нам делать нечего
+    channel = single_instance.listen(app, user)
 
     settings = Settings.load()
     setTheme(_THEMES.get(settings.theme, Theme.AUTO))
@@ -53,6 +70,8 @@ def main() -> int:
             return 0  # пользователь закрыл мастер — выходим без сохранения
 
     window = MainWindow(settings)
+    # вторая копия стучится в канал вместо запуска — показываем эту
+    channel.newConnection.connect(lambda: _greet(channel, window))
     window.show()
     # проверка версии — после показа окна: сеть не должна задерживать запуск
     window.start_update_check()
