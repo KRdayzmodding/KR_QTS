@@ -12,7 +12,7 @@ from qfluentwidgets import (
 from core.downloader import MissionDownloadWorker
 from core.i18n import tr
 from core.missions import CatalogEntry
-from ui.theme import ThemedDialog
+from ui.theme import ThemedDialog, link_html
 
 
 def _fmt_size(n: int) -> str:
@@ -43,7 +43,8 @@ class DownloadWindow(ThemedDialog):
         layout.addWidget(StrongBodyLabel(f"{entry.title}  →  {target_name}"))
 
         link = BodyLabel(tr("dl.source", "Источник: ")
-                         + f'<a href="https://github.com/{entry.repo}">github.com/{entry.repo}</a>')
+                         + link_html(f"https://github.com/{entry.repo}",
+                                     f"github.com/{entry.repo}"))
         link.setTextFormat(Qt.TextFormat.RichText)
         link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         link.setOpenExternalLinks(True)

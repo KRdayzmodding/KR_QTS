@@ -42,7 +42,7 @@ from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
                               SERVER, CLIENT)
 from ui.packlog_window import PackLogWindow
-from ui.theme import app_icon, outside_icon
+from ui.theme import app_icon, link_html, outside_icon
 
 _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
                   "warning": "#e5c07b", "error": "#ff6b6b"}
@@ -1365,8 +1365,9 @@ class MainWindow(FluentWindow):
                   "Лицензия GPLv3 — бесплатно навсегда.\n"
                   "https://github.com/KRdayzmodding/KR_QTS\n\n"
                   "by [Kramtsov Arms]", v=VERSION)
-        # ссылки — кликабельными
-        rich = re.sub(r"(https?://\S+)", r'<a href="\1">\1</a>',
+        # ссылки — кликабельными и своего цвета: синий по умолчанию от Qt на
+        # тёмном фоне почти неразличим, см. ui.theme.link_color
+        rich = re.sub(r"(https?://\S+)", lambda m: link_html(m.group(1)),
                       html.escape(text)).replace("\n", "<br>")
         box = MessageBox(APP_NAME, text, self)  # сначала plain — для расчёта размеров
         box.contentLabel.setTextFormat(_Qt.TextFormat.RichText)
