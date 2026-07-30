@@ -171,6 +171,9 @@ class MainWindow(FluentWindow):
         self.registry.scan()
         self.presets: list[ServerPreset] = []
         self.current: ServerPreset | None = None
+        # модальные сообщения из наблюдателей — по очереди, см. _alert
+        self._alerts: list[tuple[str, str]] = []
+        self._alert_busy = False
         self.worker: LaunchWorker | None = None
         self.server_pid: int | None = None
         self.client_pid: int | None = None
@@ -596,18 +599,14 @@ class MainWindow(FluentWindow):
                               s=self._side_name(side), r=report.summary()))
         where = report.file and tr("status.crash_where", "Файл: {f}, строка {n}",
                                    f=report.file, n=report.line) or ""
-        box = MessageBox(
+        self._alert(
             tr("status.crash_title", "Запуск сорван: {s}", s=self._side_name(side)),
             "\n\n".join(x for x in (
                 report.headline,
                 where,
                 report.message,
                 tr("status.crash_hint", "Подробности — в {p}", p=report.path.name),
-            ) if x),
-            self)
-        box.yesButton.setText(tr("common.ok", "Понятно"))
-        box.cancelButton.hide()
-        box.exec()
+            ) if x))
 
     def _on_memory_danger(self, side: str, usage) -> None:
         self._append_alarm(tr(
@@ -627,18 +626,46 @@ class MainWindow(FluentWindow):
             "ЛИМИТ ({s}): слой {l} исчерпал скриптовую память ({u} из {t} кБ). "
             "Запуск не состоится.",
             s=self._side_name(side), l=usage.layer, u=usage.used_kb, t=usage.total_kb))
-        box = MessageBox(
+        self._alert(
             tr("status.mem_limit_title", "Достигнут лимит скриптовой памяти"),
             tr("status.mem_limit_body",
                "{s}: слой {l} достиг лимита скриптовой памяти — занято {u} из {t} кБ.\n\n"
                "С таким набором модов запуск не состоится — нужно скорректировать "
                "список подключённых модов.",
                s=self._side_name(side), l=usage.layer,
-               u=usage.used_kb, t=usage.total_kb),
-            self)
-        box.yesButton.setText(tr("common.ok", "Понятно"))
-        box.cancelButton.hide()
-        box.exec()
+               u=usage.used_kb, t=usage.total_kb))
+
+    def _alert(self, title: str, body: str) -> None:
+        """Модальное сообщение по очереди, а не поверх предыдущего.
+
+        Эти окна приходят из наблюдателей по таймеру, а таймер продолжает
+        работать и пока открыто модальное окно — так устроен цикл событий Qt.
+        Значит второе сообщение способно открыться изнутри первого. У MessageBox
+        своя затемняющая маска поверх родителя; две наложенные маски оставляют
+        внешнее окно недоступным после закрытия внутреннего, и программа
+        выглядит зависшей намертво.
+
+        Поэтому сообщения не вкладываются, а ждут очереди. И показываются не из
+        обработчика сигнала, а следующим тактом: открывать модальное окно
+        посреди чужого разбора событий — само по себе способ найти неприятность.
+        """
+        self._alerts.append((title, body))
+        if self._alert_busy:
+            return
+        self._alert_busy = True
+        QTimer.singleShot(0, self._drain_alerts)
+
+    def _drain_alerts(self) -> None:
+        try:
+            while self._alerts:
+                title, body = self._alerts.pop(0)
+                box = MessageBox(title, body, self)
+                box.yesButton.setText(tr("common.ok", "Понятно"))
+                box.cancelButton.hide()
+                box.exec()
+        finally:
+            # даже если окно бросит исключение, очередь не должна встать навсегда
+            self._alert_busy = False
 
     def _notify(self, kind: str, title: str, text: str = "", duration: int = 4000) -> None:
         fn = {"success": InfoBar.success, "warning": InfoBar.warning,
