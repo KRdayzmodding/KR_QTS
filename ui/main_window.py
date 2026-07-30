@@ -175,6 +175,7 @@ class MainWindow(FluentWindow):
         self.presets: list[ServerPreset] = []
         self.current: ServerPreset | None = None
         # модальные сообщения из наблюдателей — по очереди, см. _alert
+        self._adopted = False           # стороны подхвачены, а не запущены нами
         self._alerts: list[tuple[str, str]] = []
         self._alert_busy = False
         self.worker: LaunchWorker | None = None
@@ -531,6 +532,7 @@ class MainWindow(FluentWindow):
                 self.server_pid = r.pid
             else:
                 self.client_pid = r.pid
+            self._adopted = True
             self.launch_status.set_process_state(side, PROC_RUN)
             self._append_log(tr("adopt.taken",
                                 "Подхвачен работающий {s} (PID {pid}), пресет «{n}»",
@@ -556,14 +558,22 @@ class MainWindow(FluentWindow):
         if self.client_pid:
             self.monitors[CLIENT].start(logsource.client_log_dir(branch), adopt=True)
 
-    def _bind_log_dirs(self, adopt: bool = False) -> None:
+    def _bind_log_dirs(self, adopt: bool | None = None) -> None:
         """adopt — стороны уже работали до нас: лежащие файлы и есть их сессия.
+
+        Значение по умолчанию берётся из состояния окна, а не считается ложью.
+        Перепривязка случается не только при подхвате: её делают открытие окон
+        логов, смена ветки, выбор пресета. Каждая такая перепривязка со
+        сброшенным признаком стирала бы подхваченную сессию — и логи, только
+        что показанные, снова превращались бы в «ещё не запускались».
 
         Обычно окно логов запоминает, что было в папке до запуска, и «текущей
         сессией» считает появившееся после — иначе показывало бы прошлый запуск
         как свежий. При подхвате это правило надо снять: сессия началась раньше
         нас, и её файл как раз лежит в папке.
         """
+        if adopt is None:
+            adopt = self._adopted
         p = self.current
         branch = self._branch()
         self.log_server.set_directory(
@@ -828,6 +838,7 @@ class MainWindow(FluentWindow):
         if prof:
             Path(prof).mkdir(parents=True, exist_ok=True)
 
+        self._adopted = False   # запускаем сами: сессия начинается сейчас
         self._starting = True
         self._launch_logged = False
         self._update_launch_button()
