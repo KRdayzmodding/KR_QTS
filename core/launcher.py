@@ -10,7 +10,7 @@ from pathlib import Path
 import psutil
 from PySide6.QtCore import QObject, QThread, Signal
 
-from . import packer, packlog
+from . import packer, packlog, winhide
 from .i18n import tr
 from .mods import ModInfo, ModRegistry
 from .params import specs_for, SERVER, CLIENT
@@ -410,8 +410,24 @@ class LaunchWorker(QThread):
             from .layout import resolve_profiles as _rp2
             prof_dir = _rp2(p.profiles, s, self.branch, p.mode)
             server_logs = _script_logs(prof_dir)
-            server_proc = subprocess.Popen([exe] + args, cwd=cwd)
+            # Способ первый: просим Windows не показывать окно. Выполняется
+            # на усмотрение самой программы, поэтому ниже есть и второй.
+            hide = getattr(s, "hide_server_window", False)
+            server_proc = subprocess.Popen(
+                [exe] + args, cwd=cwd,
+                startupinfo=winhide.startupinfo() if hide else None)
             self.server_started.emit(server_proc.pid)
+            if hide:
+                # Способ второй: найти окно по процессу и скрыть. По тому,
+                # нашлось ли что скрывать, видно, сработал ли первый.
+                n, secs = winhide.hide(server_proc.pid)
+                self.log.emit(
+                    tr("launch.window_hidden",
+                       "Окно сервера скрыто (окон: {n}, через {t:.1f} с)", n=n, t=secs)
+                    if n else
+                    tr("launch.window_never_shown",
+                       "Окно сервера не появилось — хватило просьбы при запуске"),
+                    "info")
 
             # 6. Ожидание готовности сервера.
             #    Клиент не должен стартовать раньше: он тут же полезет

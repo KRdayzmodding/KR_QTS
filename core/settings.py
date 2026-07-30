@@ -194,6 +194,9 @@ class Settings:
 
     # Окна логов поверх остальных окон — раздельно для сервера и клиента:
     # поверх всего обычно держат одно из двух, второе в это время мешает
+    # Окно сервера DayZ несёт ровно то же, что server_console.log, который мы
+    # и так читаем. Прятать его можно без потери сведений, см. core/winhide.
+    hide_server_window: bool = False
     log_on_top_server: bool = False
     log_on_top_client: bool = False
 
