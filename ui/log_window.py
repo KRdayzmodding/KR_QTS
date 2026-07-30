@@ -53,28 +53,15 @@ _TOKEN_COLORS = {
 
 _MATCH_DIM_BG = "#3d3a1a"      # все совпадения — приглушённо
 _MATCH_ACTIVE_BG = "#8a6b00"   # текущее — ярко
-_MATCH_STYLE = "background:#5a4a00;color:#ffe08a;font-weight:700;"
-
-
-def _highlight(line: str, query: str = "") -> str:
+def _highlight(line: str) -> str:
     """HTML с раскрашенными токенами; текст вне токенов — без цвета (наследует
     цвет уровня строки, заданный обёрткой в _show).
 
-    Найденное по поиску подсвечивается поверх: подсветка идёт первым проходом,
-    а разметка токенов — уже по кускам между совпадениями. Иначе пришлось бы
-    вставлять теги внутрь тегов.
+    Найденное поиском здесь не красится: этим занимаются дополнительные
+    выделения Qt поверх готового текста, см. LogWindow._mark_matches. Так
+    подсветка не требует перерисовки документа на каждую букву и работает
+    одинаково в обоих режимах поиска.
     """
-    if query:
-        out, low, pos = [], line.lower(), 0
-        while True:
-            i = low.find(query, pos)
-            if i < 0:
-                out.append(_highlight(line[pos:]))
-                return "".join(out)
-            out.append(_highlight(line[pos:i]))
-            out.append(f'<span style="{_MATCH_STYLE}">'
-                       f'{html.escape(line[i:i + len(query)])}</span>')
-            pos = i + len(query)
     out = []
     pos = 0
     for m in _TOKEN_RE.finditer(line):
@@ -498,6 +485,7 @@ class LogWindow(QWidget):
         for line, level in lines:
             self._buffer.append((line, level))
             self._show(line, level)
+        self._mark_matches()
         self.btn_more.setVisible(rest > 0)
         if rest > 0:
             self.btn_more.setText(tr("log.more", "Загрузить ещё ({n} файлов)", n=rest))
@@ -506,20 +494,27 @@ class LogWindow(QWidget):
         self._load_recent(self._shown_files + _FILES_STEP)
 
     def _poll(self) -> None:
+        before = self._buffer_len()
         for tailer in self.tailers:
             for line in tailer.poll():
                 if line.startswith("=== ") and line.endswith(" ==="):
                     self._append(line, "session")
                 else:
                     self._append(line, logsource.classify(line))
+        # дописанные строки могли добавить совпадений — пересчитываем, но только
+        # когда есть что искать и что-то действительно пришло
+        if self._query and self._buffer_len() != before:
+            self._mark_matches(keep_index=True)
 
     def _enter_pressed(self) -> None:
-        """Enter в строке поиска: в обычном режиме — к следующему совпадению,
-        в режиме отсева — повторить поиск (там переходить не по чему)."""
-        if self._filter:
-            self._apply_search()
-        else:
-            self._goto_match(1)
+        """Enter — к следующему совпадению, в любом режиме.
+
+        Повторять им поиск незачем: он применяется сам по мере набора.
+        """
+        self._goto_match(1)
+
+    def _buffer_len(self) -> int:
+        return len(self._buffer)
 
     def _append(self, line: str, level: str) -> None:
         self._buffer.append((line, level))
@@ -530,11 +525,10 @@ class LogWindow(QWidget):
 
     def _show(self, line: str, level: str) -> None:
         color = _COLORS.get(level, _COLORS["info"])
-        # разметкой красим только в режиме отсева; в обычном это делают
-        # дополнительные выделения, см. _mark_matches
-        q = self._query if self._filter else ""
+        # совпадения красит _mark_matches дополнительными выделениями — в обоих
+        # режимах одинаково, иначе в отсеве не было бы ни счётчика, ни переходов
         self.view.appendHtml(f'<span style="color:{color};">'
-                             f'{_highlight(line, q)}</span>')
+                             f'{_highlight(line)}</span>')
 
     # ------------------------------------------------------------------ поиск
 
@@ -678,6 +672,7 @@ class LogWindow(QWidget):
             self._show(tr("log.search_capped",
                           "=== показаны первые {n}; уточните запрос ===",
                           n=self._SEARCH_LIMIT), "session")
+        self._mark_matches()
 
     # ------------------------------------------------------------------ кнопки
 
