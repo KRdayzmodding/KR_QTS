@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import time
 from pathlib import Path
 
 import psutil
@@ -18,9 +19,9 @@ from qfluentwidgets import (
     SystemTrayMenu, Action, qconfig,
 )
 
-from core import filepatch, logsource, packer, packlog, updater, winconsole
+from core import filepatch, logsource, packer, packlog, updater, winconsole, winhide
 from core.i18n import tr
-from core.launcher import LaunchWorker, dayz_running, kill_all, kill_pid
+from core.launcher import LaunchWorker, dayz_running, kill_pid
 from core.mods import ModRegistry
 from core.preflight import run_checks
 from core.presets import ServerPreset, MODE_DIAG
@@ -40,7 +41,7 @@ from ui.steam_watch import SteamWatcher, status_text
 from ui.mini_window import MiniWindow
 from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
-                              SERVER, CLIENT, PROC_RUN)
+                              SERVER, CLIENT, PROC_RUN, PROC_STOPPING)
 from ui.packlog_window import PackLogWindow
 from ui.theme import app_icon, link_html, outside_icon
 
@@ -50,6 +51,8 @@ _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
 # Пауза перед показом накопившихся сообщений: за неё прилетает вся пачка
 # событий одного обвала, и человек читает их одним окном, а не вереницей.
 _ALERT_MERGE_MS = 400
+# Сколько ждём закрытия по-хорошему, прежде чем убить
+_STOP_WAIT_SEC = 25
 _CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
                 "border:1px solid #333;border-radius:6px;padding:4px;}")
 
@@ -207,6 +210,8 @@ class MainWindow(FluentWindow):
         self.current: ServerPreset | None = None
         # модальные сообщения из наблюдателей — по очереди, см. _alert
         self._adopted = False           # стороны подхвачены, а не запущены нами
+        # мягкая остановка: с какого момента ждём закрытия каждой стороны
+        self._stopping: dict[str, float] = {}
         # консоль сервера в журнал — когда его окно спрятано, см. _console_start
         self._console_tailer: logsource.LogTailer | None = None
         self._console_win: winconsole.WindowConsole | None = None
@@ -1195,7 +1200,11 @@ class MainWindow(FluentWindow):
     # в журнале. Индикаторов трое, правило одно: считать их по отдельности —
     # верный способ показать в одном месте «работает», а в другом «запускается».
     ST_RUN, ST_STARTING, ST_DEAD, ST_OFF = "run", "starting", "dead", "off"
+    ST_STOPPING = "stopping"
     STATE_COLORS = {ST_RUN: "#4caf50", ST_STARTING: "#e5c07b",
+                    # выключается — тот же жёлтый, что и «запускается»: оба про
+                    # переход, и оба означают «подожди, ещё не устоялось»
+                    ST_STOPPING: "#e5c07b",
                     ST_DEAD: "#ff6b6b", ST_OFF: "#777777"}
 
     @staticmethod
@@ -1216,6 +1225,8 @@ class MainWindow(FluentWindow):
         считается, когда в её логе появился расход памяти слоя 5_Mission: он
         компилируется последним. До этого — «запускается».
         """
+        if ("server_pid" if side == SERVER else "client_pid") in self._stopping:
+            return self.ST_STOPPING
         proc = self.process_state(self.side_pid(side))
         if proc != self.ST_RUN:
             return proc
@@ -1314,23 +1325,56 @@ class MainWindow(FluentWindow):
 
     def _stop_selected(self) -> None:
         """Гасит то, что отмечено галками: обе — и сервер, и клиент; одна —
-        только его. Так при живом сервере можно перезапустить один клиент."""
+        только его. Так при живом сервере можно перезапустить один клиент.
+
+        Способ берётся из настроек. Мягкий просит окна закрыться и отпускает
+        интерфейс: сервер завершается своим порядком за несколько секунд, и всё
+        это время он честно показан «выключается», а не мгновенно исчезает.
+        Жёсткий убивает сразу — быстро, но обрывает сохранение на полуслове.
+        """
         lp = self.launch_page
         srv, cli = lp.chk_server.isChecked(), lp.chk_client.isChecked()
-        if srv and cli:
-            kill_all()              # заодно подчистит осиротевшие процессы
-        else:
-            if srv:
-                kill_pid(self.server_pid)
-            if cli:
-                kill_pid(self.client_pid)
-        if srv:
-            self.server_pid = None
-        if cli:
-            self.client_pid = None
-        # счётчик убитых процессов не пишем: следом идут строки статуса по
-        # каждой стороне, и они говорят то же самое, но конкретнее
+        soft = getattr(self.settings, "stop_method", "soft") != "hard"
+        for want, side, attr in ((srv, SERVER, "server_pid"),
+                                 (cli, CLIENT, "client_pid")):
+            if not want:
+                continue
+            pid = getattr(self, attr)
+            if soft and pid and winhide.ask_close(pid):
+                # процесс ещё жив — pid не сбрасываем, иначе перестанем за ним
+                # следить и не заметим, что он так и не закрылся
+                self.launch_status.set_process_state(side, PROC_STOPPING)
+                self._stopping[attr] = time.monotonic()
+                self._append_log(tr("main.log_stopping", "Статус: {n} выключается",
+                                    n=self._side_name(side)))
+                continue
+            kill_pid(pid)
+            setattr(self, attr, None)
+            self._stopping.pop(attr, None)
         self._update_launch_button()
+
+    def _watch_stopping(self) -> None:
+        """Досматривает мягкую остановку: закрылся — хорошо, завис — убиваем.
+
+        Ждать бесконечно нельзя: сервер может не отреагировать на просьбу
+        вовсе, и тогда кнопка навсегда осталась бы в «выключается».
+        """
+        for attr, side in (("server_pid", SERVER), ("client_pid", CLIENT)):
+            started = self._stopping.get(attr)
+            if started is None:
+                continue
+            pid = getattr(self, attr)
+            if not pid or not psutil.pid_exists(pid):
+                setattr(self, attr, None)
+                self._stopping.pop(attr, None)
+                continue
+            if time.monotonic() - started > _STOP_WAIT_SEC:
+                self._append_log(tr("main.log_stop_forced",
+                                    "{n} не закрылся сам — завершаем принудительно",
+                                    n=self._side_name(side)), "warning")
+                kill_pid(pid)
+                setattr(self, attr, None)
+                self._stopping.pop(attr, None)
 
     def _log_stopped(self) -> None:
         """Отмечает в логе момент, когда процесс перестал существовать.
@@ -1369,6 +1413,7 @@ class MainWindow(FluentWindow):
                           "Нет модов, которым указаны сорсы"))
 
     def _update_status(self) -> None:
+        self._watch_stopping()
         self._log_stopped()
         self._update_sources_button()
         # блок в журнале узнаёт о процессах отсюда же, а не отдельным путём

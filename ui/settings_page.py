@@ -234,6 +234,21 @@ class SettingsPage(QScrollArea):
         form_general.addRow(BodyLabel(tr("settings.updates_label", "Обновления")), upd_row)
 
         # ------------------------------------------------- Клиент и сервер
+        self.stop_method = ComboBox()
+        self.stop_method.addItem(tr("settings.stop_soft", "Мягко — попросить закрыться"),
+                                 userData="soft")
+        self.stop_method.addItem(tr("settings.stop_hard", "Жёстко — завершить процесс"),
+                                 userData="hard")
+        idx = self.stop_method.findData(settings.stop_method)
+        self.stop_method.setCurrentIndex(max(idx, 0))
+        self.stop_method.setToolTip(tr(
+            "settings.stop_method_tip",
+            "Мягкий способ даёт серверу завершиться своим порядком и сохранить "
+            "данные; жёсткий обрывает его сразу."))
+        form_general.addRow(BodyLabel(tr("settings.stop_method",
+                                         "Как останавливать сервер и клиент")),
+                            self.stop_method)
+
         form_paths = section(tr("settings.section_paths", "Клиент и сервер"))
         self.p_client = PathRow(settings.client_stable, self, "client_stable")
         self.p_client_exp = PathRow(settings.client_exp, self, "client_exp")
@@ -399,7 +414,7 @@ class SettingsPage(QScrollArea):
 
         # Подписываемся на все поля разом: перечислять сигналы по одному —
         # верный способ забыть новое поле и получить молча неверный индикатор.
-        for widget in (self.lang, self.pack_engine, self.theme):
+        for widget in (self.lang, self.pack_engine, self.theme, self.stop_method):
             widget.currentIndexChanged.connect(lambda _i: self._refresh_dirty())
         for widget in (self.project_prefix, self.admin_pass, self.steam_key):
             widget.textChanged.connect(lambda _t: self._refresh_dirty())
@@ -619,6 +634,7 @@ class SettingsPage(QScrollArea):
         return {
             "language": self.lang.currentData(),
             "check_updates": self.check_updates.isChecked(),
+            "stop_method": self.stop_method.currentData(),
             "project_prefix": self.project_prefix.text().strip(),
             "client_stable": self.p_client.text(),
             "client_exp": self.p_client_exp.text(),

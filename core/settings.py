@@ -197,6 +197,10 @@ class Settings:
     # Окно сервера DayZ несёт ровно то же, что server_console.log, который мы
     # и так читаем. Прятать его можно без потери сведений, см. core/winhide.
     hide_server_window: bool = False
+    # Как останавливать сервер и клиент: «soft» — попросить окна закрыться,
+    # программа завершится своим порядком; «hard» — убить процесс сразу.
+    # По умолчанию мягко: убийство обрывает сохранение на полуслове.
+    stop_method: str = "soft"
     log_on_top_server: bool = False
     log_on_top_client: bool = False
 

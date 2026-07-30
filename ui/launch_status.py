@@ -49,6 +49,9 @@ ST_LAUNCHING, ST_CONNECTING, ST_READY = "launching", "connecting", "ready"
 # скомпилировать. Значения — те же run/dead/off, что у индикаторов в шапке
 # главного окна и у кружков мини-окна: правило на все три индикатора одно.
 PROC_RUN, PROC_DEAD, PROC_OFF = "run", "dead", "off"
+# Попросили закрыться и ждём: процесс ещё жив, но «запущен» он уже не в
+# том смысле, в каком это слово нужно человеку.
+PROC_STOPPING = "stopping"
 
 
 class _Side:
@@ -74,6 +77,8 @@ class _Side:
         """Подпись в квадратных скобках — одна на все источники."""
         if self.crash:
             return tr("status.failed", "не запустился")
+        if self.proc == PROC_STOPPING:
+            return tr("status.stopping", "выключается")
         if self.proc == PROC_DEAD:
             return tr("status.died", "завершился")
         if self.proc == PROC_OFF:

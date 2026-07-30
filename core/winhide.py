@@ -23,6 +23,7 @@ import ctypes.wintypes as wintypes
 import time
 
 _SW_HIDE, _SW_SHOW = 0, 5
+_WM_CLOSE = 0x0010
 _STARTF_USESHOWWINDOW = 0x00000001
 
 # Окна, которые прятать не надо: служебные окна ввода есть у любой программы,
@@ -96,4 +97,22 @@ def show(pid: int) -> int:
     wins = windows_of(pid, visible_only=False)
     for hwnd in wins:
         u.ShowWindow(wintypes.HWND(hwnd), _SW_SHOW)
+    return len(wins)
+
+
+def ask_close(pid: int) -> int:
+    """Просит окна процесса закрыться — то же, что нажать крестик мышью.
+
+    Это самый мягкий способ, доступный без RCON: программа получает обычное
+    сообщение о закрытии и завершается своим порядком, а не обрывается
+    посреди работы, как при убийстве процесса.
+
+    Сообщение отправляется без ожидания ответа: закрытие сервера занимает
+    секунды, и держать всё это время интерфейс нельзя. Сколько окон попросили —
+    столько и вернём; ноль означает, что просить оказалось некого.
+    """
+    u = _user32()
+    wins = windows_of(pid, visible_only=False)
+    for hwnd in wins:
+        u.PostMessageW(wintypes.HWND(hwnd), _WM_CLOSE, 0, 0)
     return len(wins)
