@@ -479,14 +479,13 @@ class MainWindow(FluentWindow):
         from core import adopt
         from core.layout import resolve_profiles
 
-        profiles, ports = {}, {}
+        profiles = {}
         for p in self.presets:
             prof = resolve_profiles(p.profiles, self.settings, p.branch, p.mode)
             if prof:
                 profiles[p.name] = prof
-            ports[p.name] = p.port
         try:
-            found = adopt.find(profiles, ports)
+            found = adopt.find(profiles)
         except Exception as e:      # noqa: BLE001 — подхват не обязан ронять запуск окна
             self._append_log(tr("adopt.failed", "Не удалось опросить процессы: {e}", e=e),
                              "warning")

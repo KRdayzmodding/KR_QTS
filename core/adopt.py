@@ -64,16 +64,16 @@ def _processes() -> list[psutil.Process]:
     return out
 
 
-def find(preset_profiles: dict[str, str] | None = None,
-         preset_ports: dict[str, int] | None = None) -> list[Running]:
+def find(preset_profiles: dict[str, str] | None = None) -> list[Running]:
     """Все живые процессы DayZ; опознанные помечены именем пресета.
 
-    preset_profiles — {имя пресета: абсолютный путь к папке профиля},
-    preset_ports — {имя пресета: порт}. Оба нужны только для опознания: без них
-    процессы всё равно найдутся, просто останутся чужими.
+    preset_profiles — {имя пресета: абсолютный путь к папке профиля}. Только по
+    нему и опознаём: путь к профилю уникален для пресета, а вот порт — нет.
+    По умолчанию у всех пресетов стоит 2302, и опознавать по нему значило бы
+    объявить своим первый попавшийся сервер. Без карты профилей процессы всё
+    равно найдутся, просто останутся чужими.
     """
     profiles = {str(Path(v)).lower(): k for k, v in (preset_profiles or {}).items() if v}
-    ports = {v: k for k, v in (preset_ports or {}).items() if v}
     out: list[Running] = []
     for p in _processes():
         try:
@@ -107,6 +107,16 @@ def find(preset_profiles: dict[str, str] | None = None,
             conn = _arg(args, "-connect=")
             with contextlib.suppress(ValueError):
                 rec.port = int(conn.rsplit(":", 1)[-1]) if ":" in conn else 0
-            rec.preset = ports.get(rec.port, "")
         out.append(rec)
+
+    # Клиента опознаём не по пресету с таким портом, а по нашему же серверу на
+    # этом порту. Разница существенна: порт 2302 стоит у всех пресетов по
+    # умолчанию, и «нашёлся пресет с таким портом» не значит ровно ничего.
+    # А вот «клиент подключён туда, где работает опознанный нами сервер» —
+    # значит; заодно клиент достаётся тому же пресету, что и сервер.
+    by_port = {r.port: r.preset for r in out
+               if r.side == SERVER and r.preset and r.port}
+    for r in out:
+        if r.side == CLIENT:
+            r.preset = by_port.get(r.port, "")
     return out
