@@ -13,13 +13,16 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit,
                                QLabel, QSizePolicy)
 from qfluentwidgets import (
-    PushButton, RadioButton, SearchLineEdit, CaptionLabel, CheckBox, MessageBox,
+    PushButton, RadioButton, SearchLineEdit, CaptionLabel, CheckBox, MessageBox, ComboBox,
     FluentIcon as FIF, isDarkTheme, qconfig,
 )
 
 from core.i18n import tr
 from core import logsource
 
+# По сколько файлов подтягивать в режиме «во всех файлах». Их бывают сотни,
+# и читать всё разом незачем: нужное почти всегда в последних.
+_FILES_STEP = 10
 _COLORS = {"error": "#ff6b6b", "warning": "#e5c07b", "info": "#d4d4d4", "session": "#61afef"}
 _MAX_BLOCKS = 20000  # строк в окне, старые вытесняются
 
@@ -115,6 +118,50 @@ class _SearchWorker(QThread):
             self.done.emit(self.req, res, self.one_file)
 
 
+class _LoadWorker(QThread):
+    """Чтение последних файлов лога в фоне.
+
+    RPT за неделю набирают сотни мегабайт, и читать их на главном потоке —
+    это замерзание окна на всё время чтения. Объём ограничен: показать больше
+    нескольких десятков тысяч строк всё равно нечем.
+    """
+    done = Signal(int, list, int)   # номер запроса, строки, сколько файлов ещё есть
+
+    def __init__(self, files: list, rest: int, limit: int, req: int, parent=None):
+        super().__init__(parent)
+        self.files = files
+        self.rest = rest
+        self.limit = limit
+        self.req = req
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        out: list[tuple[str, str]] = []
+        # от старых к новым: в окне свежее должно оказаться внизу
+        for path in reversed(self.files):
+            if self._cancelled:
+                return
+            out.append((f"=== {path.name} ===", "session"))
+            try:
+                with open(path, "rb") as f:
+                    for raw in f:
+                        if self._cancelled:
+                            return
+                        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                        out.append((line, logsource.classify(line)))
+                        if len(out) >= self.limit:
+                            break
+            except OSError as e:
+                out.append((f"{path.name}: {e}", "error"))
+            if len(out) >= self.limit:
+                break
+        if not self._cancelled:
+            self.done.emit(self.req, out, self.rest)
+
+
 class LogWindow(QWidget):
     """Самостоятельное окно — свободно перемещается и масштабируется."""
 
@@ -125,6 +172,11 @@ class LogWindow(QWidget):
         self.resize(900, 500)
         self.key = key                  # «server» / «client» — чьё это окно
         self.directory: Path | None = None
+        self.kind = "script"            # выбранный вид логов, см. logsource.KINDS
+        self._known: set[str] = set()   # файлы, лежавшие до начала запуска
+        self._shown_files = _FILES_STEP # сколько файлов показано в режиме «все»
+        self._load_req = 0
+        self._load_worker: _LoadWorker | None = None
         self.tailers: list[logsource.LogTailer] = []
         self.tailer: logsource.LogTailer | None = None   # первый из них — для поиска
         self._path_text = ""
@@ -148,30 +200,45 @@ class LogWindow(QWidget):
         layout.addWidget(banner)
 
         top = QHBoxLayout()
+        # Вид лога — слева от поиска: он определяет, по чему вообще смотрим,
+        # и менять его логично до того, как что-то искать.
+        self.kind_combo = ComboBox()
+        for value, label in (("script", tr("log.kind_script", "Скрипты")),
+                             ("crash", tr("log.kind_crash", "Падения")),
+                             ("rpt", tr("log.kind_rpt", "RPT"))):
+            self.kind_combo.addItem(label, userData=value)
+        self.kind_combo.setMinimumWidth(120)
+        self.kind_combo.setToolTip(tr("log.kind_tip",
+                                      "Скрипты — ошибки модов; падения — почему "
+                                      "сорвался запуск; RPT — полный журнал движка."))
+        self.kind_combo.currentIndexChanged.connect(lambda _i: self._kind_changed())
         self.search_edit = SearchLineEdit()
         self.search_edit.setPlaceholderText(tr("log.search_ph", "Поиск по логам…"))
         # поиск интерактивный: список сужается по мере набора, без Enter
         self.search_edit.textChanged.connect(self._search_typed)
         self.search_edit.returnPressed.connect(self._apply_search)
         self.search_edit.searchSignal.connect(lambda _t: self._apply_search())
-        self.rb_current = RadioButton(tr("log.search_current", "Только в этом файле"))
+        self.rb_current = RadioButton(tr("log.search_session", "Текущая сессия"))
         self.rb_all = RadioButton(tr("log.search_all", "Во всех файлах"))
         self.rb_current.setChecked(True)
-        self.rb_current.toggled.connect(lambda _c: self._apply_search())
-        btn_search = PushButton(FIF.SEARCH, tr("log.search", "Найти"))
-        btn_search.clicked.connect(self._apply_search)
+        self.rb_current.toggled.connect(lambda _c: self._reload())
         # галка живёт здесь, а не в нижнем ряду: там она стояла после пути к
         # папке логов и ездила по горизонтали вслед за его длиной
         self.chk_on_top = CheckBox(tr("log.on_top", "Поверх всех окон"))
         self.chk_on_top.setToolTip(tr("log.on_top_tip",
                                       "Окно не будет уходить за игру и редактор."))
         self.chk_on_top.toggled.connect(self._on_top_toggled)
+        top.addWidget(self.kind_combo)
         top.addWidget(self.search_edit, 1)
         top.addWidget(self.rb_current)
         top.addWidget(self.rb_all)
-        top.addWidget(btn_search)
         top.addWidget(self.chk_on_top)
         layout.addLayout(top)
+
+        self.btn_more = PushButton(FIF.CHEVRON_DOWN_MED, "")
+        self.btn_more.setVisible(False)
+        self.btn_more.clicked.connect(self._load_more)
+        layout.addWidget(self.btn_more)
 
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
@@ -308,21 +375,91 @@ class LogWindow(QWidget):
         super().resizeEvent(event)
         self._show_path()
 
-    def set_directory(self, directory: Path | None) -> None:
+    def set_directory(self, directory: Path | None, new_session: bool = True) -> None:
+        """Задаёт папку логов. new_session — начинается запуск клиента/сервера.
+
+        Момент запуска запоминается снимком уже лежащих файлов: всё, что
+        появится после, и есть текущая сессия. Без этого «текущая сессия»
+        показывала бы логи прошлого запуска — как раз того, ради исправления
+        которого запуск и повторяют.
+        """
         self.directory = directory
         self._path_text = (str(directory) if directory else
                            tr("log.no_dir", "Папка логов не определена"))
         self._show_path()
-        # Живой хвост: скрипт-лог и консоль сервера. Каждый файл своим тейлером —
-        # один умеет вести только один файл. RPT и прочее доступны через поиск.
-        self.tailers = [logsource.LogTailer(directory, pattern_filter=p)
-                        for p in logsource.TAIL_PATTERNS] if directory else []
-        # поиск «только в этом файле» смотрит на скрипт-лог — он первый
-        self.tailer = self.tailers[0] if self.tailers else None
-        if self.tailers:
+        if new_session:
+            self._known = {str(p) for kind in logsource.KINDS
+                           for p in logsource.files_of_kind(directory, kind)}
+        self._reload()
+
+    def _kind_changed(self) -> None:
+        self.kind = self.kind_combo.currentData() or "script"
+        self._reload()
+
+    def _session_file(self) -> Path | None:
+        """Файл выбранного вида, появившийся уже после начала запуска."""
+        newest = logsource.newest_of_kind(self.directory, self.kind)
+        return None if newest is None or str(newest) in self._known else newest
+
+    def _reload(self) -> None:
+        """Пересобирает окно под выбранный вид и режим."""
+        self.timer.stop()
+        self.tailers = []
+        self.tailer = None
+        self._buffer.clear()
+        self.view.clear()
+        self.btn_more.setVisible(False)
+        if self._load_worker:
+            self._load_worker.cancel()
+            self._load_worker = None
+        if not self.directory:
+            self._show(tr("log.no_dir", "Папка логов не определена"), "session")
+            return
+
+        if self.rb_current.isChecked():
+            if self._session_file() is None:
+                self._show(tr("log.no_session",
+                              "Клиент или сервер ещё не запускались — "
+                              "показывать нечего."), "session")
+                return
+            # тейлер сам переходит на более новый файл, если движок его заведёт
+            tailer = logsource.LogTailer(
+                self.directory, pattern_filter=logsource.KINDS[self.kind][0])
+            self.tailers = [tailer]
+            self.tailer = tailer
             self.timer.start()
-        else:
-            self.timer.stop()
+            return
+        self._load_recent(self._shown_files)
+
+    def _load_recent(self, count: int) -> None:
+        """Показывает последние count файлов выбранного вида."""
+        files = logsource.files_of_kind(self.directory, self.kind)
+        if not files:
+            self._show(tr("log.no_files", "Файлов этого вида в папке нет."), "session")
+            return
+        self._shown_files = count
+        take, rest = files[:count], max(0, len(files) - count)
+        self._load_req += 1
+        self._show(tr("log.loading", "Чтение файлов…"), "session")
+        worker = _LoadWorker(take, rest, _MAX_BLOCKS, self._load_req, self)
+        worker.done.connect(self._load_done)
+        self._load_worker = worker
+        worker.start()
+
+    def _load_done(self, req: int, lines: list, rest: int) -> None:
+        if req != self._load_req:
+            return
+        self.view.clear()
+        self._buffer.clear()
+        for line, level in lines:
+            self._buffer.append((line, level))
+            self._show(line, level)
+        self.btn_more.setVisible(rest > 0)
+        if rest > 0:
+            self.btn_more.setText(tr("log.more", "Загрузить ещё ({n} файлов)", n=rest))
+
+    def _load_more(self) -> None:
+        self._load_recent(self._shown_files + _FILES_STEP)
 
     def _poll(self) -> None:
         for tailer in self.tailers:

@@ -21,6 +21,35 @@ LOG_PATTERNS = ("*.RPT", "script*.log", "*.ADM", "crash*.log", "error.log",
 # сам кладёт его в этот файл.
 TAIL_PATTERNS = ("script_*.log", "server_console.log")
 
+# Что можно выбрать в окне логов. Порядок — порядок в выпадающем списке, первый
+# показывается по умолчанию: скриптовый лог отвечает на вопрос «что не так с
+# модом», а два других нужны реже.
+#
+#   script — ошибки скриптов, ради них окно и открывают
+#   crash  — почему запуск сорвался; файл появляется только при обвале
+#   RPT    — полный журнал движка: всё подряд, включая ругань на текстуры
+KINDS: dict[str, tuple[str, ...]] = {
+    "script": ("script_*.log",),
+    "crash": ("crash_*.log",),
+    "rpt": ("*.RPT",),
+}
+
+
+def files_of_kind(directory: Path | None, kind: str) -> list[Path]:
+    """Файлы выбранного вида, новые первыми."""
+    if not directory or not Path(directory).is_dir():
+        return []
+    out: list[Path] = []
+    for pattern in KINDS.get(kind, ()):
+        out.extend(Path(directory).glob(pattern))
+    out.sort(key=lambda f: f.stat().st_mtime if f.exists() else 0, reverse=True)
+    return out
+
+
+def newest_of_kind(directory: Path | None, kind: str) -> Path | None:
+    files = files_of_kind(directory, kind)
+    return files[0] if files else None
+
 # Признаки уровня строки. Это простой поиск подстрок, а не разбор: регулярка
 # из одних литералов, склеенных через «|», делает ровно то же самое, но втрое
 # дольше — а classify зовётся на каждой строке лога.
