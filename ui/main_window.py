@@ -1243,6 +1243,7 @@ class MainWindow(FluentWindow):
     # ------------------------------------------------ состояние кнопки запуска
 
     LB_LAUNCH, LB_STARTING, LB_STOP = "launch", "starting", "stop"
+    LB_STOPPING = "stopping"
 
     def launch_subject(self) -> str | None:
         """Кем «управляет» кнопка: сервером или клиентом.
@@ -1262,6 +1263,10 @@ class MainWindow(FluentWindow):
         subject = self.launch_subject()
         if self._starting:
             return self.LB_STARTING
+        if self._stopping:
+            # выключение уже идёт: второе нажатие ничего не ускорит, а вот
+            # запустить всё заново посреди остановки — вполне
+            return self.LB_STOPPING
         running = self.server_running() if subject == "server" else self.client_running()
         return self.LB_STOP if subject and running else self.LB_LAUNCH
 
@@ -1271,15 +1276,16 @@ class MainWindow(FluentWindow):
             self.LB_LAUNCH: (tr("main.launch_btn", "Запустить"), FIF.PLAY),
             self.LB_STARTING: (tr("main.starting_btn", "Запускается"), FIF.SYNC),
             self.LB_STOP: (tr("main.stop_btn", "Остановить"), FIF.POWER_BUTTON),
+            self.LB_STOPPING: (tr("main.stopping_btn", "Выключается"), FIF.SYNC),
         }[state]
         lp = self.launch_page
         lp.btn_launch.setText(text)
         lp.btn_launch.setIcon(icon)
-        lp.btn_launch.setEnabled(state != self.LB_STARTING)
+        lp.btn_launch.setEnabled(state not in (self.LB_STARTING, self.LB_STOPPING))
         # Пока идёт запуск, галки заблокированы: они определяют, чем управляет
         # кнопка, и смена на полпути рассогласовала бы её с тем, что реально
         # стартует в этот момент.
-        busy = state == self.LB_STARTING
+        busy = state in (self.LB_STARTING, self.LB_STOPPING)
         lp.chk_server.setEnabled(not busy)
         lp.chk_client.setEnabled(not busy)
         self._update_running_locks(busy)
@@ -1416,10 +1422,14 @@ class MainWindow(FluentWindow):
         self._watch_stopping()
         self._log_stopped()
         self._update_sources_button()
-        # блок в журнале узнаёт о процессах отсюда же, а не отдельным путём
-        for side in (SERVER, CLIENT):
-            self.launch_status.set_process_state(side, self.process_state(
-                self.side_pid(side)))
+        # Блок в журнале узнаёт о процессах отсюда же, а не отдельным путём.
+        # Просьба закрыться важнее живости: процесс после неё ещё существует,
+        # но «запущенным» его называть уже нельзя — иначе такт статуса тут же
+        # затирал бы «выключается» обратно на «запущен».
+        for side, attr in ((SERVER, "server_pid"), (CLIENT, "client_pid")):
+            proc = (PROC_STOPPING if attr in self._stopping
+                    else self.process_state(self.side_pid(side)))
+            self.launch_status.set_process_state(side, proc)
         self._update_launch_button()
 
         def state(side: str, name: str) -> str:
@@ -1428,6 +1438,8 @@ class MainWindow(FluentWindow):
                 self.ST_RUN: tr("main.st_run", "{n}: работает (PID {p})",
                                 n=name, p=self.side_pid(side)),
                 self.ST_STARTING: tr("main.st_starting", "{n}: запускается (PID {p})",
+                                     n=name, p=self.side_pid(side)),
+                self.ST_STOPPING: tr("main.st_stopping", "{n}: выключается (PID {p})",
                                      n=name, p=self.side_pid(side)),
                 self.ST_DEAD: tr("main.st_dead", "{n}: завершился", n=name),
             }.get(st, tr("main.st_off", "{n}: не запущен", n=name))
