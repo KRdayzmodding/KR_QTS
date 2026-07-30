@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 APP_NAME = "KR Quick Test Server"
 PUBLISHER = "KR"
 
