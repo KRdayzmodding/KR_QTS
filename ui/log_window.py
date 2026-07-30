@@ -398,21 +398,26 @@ class LogWindow(QWidget):
         super().resizeEvent(event)
         self._show_path()
 
-    def set_directory(self, directory: Path | None, new_session: bool = True) -> None:
-        """Задаёт папку логов. new_session — начинается запуск клиента/сервера.
+    def set_directory(self, directory: Path | None, adopt: bool = False) -> None:
+        """Задаёт папку логов.
 
-        Момент запуска запоминается снимком уже лежащих файлов: всё, что
-        появится после, и есть текущая сессия. Без этого «текущая сессия»
-        показывала бы логи прошлого запуска — как раз того, ради исправления
-        которого запуск и повторяют.
+        Обычно момент запуска запоминается снимком уже лежащих файлов: всё, что
+        появится после, и есть текущая сессия. Без этого она показывала бы логи
+        прошлого запуска — как раз того, ради исправления которого запуск и
+        повторяют.
+
+        adopt — сторона уже работала до нас: снимок обнуляется, и текущей
+        сессией становится то, что в папке лежит. Именно обнуляется, а не
+        пропускается: к этому моменту снимок уже сделан при создании окна, и
+        в нём как раз лежит файл идущей сессии.
         """
         self.directory = directory
         self._path_text = (str(directory) if directory else
                            tr("log.no_dir", "Папка логов не определена"))
         self._show_path()
-        if new_session:
-            self._known = {str(p) for kind in logsource.KINDS
-                           for p in logsource.files_of_kind(directory, kind)}
+        self._known = set() if adopt else {
+            str(p) for kind in logsource.KINDS
+            for p in logsource.files_of_kind(directory, kind)}
         self._reload()
 
     def _kind_changed(self) -> None:

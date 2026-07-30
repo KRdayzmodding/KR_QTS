@@ -535,7 +535,7 @@ class MainWindow(FluentWindow):
             self._append_log(tr("adopt.taken",
                                 "Подхвачен работающий {s} (PID {pid}), пресет «{n}»",
                                 s=self._side_name(side), pid=r.pid, n=r.preset), "success")
-        self._bind_log_dirs()
+        self._bind_log_dirs(adopt=True)
         self._start_monitors_for_adopted()
         self._update_launch_button()
 
@@ -556,12 +556,20 @@ class MainWindow(FluentWindow):
         if self.client_pid:
             self.monitors[CLIENT].start(logsource.client_log_dir(branch), adopt=True)
 
-    def _bind_log_dirs(self) -> None:
+    def _bind_log_dirs(self, adopt: bool = False) -> None:
+        """adopt — стороны уже работали до нас: лежащие файлы и есть их сессия.
+
+        Обычно окно логов запоминает, что было в папке до запуска, и «текущей
+        сессией» считает появившееся после — иначе показывало бы прошлый запуск
+        как свежий. При подхвате это правило надо снять: сессия началась раньше
+        нас, и её файл как раз лежит в папке.
+        """
         p = self.current
         branch = self._branch()
         self.log_server.set_directory(
-            logsource.server_log_dir(p, self.settings, branch) if p else None)
-        self.log_client.set_directory(logsource.client_log_dir(branch))
+            logsource.server_log_dir(p, self.settings, branch) if p else None,
+            adopt=adopt)
+        self.log_client.set_directory(logsource.client_log_dir(branch), adopt=adopt)
 
     def _branch(self) -> str:
         return self.launch_page.branch_combo.currentData() or STABLE
