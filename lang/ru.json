@@ -229,6 +229,7 @@
   "log.search_ph": "Поиск по логам…",
   "log.search_session": "Текущая сессия",
   "log.searching": "Поиск «{q}»…",
+  "log.truncated": "=== показаны последние {n} строк из {t} ===",
   "main.about": "Версия {v}\n\nБыстрый тестовый сервер DayZ и сборка модов — без единого батника.\n\nЛицензия GPLv3 — бесплатно навсегда.\nhttps://github.com/KRdayzmodding/KR_QTS\n\nby [Kramtsov Arms]",
   "main.branch": "Ветка:",
   "main.cfg_fixed": "Кодировка конфига исправлена на UTF-8 без BOM.",

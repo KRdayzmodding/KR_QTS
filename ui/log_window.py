@@ -25,6 +25,11 @@ from core import logsource
 _FILES_STEP = 10
 _COLORS = {"error": "#ff6b6b", "warning": "#e5c07b", "info": "#d4d4d4", "session": "#61afef"}
 _MAX_BLOCKS = 20000  # строк в окне, старые вытесняются
+# Сколько строк показывать при загрузке файлов. Вставка в виджет стоит около
+# 0.1 мс на строку и делается только на главном потоке: 20 000 строк — это две
+# секунды неподвижного окна. Пять тысяч укладываются в полсекунды, а искать
+# нужное всё равно поиском, а не пролистыванием.
+_BULK_LINES = 5000
 
 # Подсветка отдельных токенов внутри строки (поверх общего цвета по уровню) —
 # порядок групп важен: более специфичные (time/tag/string/keyword) идут перед
@@ -127,7 +132,7 @@ class _LoadWorker(QThread):
     это замерзание окна на всё время чтения. Объём ограничен: показать больше
     нескольких десятков тысяч строк всё равно нечем.
     """
-    done = Signal(int, list, int)   # номер запроса, строки, сколько файлов ещё есть
+    done = Signal(int, list, int, int)  # запрос, строки, файлов ещё, строк всего
 
     def __init__(self, files: list, rest: int, limit: int, req: int, parent=None):
         super().__init__(parent)
@@ -141,8 +146,11 @@ class _LoadWorker(QThread):
         self._cancelled = True
 
     def run(self) -> None:
-        out: list[tuple[str, str]] = []
-        # от старых к новым: в окне свежее должно оказаться внизу
+        # Предел держим хвостом, а не обрывом чтения: файлы читаются от старых
+        # к новым, и обрыв по счётчику выбросил бы как раз свежие строки — те,
+        # ради которых лог и открывают.
+        out: deque = deque(maxlen=self.limit)
+        total = 0
         for path in reversed(self.files):
             if self._cancelled:
                 return
@@ -154,14 +162,11 @@ class _LoadWorker(QThread):
                             return
                         line = raw.decode("utf-8", "replace").rstrip("\r\n")
                         out.append((line, logsource.classify(line)))
-                        if len(out) >= self.limit:
-                            break
+                        total += 1
             except OSError as e:
                 out.append((f"{path.name}: {e}", "error"))
-            if len(out) >= self.limit:
-                break
         if not self._cancelled:
-            self.done.emit(self.req, out, self.rest)
+            self.done.emit(self.req, list(out), self.rest, total)
 
 
 class LogWindow(QWidget):
@@ -179,6 +184,7 @@ class LogWindow(QWidget):
         self._shown_files = _FILES_STEP # сколько файлов показано в режиме «все»
         self._load_req = 0
         self._load_worker: _LoadWorker | None = None
+        self._placeholder = ""          # объяснение вместо логов, когда их нет
         self.tailers: list[logsource.LogTailer] = []
         self.tailer: logsource.LogTailer | None = None   # первый из них — для поиска
         self._path_text = ""
@@ -244,16 +250,23 @@ class LogWindow(QWidget):
         self.chk_on_top.setToolTip(tr("log.on_top_tip",
                                       "Окно не будет уходить за игру и редактор."))
         self.chk_on_top.toggled.connect(self._on_top_toggled)
+        # Два ряда, а не один: в одну строку девять элементов не помещались и
+        # налезали друг на друга при обычной ширине окна. Сверху всё про поиск,
+        # снизу — что показывать и как вести себя окну.
         top.addWidget(self.kind_combo)
         top.addWidget(self.search_edit, 1)
         top.addWidget(self.btn_prev)
         top.addWidget(self.btn_next)
         top.addWidget(self.match_label)
         top.addWidget(self.chk_only)
-        top.addWidget(self.rb_current)
-        top.addWidget(self.rb_all)
-        top.addWidget(self.chk_on_top)
         layout.addLayout(top)
+
+        second = QHBoxLayout()
+        second.addWidget(self.rb_current)
+        second.addWidget(self.rb_all)
+        second.addStretch(1)
+        second.addWidget(self.chk_on_top)
+        layout.addLayout(second)
 
         self.btn_more = PushButton(FIF.CHEVRON_DOWN_MED, "")
         self.btn_more.setVisible(False)
@@ -432,18 +445,21 @@ class LogWindow(QWidget):
         self._buffer.clear()
         self.view.clear()
         self.btn_more.setVisible(False)
+        self._placeholder = ""
         if self._load_worker:
             self._load_worker.cancel()
             self._load_worker = None
         if not self.directory:
-            self._show(tr("log.no_dir", "Папка логов не определена"), "session")
+            self._placeholder = tr("log.no_dir", "Папка логов не определена")
+            self._show(self._placeholder, "session")
             return
 
         if self.rb_current.isChecked():
             if self._session_file() is None:
-                self._show(tr("log.no_session",
-                              "Клиент или сервер ещё не запускались — "
-                              "показывать нечего."), "session")
+                self._placeholder = tr("log.no_session",
+                                       "Клиент или сервер ещё не запускались — "
+                                       "показывать нечего.")
+                self._show(self._placeholder, "session")
                 return
             # тейлер сам переходит на более новый файл, если движок его заведёт
             tailer = logsource.LogTailer(
@@ -458,22 +474,27 @@ class LogWindow(QWidget):
         """Показывает последние count файлов выбранного вида."""
         files = logsource.files_of_kind(self.directory, self.kind)
         if not files:
-            self._show(tr("log.no_files", "Файлов этого вида в папке нет."), "session")
+            self._placeholder = tr("log.no_files", "Файлов этого вида в папке нет.")
+            self._show(self._placeholder, "session")
             return
         self._shown_files = count
         take, rest = files[:count], max(0, len(files) - count)
         self._load_req += 1
         self._show(tr("log.loading", "Чтение файлов…"), "session")
-        worker = _LoadWorker(take, rest, _MAX_BLOCKS, self._load_req, self)
+        worker = _LoadWorker(take, rest, _BULK_LINES, self._load_req, self)
         worker.done.connect(self._load_done)
         self._load_worker = worker
         worker.start()
 
-    def _load_done(self, req: int, lines: list, rest: int) -> None:
+    def _load_done(self, req: int, lines: list, rest: int, total: int) -> None:
         if req != self._load_req:
             return
         self.view.clear()
         self._buffer.clear()
+        if total > len(lines):
+            self._show(tr("log.truncated",
+                          "=== показаны последние {n} строк из {t} ===",
+                          n=len(lines), t=total), "session")
         for line, level in lines:
             self._buffer.append((line, level))
             self._show(line, level)
@@ -606,6 +627,9 @@ class LogWindow(QWidget):
             if was_filtered:
                 # выходим из отсева: в окне лежат одни совпадения, возвращаем всё
                 self.view.clear()
+                if not self._buffer and self._placeholder:
+                    # показывать нечего — вернуть надо объяснение, а не пустоту
+                    self._show(self._placeholder, "session")
                 for line, level in self._buffer:
                     self._show(line, level)
             self._mark_matches()

@@ -229,6 +229,7 @@
   "log.search_ph": "Logs durchsuchen…",
   "log.search_session": "Aktuelle Sitzung",
   "log.searching": "Suche nach „{q}“…",
+  "log.truncated": "=== letzte {n} von {t} Zeilen ===",
   "main.about": "Version {v}\n\nSchneller DayZ-Testserver und Mod-Packen — ohne eine einzige Batch-Datei.\n\nGPLv3-Lizenz — für immer kostenlos.\nhttps://github.com/KRdayzmodding/KR_QTS\n\nby [Kramtsov Arms]",
   "main.branch": "Zweig:",
   "main.cfg_fixed": "Kodierung der Konfiguration auf UTF-8 ohne BOM korrigiert.",
