@@ -9,11 +9,11 @@ from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit,
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QTextEdit,
                                QLabel, QSizePolicy)
 from qfluentwidgets import (
-    PushButton, RadioButton, SearchLineEdit, CaptionLabel, CheckBox, MessageBox, ComboBox,
+    PushButton, RadioButton, SearchLineEdit, CaptionLabel, CheckBox, MessageBox, ComboBox, ToolButton,
     FluentIcon as FIF, isDarkTheme, qconfig,
 )
 
@@ -46,6 +46,8 @@ _TOKEN_COLORS = {
 }
 
 
+_MATCH_DIM_BG = "#3d3a1a"      # все совпадения — приглушённо
+_MATCH_ACTIVE_BG = "#8a6b00"   # текущее — ярко
 _MATCH_STYLE = "background:#5a4a00;color:#ffe08a;font-weight:700;"
 
 
@@ -216,8 +218,22 @@ class LogWindow(QWidget):
         self.search_edit.setPlaceholderText(tr("log.search_ph", "Поиск по логам…"))
         # поиск интерактивный: список сужается по мере набора, без Enter
         self.search_edit.textChanged.connect(self._search_typed)
-        self.search_edit.returnPressed.connect(self._apply_search)
+        self.search_edit.returnPressed.connect(self._enter_pressed)
         self.search_edit.searchSignal.connect(lambda _t: self._apply_search())
+        # Переходы по совпадениям — рядом со строкой поиска, где их и ищут.
+        self.btn_prev = ToolButton(FIF.UP)
+        self.btn_prev.setToolTip(tr("log.match_prev", "Предыдущее совпадение (Shift+Enter)"))
+        self.btn_prev.clicked.connect(lambda: self._goto_match(-1))
+        self.btn_next = ToolButton(FIF.DOWN)
+        self.btn_next.setToolTip(tr("log.match_next", "Следующее совпадение (Enter)"))
+        self.btn_next.clicked.connect(lambda: self._goto_match(1))
+        self.match_label = CaptionLabel("")
+        self.match_label.setMinimumWidth(70)
+        self.chk_only = CheckBox(tr("log.only_matches", "Только совпадения"))
+        self.chk_only.setToolTip(tr("log.only_matches_tip",
+                                    "Оставить в окне одни совпадения. Поиск при этом "
+                                    "идёт по файлам на диске, а не по показанному."))
+        self.chk_only.toggled.connect(lambda _c: self._apply_search())
         self.rb_current = RadioButton(tr("log.search_session", "Текущая сессия"))
         self.rb_all = RadioButton(tr("log.search_all", "Во всех файлах"))
         self.rb_current.setChecked(True)
@@ -230,6 +246,10 @@ class LogWindow(QWidget):
         self.chk_on_top.toggled.connect(self._on_top_toggled)
         top.addWidget(self.kind_combo)
         top.addWidget(self.search_edit, 1)
+        top.addWidget(self.btn_prev)
+        top.addWidget(self.btn_next)
+        top.addWidget(self.match_label)
+        top.addWidget(self.chk_only)
         top.addWidget(self.rb_current)
         top.addWidget(self.rb_all)
         top.addWidget(self.chk_on_top)
@@ -279,6 +299,9 @@ class LogWindow(QWidget):
         # тот же, что у виджета, — старое вытесняется одинаково.
         self._buffer: deque = deque(maxlen=_MAX_BLOCKS)
         self._query = ""
+        self._filter = False               # «только совпадения» вместо подсветки
+        self._matches: list = []           # позиции найденного в показанном тексте
+        self._match_at = -1
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)   # набор идёт быстрее перерисовки
@@ -469,17 +492,28 @@ class LogWindow(QWidget):
                 else:
                     self._append(line, logsource.classify(line))
 
+    def _enter_pressed(self) -> None:
+        """Enter в строке поиска: в обычном режиме — к следующему совпадению,
+        в режиме отсева — повторить поиск (там переходить не по чему)."""
+        if self._filter:
+            self._apply_search()
+        else:
+            self._goto_match(1)
+
     def _append(self, line: str, level: str) -> None:
         self._buffer.append((line, level))
-        # при активном фильтре новые строки показываем, только если подходят —
-        # иначе живой хвост затирал бы результат поиска
-        if not self._query or self._query in line.lower():
+        # в режиме отсева новые строки показываем, только если подходят — иначе
+        # живой хвост затирал бы результат поиска
+        if not (self._filter and self._query) or self._query in line.lower():
             self._show(line, level)
 
     def _show(self, line: str, level: str) -> None:
         color = _COLORS.get(level, _COLORS["info"])
+        # разметкой красим только в режиме отсева; в обычном это делают
+        # дополнительные выделения, см. _mark_matches
+        q = self._query if self._filter else ""
         self.view.appendHtml(f'<span style="color:{color};">'
-                             f'{_highlight(line, self._query)}</span>')
+                             f'{_highlight(line, q)}</span>')
 
     # ------------------------------------------------------------------ поиск
 
@@ -487,6 +521,68 @@ class LogWindow(QWidget):
         self._search_timer.start()
 
     _SEARCH_LIMIT = 5000    # больше в окно всё равно не имеет смысла лить
+
+    def _mark_matches(self, keep_index: bool = False) -> None:
+        """Подсвечивает все совпадения в показанном тексте.
+
+        Через дополнительные выделения Qt, а не через разметку: разметка
+        потребовала бы перебрать и перерисовать весь документ на каждую букву,
+        а выделения кладутся поверх готового текста и снимаются так же.
+
+        Все совпадения красятся приглушённо, текущее — ярко: так видно и
+        сколько их всего, и где ты сейчас.
+        """
+        doc = self.view.document()
+        self._matches = []
+        if self._query:
+            cur = QTextCursor(doc)
+            while True:
+                cur = doc.find(self._query, cur)
+                if cur.isNull():
+                    break
+                self._matches.append(cur)
+        if not self._matches:
+            self._match_at = -1
+        elif keep_index and 0 <= self._match_at < len(self._matches):
+            pass
+        else:
+            self._match_at = 0
+        sels = []
+        for i, cur in enumerate(self._matches):
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = cur
+            fmt = QTextCharFormat()
+            active = i == self._match_at
+            fmt.setBackground(QColor(_MATCH_ACTIVE_BG if active else _MATCH_DIM_BG))
+            if active:
+                fmt.setForeground(QColor("#ffffff"))
+            sel.format = fmt
+            sels.append(sel)
+        self.view.setExtraSelections(sels)
+        self._update_match_label()
+
+    def _update_match_label(self) -> None:
+        has = bool(self._query)
+        self.btn_prev.setEnabled(bool(self._matches))
+        self.btn_next.setEnabled(bool(self._matches))
+        if not has:
+            self.match_label.setText("")
+        elif not self._matches:
+            self.match_label.setText(tr("log.match_none", "нет"))
+        else:
+            self.match_label.setText(tr("log.match_pos", "{i} из {n}",
+                                        i=self._match_at + 1, n=len(self._matches)))
+
+    def _goto_match(self, delta: int) -> None:
+        """Переход к соседнему совпадению по кругу."""
+        if not self._matches:
+            return
+        self._match_at = (self._match_at + delta) % len(self._matches)
+        cur = QTextCursor(self._matches[self._match_at])
+        cur.clearSelection()
+        self.view.setTextCursor(cur)
+        self.view.ensureCursorVisible()
+        self._mark_matches(keep_index=True)
 
     def _apply_search(self) -> None:
         """Оставляет в окне только подходящие строки.
@@ -501,6 +597,19 @@ class LogWindow(QWidget):
         self._search_timer.stop()
         self._query = self.search_edit.text().strip().lower()
         raw = self.search_edit.text().strip()
+        was_filtered = self._filter
+        self._filter = self.chk_only.isChecked()
+        if not self._filter:
+            # Обычный режим: текст на месте, совпадения помечены поверх. Так
+            # виден контекст вокруг находки — в отфильтрованном виде он теряется,
+            # а по одной строке редко понятно, что произошло.
+            if was_filtered:
+                # выходим из отсева: в окне лежат одни совпадения, возвращаем всё
+                self.view.clear()
+                for line, level in self._buffer:
+                    self._show(line, level)
+            self._mark_matches()
+            return
         self.view.clear()
         if not self._query:
             for line, level in self._buffer:
