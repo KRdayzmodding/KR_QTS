@@ -246,10 +246,14 @@ class _SessionTail:
     исправления которого запуск и повторяют.
     """
 
-    def __init__(self, directory, pattern: str):
+    def __init__(self, directory, pattern: str, adopt: bool = False):
         self.pattern = pattern
-        self._known = {str(f) for f in logsource.log_files(directory)
-                       if f.match(pattern)}
+        # adopt — сессия началась до нас: подхватываем работающий процесс, и
+        # «уже лежащий» файл как раз её и описывает. Пропускать его значило бы
+        # никогда не узнать ни готовности, ни расхода памяти подхваченной
+        # стороны — она навсегда осталась бы «запускается».
+        self._known = set() if adopt else {str(f) for f in logsource.log_files(directory)
+                                           if f.match(pattern)}
         self._tailer = logsource.LogTailer(directory, pattern_filter=pattern)
 
     def poll(self) -> list[str]:
@@ -292,14 +296,19 @@ class LaunchMonitor(QObject):
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._poll)
 
-    def start(self, directory) -> None:
+    def start(self, directory, adopt: bool = False) -> None:
+        """adopt — сторона уже работала до нас, читаем и то, что успело написаться."""
         self.stop()
         if not directory:
             return
         self._reset()
         self._dir = Path(directory)
+        # crash-логи при подхвате не считаем задним числом: они относятся к
+        # чужой для нас части сессии, и вываливать их окнами задним числом
+        # было бы неожиданностью на пустом месте
         self._known_crash = crashlog.crash_files(self._dir)
-        self._tails = [_SessionTail(directory, p) for p in ("script_*.log", "*.RPT")]
+        self._tails = [_SessionTail(directory, p, adopt)
+                       for p in ("script_*.log", "*.RPT")]
         self._timer.start()
 
     def stop(self) -> None:

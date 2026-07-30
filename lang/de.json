@@ -1,4 +1,8 @@
 {
+  "adopt.alien": "Auf diesem Rechner läuft DayZ ({s}, PID {pid}), aber nicht von uns{port}. Der Port könnte belegt sein.",
+  "adopt.alien_port": ", Port {p}",
+  "adopt.failed": "Prozesse konnten nicht abgefragt werden: {e}",
+  "adopt.taken": "Laufender {s} übernommen (PID {pid}), Preset „{n}“",
   "cfg.bad_enc": "Kodierung ist {enc} — wird als UTF-8 ohne BOM gespeichert",
   "cfg.hint": "Nur Werte werden geändert — Kommentare und Dateistruktur bleiben erhalten.",
   "cfg.no_file": "Keine Konfiguration geladen",

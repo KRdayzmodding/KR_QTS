@@ -1,4 +1,8 @@
 {
+  "adopt.alien": "DayZ is running on this machine ({s}, PID {pid}), but it is not ours{port}. The port may be taken.",
+  "adopt.alien_port": ", port {p}",
+  "adopt.failed": "Could not query processes: {e}",
+  "adopt.taken": "Picked up a running {s} (PID {pid}), preset “{n}”",
   "cfg.bad_enc": "Encoding is {enc} — will be saved as UTF-8 without BOM",
   "cfg.hint": "Only values are changed — comments and file structure are preserved.",
   "cfg.no_file": "No config loaded",

@@ -40,7 +40,7 @@ from ui.steam_watch import SteamWatcher, status_text
 from ui.mini_window import MiniWindow
 from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
-                              SERVER, CLIENT)
+                              SERVER, CLIENT, PROC_RUN)
 from ui.packlog_window import PackLogWindow
 from ui.theme import app_icon, link_html, outside_icon
 
@@ -463,6 +463,99 @@ class MainWindow(FluentWindow):
         """Галка «поверх всех» — своя у каждого окна логов."""
         setattr(self.settings, f"log_on_top_{key}", on)
         self.settings.save()
+
+    def adopt_running(self) -> None:
+        """Подхватывает клиент и сервер, работающие с прошлого раза.
+
+        Менеджер можно закрыть, а сервер оставить — это сделано намеренно. Но
+        новый экземпляр про него не знал: показывал «остановлен», предлагал
+        запустить и молчал про занятый порт. Человек либо поднимал второй сервер
+        поверх первого, либо шёл убивать процесс через диспетчер.
+
+        Опознание идёт по командной строке процесса, см. core.adopt. Чужой
+        сервер не трогаем, но сообщаем о нём: упереться в занятый порт и не
+        понять почему — худшее из состояний.
+        """
+        from core import adopt
+        from core.layout import resolve_profiles
+
+        profiles, ports = {}, {}
+        for p in self.presets:
+            prof = resolve_profiles(p.profiles, self.settings, p.branch, p.mode)
+            if prof:
+                profiles[p.name] = prof
+            ports[p.name] = p.port
+        try:
+            found = adopt.find(profiles, ports)
+        except Exception as e:      # noqa: BLE001 — подхват не обязан ронять запуск окна
+            self._append_log(tr("adopt.failed", "Не удалось опросить процессы: {e}", e=e),
+                             "warning")
+            return
+        if not found:
+            return
+
+        mine = [r for r in found if r.mine]
+        alien = [r for r in found if not r.mine]
+        for r in alien:
+            self._append_log(tr(
+                "adopt.alien",
+                "На машине работает DayZ ({s}, PID {pid}), но это не наш запуск"
+                "{port}. Порт может быть занят.",
+                s=self._side_name(SERVER if r.side == adopt.SERVER else CLIENT),
+                pid=r.pid,
+                port=tr("adopt.alien_port", ", порт {p}", p=r.port) if r.port else ""),
+                "warning")
+        if not mine:
+            return
+
+        # Пресет выбираем по найденному серверу: логи и конфиг должны смотреть
+        # именно на него, а не на то, что осталось выбранным с прошлого раза.
+        srv = next((r for r in mine if r.side == adopt.SERVER), None)
+        target = srv or mine[0]
+        for i, p in enumerate(self.presets):
+            if p.name == target.preset:
+                self.launch_page.preset_combo.setCurrentIndex(i)
+                break
+
+        cfg = None
+        if self.current and self.current.server_config:
+            from core.layout import resolve_config
+            cfg = resolve_config(self.current.server_config, self.settings,
+                                 self._branch(), self.current.mode)
+        self.launch_status.start(
+            self._server_name(self.current, cfg) if srv and self.current else "",
+            self._client_name(self.current)
+            if self.current and any(r.side == adopt.CLIENT for r in mine) else "")
+        for r in mine:
+            side = SERVER if r.side == adopt.SERVER else CLIENT
+            if side == SERVER:
+                self.server_pid = r.pid
+            else:
+                self.client_pid = r.pid
+            self.launch_status.set_process_state(side, PROC_RUN)
+            self._append_log(tr("adopt.taken",
+                                "Подхвачен работающий {s} (PID {pid}), пресет «{n}»",
+                                s=self._side_name(side), pid=r.pid, n=r.preset), "success")
+        self._bind_log_dirs()
+        self._start_monitors_for_adopted()
+        self._update_launch_button()
+
+    def _start_monitors_for_adopted(self) -> None:
+        """Наблюдатели за логами подхваченных сторон.
+
+        Скриптовую память и ошибки они возьмут из уже написанных файлов: сессия
+        началась до нас, и «текущей» для неё считается всё, что есть.
+        """
+        from core.layout import resolve_profiles
+        p = self.current
+        if not p:
+            return
+        branch = self._branch()
+        if self.server_pid:
+            prof = resolve_profiles(p.profiles, self.settings, branch, p.mode)
+            self.monitors[SERVER].start(Path(prof) if prof else None, adopt=True)
+        if self.client_pid:
+            self.monitors[CLIENT].start(logsource.client_log_dir(branch), adopt=True)
 
     def _bind_log_dirs(self) -> None:
         p = self.current

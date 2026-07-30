@@ -73,6 +73,8 @@ def main() -> int:
     # вторая копия стучится в канал вместо запуска — показываем эту
     channel.newConnection.connect(lambda: _greet(channel, window))
     window.show()
+    # после показа: подхват уже работающих клиента и сервера прошлого запуска
+    window.adopt_running()
     # проверка версии — после показа окна: сеть не должна задерживать запуск
     window.start_update_check()
     return app.exec()
