@@ -590,6 +590,7 @@
   "sources.select_none": "Auswahl aufheben",
   "sources.stale": "geändert: {n}",
   "sources.title": "Mods neu packen",
+  "status.alerts_title": "Probleme beim Start",
   "status.connecting": "verbindet",
   "status.crash_head": "Start fehlgeschlagen",
   "status.crash_hint": "Details in {p}",

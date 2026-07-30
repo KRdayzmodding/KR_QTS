@@ -590,6 +590,7 @@
   "sources.select_none": "Clear selection",
   "sources.stale": "changed: {n}",
   "sources.title": "Repack mods",
+  "status.alerts_title": "Problems during launch",
   "status.connecting": "connecting",
   "status.crash_head": "Launch failed",
   "status.crash_hint": "Details in {p}",

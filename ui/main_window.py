@@ -46,6 +46,9 @@ from ui.theme import app_icon, outside_icon
 
 _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
                   "warning": "#e5c07b", "error": "#ff6b6b"}
+# Пауза перед показом накопившихся сообщений: за неё прилетает вся пачка
+# событий одного обвала, и человек читает их одним окном, а не вереницей.
+_ALERT_MERGE_MS = 400
 _CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
                 "border:1px solid #333;border-radius:6px;padding:4px;}")
 
@@ -653,12 +656,25 @@ class MainWindow(FluentWindow):
         if self._alert_busy:
             return
         self._alert_busy = True
-        QTimer.singleShot(0, self._drain_alerts)
+        QTimer.singleShot(_ALERT_MERGE_MS, self._drain_alerts)
 
     def _drain_alerts(self) -> None:
+        """Показывает накопившееся одним окном.
+
+        Обвал запуска редко бывает одиночным: скрипты не собрались, слой упёрся
+        в память, сторона завершилась — всё в пределах одного мгновения. Гнать
+        это вереницей окон, каждое со своим «Понятно», — наказание за чужую
+        ошибку в коде. Поэтому короткая пауза перед показом: за неё прилетает
+        вся пачка, и человек читает её разом.
+        """
         try:
             while self._alerts:
-                title, body = self._alerts.pop(0)
+                batch, self._alerts = self._alerts, []
+                if len(batch) == 1:
+                    title, body = batch[0]
+                else:
+                    title = tr("status.alerts_title", "Проблемы при запуске")
+                    body = "\n\n".join(f"{t}\n{b}" for t, b in batch)
                 box = MessageBox(title, body, self)
                 box.yesButton.setText(tr("common.ok", "Понятно"))
                 box.cancelButton.hide()

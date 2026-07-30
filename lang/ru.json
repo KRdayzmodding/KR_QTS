@@ -590,6 +590,7 @@
   "sources.select_none": "Снять выбор",
   "sources.stale": "изменены: {n}",
   "sources.title": "Перепаковка модов",
+  "status.alerts_title": "Проблемы при запуске",
   "status.connecting": "подключается",
   "status.crash_head": "Запуск сорван",
   "status.crash_hint": "Подробности — в {p}",
