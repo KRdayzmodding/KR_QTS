@@ -27,6 +27,7 @@ downloads/
 config/mod_flags.json
 config/mod_flag_defs.json
 config/mod_dependencies.json
+config/mod_workshop_ids.json
 
 # Claude Code — локальные права/настройки этого пользователя
 .claude/
