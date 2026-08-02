@@ -539,7 +539,7 @@ class ModRegistry:
         чтобы не захламлять корень игры/сервера. Возвращает (ok, сообщение).
         """
         from .layout import mods_link_dir
-        link_dir = mods_link_dir(root)
+        link_dir = mods_link_dir(root, self.settings)
         try:
             link_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:

@@ -1,12 +1,21 @@
-"""Структура KR_Debug в корне клиента/сервера.
+"""Где приложение держит свои файлы внутри корня клиента/сервера.
 
-KR_Debug/
-├── <имя>.cfg      — серверные конфиги
-├── profile/       — профили серверов (по имени пресета)
-├── mpmissions/    — миссии
-└── MODS/          — junction-ссылки на все подключаемые моды
+По умолчанию всё лежит в KR_Debug:
 
-Правило имён: только [A-Za-z0-9_-]. Конфиг, профиль и миссия пресета
+    KR_Debug/<имя>.cfg      — серверные конфиги
+    KR_Debug/profile/       — профили серверов (по имени пресета)
+    KR_Debug/mpmissions/    — миссии
+    KR_Debug/MODS/          — junction-ссылки на все подключаемые моды
+
+Но каждый из четырёх путей настраивается отдельно и независимо: у людей разные
+привычки в именах — profile или profiles, mpmissions или mpmission, — и
+навязывать своё написание незачем. Пустая строка означает сам корень.
+
+Пути относительные и остаются такими до конца: в командную строку DayZ уходит
+именно относительный путь, рабочей папкой процесса задан корень. Абсолютный
+собирается только внутри приложения, чтобы потрогать файл.
+
+Правило имён пресетов: только [A-Za-z0-9_-]. Конфиг, профиль и миссия пресета
 носят одно имя.
 """
 from __future__ import annotations
@@ -17,11 +26,16 @@ from pathlib import Path
 from .presets import MODE_DIAG
 from .settings import Settings, APP_DIR, RES_DIR
 
-DEBUG_DIR = "KR_Debug"
-PROFILE_SUBDIR = "profile"
-MISSIONS_SUBDIR = "mpmissions"
-MODS_SUBDIR = "MODS"          # junction-ссылки на подключаемые моды
-MODS_DL_SUBDIR = "mods_dl"    # скачанные с GitHub моды (реальные файлы)
+# Виды файлов и поля настроек, задающие их расположение. Порядок — порядок
+# строк в окне настройки.
+CONFIG, PROFILE, MISSIONS, MODS = "config", "profile", "missions", "mods"
+
+PATH_FIELDS: dict[str, str] = {
+    CONFIG: "path_config",
+    PROFILE: "path_profile",
+    MISSIONS: "path_missions",
+    MODS: "path_mods",
+}
 
 TEMPLATE_CFG = RES_DIR / "data" / "serverDZ_template.cfg"
 
@@ -70,18 +84,34 @@ def mode_root(settings: Settings, branch: str, mode: str) -> str:
     return settings.client_root(branch) if mode == MODE_DIAG else settings.server_root(branch)
 
 
-def debug_dir(settings: Settings, branch: str, mode: str) -> Path:
-    root = mode_root(settings, branch, mode)
-    return Path(root) / DEBUG_DIR if root else Path("")
+def rel_path(settings: Settings, kind: str) -> str:
+    """Настроенный относительный путь для вида файлов. Пустой — сам корень."""
+    return (getattr(settings, PATH_FIELDS[kind], "") or "").strip()
 
 
-def ensure_layout(base: Path) -> None:
-    for sub in (PROFILE_SUBDIR, MISSIONS_SUBDIR, MODS_SUBDIR):
-        (base / sub).mkdir(parents=True, exist_ok=True)
+def kind_dir_in(root: str, settings: Settings, kind: str) -> Path:
+    """Папка вида файлов внутри указанного корня."""
+    if not root:
+        return Path("")
+    rel = rel_path(settings, kind)
+    return Path(root) / rel if rel else Path(root)
 
 
-def mods_link_dir(root: str) -> Path:
-    return Path(root) / DEBUG_DIR / MODS_SUBDIR
+def kind_dir(settings: Settings, branch: str, mode: str, kind: str) -> Path:
+    """Папка вида файлов для режима: клиент для Diag, иначе сервер."""
+    return kind_dir_in(mode_root(settings, branch, mode), settings, kind)
+
+
+def ensure_layout(settings: Settings, branch: str, mode: str) -> None:
+    """Создаёт все четыре папки. Совпадающие пути схлопнутся сами."""
+    for kind in PATH_FIELDS:
+        d = kind_dir(settings, branch, mode, kind)
+        if str(d):
+            d.mkdir(parents=True, exist_ok=True)
+
+
+def mods_link_dir(root: str, settings: Settings) -> Path:
+    return kind_dir_in(root, settings, MODS)
 
 
 def downloads_base(settings: Settings) -> Path:
@@ -110,27 +140,27 @@ def delete_preset_files(settings: Settings, branch: str, mode: str,
     actual.* не удаляются.
     """
     import shutil
-    base = debug_dir(settings, branch, mode)
     removed: list[str] = []
-    if not str(base) or not base.is_dir():
-        return removed
 
     def bare(value: str) -> bool:
         return bool(value) and len(Path(value).parts) == 1
 
+    def d(kind: str) -> Path:
+        return kind_dir(settings, branch, mode, kind)
+
     try:
         if bare(server_config):
-            cfg = base / server_config
+            cfg = d(CONFIG) / server_config
             if cfg.is_file():
                 cfg.unlink()
                 removed.append(str(cfg))
         if bare(profiles):
-            prof = base / PROFILE_SUBDIR / profiles
+            prof = d(PROFILE) / profiles
             if prof.is_dir():
                 shutil.rmtree(prof)
                 removed.append(str(prof))
         if bare(mission) and not mission.startswith("actual."):
-            m = base / MISSIONS_SUBDIR / mission
+            m = d(MISSIONS) / mission
             if m.is_dir():
                 shutil.rmtree(m)
                 removed.append(str(m))
@@ -142,31 +172,31 @@ def delete_preset_files(settings: Settings, branch: str, mode: str,
 # ------------------------------------------------------------- резолв путей
 
 def _resolve(value: str, settings: Settings, branch: str, mode: str,
-             subdir: str) -> str:
-    """Голое имя -> KR_Debug/<subdir>/<имя>; иначе легаси-правила."""
+             kind: str) -> str:
+    """Голое имя -> <папка вида>/<имя>; иначе легаси-правила."""
     if not value:
         return ""
     p = Path(value)
     if p.is_absolute():
         return str(p)
     if len(p.parts) == 1:
-        base = debug_dir(settings, branch, mode)
+        base = kind_dir(settings, branch, mode, kind)
         if str(base):
-            return str(base / subdir / value) if subdir else str(base / value)
+            return str(base / value)
     # старые пресеты: путь относительно корня клиента
     return str(Path(settings.client_root(branch)) / p)
 
 
 def resolve_config(value: str, settings: Settings, branch: str, mode: str) -> str:
-    return _resolve(value, settings, branch, mode, "")
+    return _resolve(value, settings, branch, mode, CONFIG)
 
 
 def resolve_profiles(value: str, settings: Settings, branch: str, mode: str) -> str:
-    return _resolve(value, settings, branch, mode, PROFILE_SUBDIR)
+    return _resolve(value, settings, branch, mode, PROFILE)
 
 
 def resolve_mission(value: str, settings: Settings, branch: str, mode: str) -> str:
-    return _resolve(value, settings, branch, mode, MISSIONS_SUBDIR)
+    return _resolve(value, settings, branch, mode, MISSIONS)
 
 
 # ------------------------------------------------------------- создание файлов
@@ -209,13 +239,12 @@ def create_preset_files(settings: Settings, branch: str, mode: str,
     Возвращает значения для пресета: (config, profiles) — голые имена.
     Существующий cfg не перезаписывается.
     """
-    base = debug_dir(settings, branch, mode)
-    if not str(base):
+    if not mode_root(settings, branch, mode):
         raise RuntimeError("Не задан корень игры/сервера в настройках")
-    ensure_layout(base)
+    ensure_layout(settings, branch, mode)
     fname = preset_base_name(name, mission_name)
 
-    cfg_path = base / f"{fname}.cfg"
+    cfg_path = kind_dir(settings, branch, mode, CONFIG) / f"{fname}.cfg"
     if not cfg_path.exists():
         try:
             template = TEMPLATE_CFG.read_text(encoding="utf-8")
@@ -229,7 +258,7 @@ def create_preset_files(settings: Settings, branch: str, mode: str,
             "{MISSION}", mission_name or "dayzOffline.chernarusplus")
         cfg_path.write_bytes(text.encode("utf-8"))  # UTF-8 без BOM
 
-    profile = base / PROFILE_SUBDIR / fname
+    profile = kind_dir(settings, branch, mode, PROFILE) / fname
     profile.mkdir(parents=True, exist_ok=True)
     # структура админок готовится сразу: какие моды подключат — на этом шаге
     # ещё неизвестно, а лишние пустые папки безвредны, зато права/пароль уже
@@ -281,13 +310,15 @@ def rename_preset_files(settings: Settings, branch: str, mode: str,
     Только файлы пары <old>_<world> — у пресетов с тем же именем на других
     картах свои файлы, их не трогаем.
     """
-    base = debug_dir(settings, branch, mode)
-    if not str(base) or not base.is_dir() or not world:
+    if not mode_root(settings, branch, mode) or not world:
         return
+    cfg = kind_dir(settings, branch, mode, CONFIG)
+    prof = kind_dir(settings, branch, mode, PROFILE)
+    miss = kind_dir(settings, branch, mode, MISSIONS)
     pairs = [
-        (base / f"{old}_{world}.cfg", base / f"{new}_{world}.cfg"),
-        (base / PROFILE_SUBDIR / f"{old}_{world}", base / PROFILE_SUBDIR / f"{new}_{world}"),
-        (base / MISSIONS_SUBDIR / f"{old}.{world}", base / MISSIONS_SUBDIR / f"{new}.{world}"),
+        (cfg / f"{old}_{world}.cfg", cfg / f"{new}_{world}.cfg"),
+        (prof / f"{old}_{world}", prof / f"{new}_{world}"),
+        (miss / f"{old}.{world}", miss / f"{new}.{world}"),
     ]
     for src, dst in pairs:
         try:

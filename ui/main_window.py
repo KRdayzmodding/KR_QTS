@@ -288,7 +288,9 @@ class MainWindow(FluentWindow):
         self.mods_panel.packed_cb = self.remember_packed
         self.cfg_editor = CfgEditor()
         self.cfg_editor.setObjectName("cfgInterface")
-        self.settings_page = SettingsPage(settings, on_saved=self._settings_saved)
+        self.settings_page = SettingsPage(
+            settings, on_saved=self._settings_saved,
+            is_busy=lambda: self.server_running() or self.client_running())
         self.settings_page.setObjectName("settingsInterface")
 
         self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
@@ -1322,6 +1324,9 @@ class MainWindow(FluentWindow):
             widget.setToolTip(tip if locked else own_tip)
         if getattr(self, "mini", None) is not None:
             self.mini.preset_combo.setEnabled(not locked)
+        if getattr(self, "settings_page", None) is not None:
+            self.settings_page.refresh_locks()
+
 
     def launch_button_clicked(self) -> None:
         if self.launch_state() == self.LB_STOP:

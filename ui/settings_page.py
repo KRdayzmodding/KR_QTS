@@ -166,10 +166,13 @@ def make_install_button(parent, settings_key: str):
 
 
 class SettingsPage(QScrollArea):
-    def __init__(self, settings: Settings, on_saved=None):
+    def __init__(self, settings: Settings, on_saved=None, is_busy=None):
         super().__init__()
         self.settings = settings
         self.on_saved = on_saved
+        # «занято ли» — спрашиваем у главного окна: расположение файлов нельзя
+        # менять при живом сервере, он держит профиль открытым
+        self.is_busy = is_busy
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.Shape.NoFrame)
         self.setStyleSheet("QScrollArea{background:transparent;} QWidget#settingsInner{background:transparent;}")
@@ -235,10 +238,8 @@ class SettingsPage(QScrollArea):
 
         # ------------------------------------------------- Клиент и сервер
         self.stop_method = ComboBox()
-        self.stop_method.addItem(tr("settings.stop_soft", "Мягко — попросить закрыться"),
-                                 userData="soft")
-        self.stop_method.addItem(tr("settings.stop_hard", "Жёстко — завершить процесс"),
-                                 userData="hard")
+        self.stop_method.addItem(tr("settings.stop_soft", "Мягко"), userData="soft")
+        self.stop_method.addItem(tr("settings.stop_hard", "Принудительно"), userData="hard")
         idx = self.stop_method.findData(settings.stop_method)
         self.stop_method.setCurrentIndex(max(idx, 0))
         self.stop_method.setToolTip(tr(
@@ -246,7 +247,7 @@ class SettingsPage(QScrollArea):
             "Мягкий способ даёт серверу завершиться своим порядком и сохранить "
             "данные; жёсткий обрывает его сразу."))
         form_general.addRow(BodyLabel(tr("settings.stop_method",
-                                         "Как останавливать сервер и клиент")),
+                                         "Завершение процессов")),
                             self.stop_method)
 
         form_paths = section(tr("settings.section_paths", "Клиент и сервер"))
@@ -280,6 +281,18 @@ class SettingsPage(QScrollArea):
                                             "Общее хранилище скачанных модов карт; во все корни "
                                             "они подключаются junction-ссылками."))
         form_paths.addRow(BodyLabel(tr("settings.downloads", "Папка для загрузок")), self.p_downloads)
+
+        # Внизу блока: это не путь к установке, а раскладка внутри неё —
+        # производное от путей выше, и стоять оно должно после них. Отдельным
+        # окном, потому что смена тянет за собой переезд файлов.
+        b_paths = PushButton(FIF.FOLDER, tr("settings.paths_btn",
+                                            "Расположение проектных папок…"))
+        b_paths.setToolTip(tr("settings.paths_tip",
+                              "Куда приложение кладёт конфиги, профили, миссии "
+                              "и ссылки на моды внутри корня игры."))
+        b_paths.clicked.connect(self._open_paths)
+        self.b_paths = b_paths
+        form_paths.addRow("", b_paths)
 
         # ------------------------------------------------------------ Steam
         form_steam = section(tr("settings.section_steam", "Steam"))
@@ -461,6 +474,28 @@ class SettingsPage(QScrollArea):
         row.set_status("")
         if force or not row.text():
             row.edit.setText(path)
+
+    def refresh_locks(self) -> None:
+        """Пока что-то запущено, менять расположение файлов нельзя: сервер
+        держит профиль открытым, а подхват после переезда его не узнает."""
+        if getattr(self, "b_paths", None) is None:
+            return
+        busy = bool(self.is_busy and self.is_busy())
+        self.b_paths.setEnabled(not busy)
+        self.b_paths.setToolTip(
+            tr("settings.paths_locked",
+               "Недоступно, пока запущен сервер или клиент.") if busy
+            else tr("settings.paths_tip",
+                    "Куда приложение кладёт конфиги, профили, миссии "
+                    "и ссылки на моды внутри корня игры."))
+
+    def _open_paths(self) -> None:
+        """Окно расположения файлов. Оно само переносит и само сохраняет —
+        страница настроек в это не вмешивается."""
+        from ui.paths_dialog import PathsDialog
+        dlg = PathsDialog(self.settings, self)
+        if dlg.exec() and dlg.changed and self.on_saved:
+            self.on_saved()
 
     def _check_updates_now(self) -> None:
         """Проверка по кнопке — идёт через главное окно: там же живёт пункт

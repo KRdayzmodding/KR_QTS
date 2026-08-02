@@ -106,9 +106,8 @@ def map_mod_installed(settings: Settings, workshop_id: str) -> bool:
 
 def mpmissions_dir(settings: Settings, branch: str, mode: str) -> Path:
     """Папка миссий: <корень режима>/KR_Debug/mpmissions."""
-    from .layout import debug_dir, MISSIONS_SUBDIR
-    base = debug_dir(settings, branch, mode)
-    return base / MISSIONS_SUBDIR if str(base) else Path("")
+    from .layout import MISSIONS, kind_dir
+    return kind_dir(settings, branch, mode, MISSIONS)
 
 
 def resolve_mission(value: str, settings: Settings, branch: str, mode: str) -> str:
