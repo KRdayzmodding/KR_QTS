@@ -41,7 +41,7 @@ from ui.steam_watch import SteamWatcher, status_text
 from ui.mini_window import MiniWindow
 from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
-                              SERVER, CLIENT, PROC_RUN, PROC_STOPPING)
+                              SERVER, CLIENT, PROC_RUN, PROC_OFF, PROC_STOPPING)
 from ui.packlog_window import PackLogWindow
 from ui.theme import app_icon, link_html, outside_icon
 
@@ -220,6 +220,9 @@ class MainWindow(FluentWindow):
         self._adopted = False           # стороны подхвачены, а не запущены нами
         # мягкая остановка: с какого момента ждём закрытия каждой стороны
         self._stopping: dict[str, float] = {}
+        # (имя пресета, останавливали ли что-то живое) — уведомление, которое
+        # ждёт момента, когда сервер и клиент действительно улягутся
+        self._down_notice: tuple[str, bool] | None = None
         # консоль сервера в журнал — когда его окно спрятано, см. _console_start
         self._console_tailer: logsource.LogTailer | None = None
         self._console_win: winconsole.WindowConsole | None = None
@@ -991,6 +994,7 @@ class MainWindow(FluentWindow):
         self.worker.client_started.connect(self._on_client_started)
         self.worker.finished_ok.connect(lambda: self._launch_done(None))
         self.worker.failed.connect(self._launch_done)
+        self.worker.cancelled.connect(self._launch_cancelled)
         self.worker.start()
 
     def _server_name(self, preset: ServerPreset, cfg_path: str | None) -> str:
@@ -1097,6 +1101,21 @@ class MainWindow(FluentWindow):
         self._launch_logged = True
         self._append_log(tr("main.launch_ok", "Запуск завершён."), "success")
         self._notify("success", tr("main.launch_ok", "Запуск завершён."))
+
+    def _launch_cancelled(self) -> None:
+        """Последовательность оборвана по просьбе — это не ошибка.
+
+        Наблюдателей за логами останавливаем: сессии, за которой они следят, не
+        случилось, а оставленные жить они дописывали бы в блок статуса строки
+        про запуск, которого нет.
+        """
+        self._starting = False
+        for side in (SERVER, CLIENT):
+            if self.side_pid(side) is None:
+                self.monitors[side].stop()
+                self.launch_status.set_process_state(side, PROC_OFF)
+        self._append_log(tr("main.log_aborted", "— Запуск отменён —"), "warning")
+        self._update_launch_button()
 
     def _launch_done(self, error: str | None) -> None:
         self._starting = False
@@ -1269,7 +1288,13 @@ class MainWindow(FluentWindow):
             # выключение уже идёт: второе нажатие ничего не ускорит, а вот
             # запустить всё заново посреди остановки — вполне
             return self.LB_STOPPING
-        running = self.server_running() if subject == "server" else self.client_running()
+        # Жив хоть кто-то из отмеченных — предлагаем остановку. Смотреть только
+        # на сторону-«хозяина» кнопки нельзя: сервер может упасть сам, и тогда
+        # кнопка звала бы запускать заново, пока клиент ещё висит в памяти —
+        # а следом запуск упёрся бы в занятый порт.
+        lp = self.launch_page
+        running = ((lp.chk_server.isChecked() and self.server_running())
+                   or (lp.chk_client.isChecked() and self.client_running()))
         return self.LB_STOP if subject and running else self.LB_LAUNCH
 
     def _update_launch_button(self) -> None:
@@ -1327,6 +1352,141 @@ class MainWindow(FluentWindow):
         if getattr(self, "settings_page", None) is not None:
             self.settings_page.refresh_locks()
 
+    def launch_preset_by_stem(self, stem: str) -> None:
+        """Ярлык: запустить пресет, а если он уже работает — остановить.
+
+        Ярлык — переключатель, а не только кнопка старта. Смысл в том, чтобы не
+        отрывать человека от его дел: свёрнутая в трей программа должна там и
+        остаться, а щелчок по тому же ярлыку — погасить то, что он же поднял.
+        Но и молчать нельзя — нажал и не понял, случилось ли что-нибудь, —
+        поэтому о каждом исходе говорим через трей.
+        """
+        stem = (stem or "").strip().lower()
+        idx = next((i for i, p in enumerate(self.presets)
+                    if p.file_stem().lower() == stem), -1)
+        if idx < 0:
+            # ярлык остался от переименованного или удалённого пресета
+            self._say_tray("error",
+                           tr("main.shortcut_unknown", "Пресет «{n}» не найден", n=stem),
+                           tr("main.shortcut_unknown_tip",
+                              "Ярлык устарел: пресет переименован или удалён."))
+            return
+        name = self.presets[idx].name
+
+        # Пока что-то работает, выбор пресета заперт, и выбранный — он и есть
+        # работающий: так его ставит и запуск, и подхват чужой сессии. Поэтому
+        # сверяемся с выбранным, и обязательно до переключения: программная
+        # смена индекса запертость обходит и увела бы окно на другой пресет.
+        if self._busy_state() != "":
+            self._shortcut_when_busy(idx, stem, name)
+            return
+
+        self.launch_page.preset_combo.setCurrentIndex(idx)
+        self._launch()
+
+    def _busy_state(self) -> str:
+        """Чем занята программа: «prep» — готовит запуск, «run» — работает,
+        «stop» — гасит начатое, «» — свободна."""
+        if self.worker is not None and self.worker.isRunning():
+            return "prep"
+        if self._stopping:
+            return "stop"
+        if self.server_running() or self.client_running():
+            return "run"
+        return ""
+
+    def _shortcut_when_busy(self, idx: int, stem: str, name: str) -> None:
+        """Щелчок по ярлыку, когда программа занята."""
+        state = self._busy_state()
+        busy = self.current
+        same = busy is not None and busy.file_stem().lower() == stem
+        if not same:
+            # чужой запуск гасить по ярлыку нельзя: человек метил в свой пресет
+            # и остановки соседнего не ждёт
+            self._say_tray("warning",
+                           tr("main.shortcut_other", "Работает другой пресет"),
+                           tr("main.shortcut_other_tip",
+                              "Сейчас запущен «{n}». Сначала остановите его.",
+                              n=busy.name if busy else "?"))
+            return
+        if state == "stop":
+            return      # выключение уже идёт, о его конце скажет уведомление
+        self._abort_or_stop(name)
+
+    def _abort_or_stop(self, name: str) -> None:
+        """Повторный щелчок по ярлыку: отменить начатое или остановить работающее.
+
+        Правило одно для обеих сторон: то, что успело подняться, гасим способом
+        из настроек — там есть что терять, сервер сохраняет базу. То, что ещё
+        «запускается», гасим жёстко: сохранять нечего, а просьба закрыться
+        уходит в окно, которое до неё пока не доросло, и мы бы только ждали
+        впустую свои двадцать пять секунд. Заодно обрываем саму
+        последовательность, иначе за убитым сервером следом поднялся бы клиент.
+        """
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+        soft = getattr(self.settings, "stop_method", "soft") != "hard"
+        started = False
+        for side, attr in ((SERVER, "server_pid"), (CLIENT, "client_pid")):
+            pid = getattr(self, attr)
+            if not pid or self.process_state(pid) != self.ST_RUN:
+                continue
+            started = True
+            ready = self.side_state(side) == self.ST_RUN
+            if ready and soft and winhide.ask_close(pid):
+                self.launch_status.set_process_state(side, PROC_STOPPING)
+                self._stopping[attr] = time.monotonic()
+                self._append_log(tr("main.log_stopping", "Статус: {n} выключается",
+                                    n=self._side_name(side)))
+                continue
+            if not ready:
+                self._append_log(tr("main.log_abort_side",
+                                    "{n} не успел подняться — завершаем сразу",
+                                    n=self._side_name(side)), "warning")
+            kill_pid(pid)
+            setattr(self, attr, None)
+            self._stopping.pop(attr, None)
+        # Ничего не поднялось — значит идёт подготовка: запаковку не рвём, она
+        # дойдёт до конца, а сервер после неё уже не стартует.
+        self._expect_down(name, stopped=started)
+        self._update_launch_button()
+
+    def _expect_down(self, name: str, stopped: bool) -> None:
+        """Назначает единственное уведомление — по факту, что всё улеглось.
+
+        Промежуточные («останавливается», «уже выключается») пользы не несут:
+        человек и так только что щёлкнул. А вот момент, когда сервер с клиентом
+        действительно отпустили порт и файлы, глазами не поймать — при мягком
+        завершении он наступает через несколько секунд после щелчка, и только
+        после него можно запускать заново.
+        """
+        self._down_notice = (name, stopped)
+
+    def _watch_down(self) -> None:
+        """Всё ли улеглось. Зовётся из общего опроса раз в секунду."""
+        notice = getattr(self, "_down_notice", None)
+        if notice is None:
+            return
+        if (self.server_running() or self.client_running() or self._stopping
+                or (self.worker is not None and self.worker.isRunning())):
+            return
+        self._down_notice = None
+        name, stopped = notice
+        if stopped:
+            self._say_tray("info", tr("main.tray_down", "«{n}» остановлен", n=name), "")
+        else:
+            self._say_tray("info", tr("main.tray_aborted", "Запуск «{n}» отменён", n=name),
+                           "")
+
+    def _say_tray(self, kind: str, title: str, text: str) -> None:
+        """Сообщение через трей: окно при запуске по ярлыку не поднимаем."""
+        tray = getattr(self, "tray", None)
+        if tray is None:
+            return
+        icon = {"error": QSystemTrayIcon.MessageIcon.Critical,
+                "warning": QSystemTrayIcon.MessageIcon.Warning,
+                }.get(kind, QSystemTrayIcon.MessageIcon.Information)
+        tray.showMessage(title, text, icon, 6000)
 
     def launch_button_clicked(self) -> None:
         if self.launch_state() == self.LB_STOP:
@@ -1351,6 +1511,13 @@ class MainWindow(FluentWindow):
             if not want:
                 continue
             pid = getattr(self, attr)
+            if self.process_state(pid) != self.ST_RUN:
+                # сторона умерла сама — гасить нечего, просто забываем её pid.
+                # Так вторая (например, оставшийся клиент упавшего сервера)
+                # доходит до остановки обычным порядком.
+                setattr(self, attr, None)
+                self._stopping.pop(attr, None)
+                continue
             if soft and pid and winhide.ask_close(pid):
                 # процесс ещё жив — pid не сбрасываем, иначе перестанем за ним
                 # следить и не заметим, что он так и не закрылся
@@ -1362,6 +1529,8 @@ class MainWindow(FluentWindow):
             kill_pid(pid)
             setattr(self, attr, None)
             self._stopping.pop(attr, None)
+        if self.current:
+            self._expect_down(self.current.name, stopped=True)
         self._update_launch_button()
 
     def _watch_stopping(self) -> None:
@@ -1425,6 +1594,7 @@ class MainWindow(FluentWindow):
 
     def _update_status(self) -> None:
         self._watch_stopping()
+        self._watch_down()
         self._log_stopped()
         self._update_sources_button()
         # Блок в журнале узнаёт о процессах отсюда же, а не отдельным путём.

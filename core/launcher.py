@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -167,10 +168,11 @@ def _params_args(preset: ServerPreset, target: str) -> list[str]:
     return args
 
 
-def _mods_arg(names: list[str], registry: ModRegistry, root: str) -> str:
-    """Пути junction-ссылок в <root>/KR_Debug/MODS, относительно корня."""
+def _mods_arg(names: list[str], registry: ModRegistry, root: str,
+              settings: Settings) -> str:
+    """Пути junction-ссылок в настроенной папке модов, относительно корня."""
     from .layout import mods_link_dir
-    base = mods_link_dir(root)
+    base = mods_link_dir(root, settings)
     folders = []
     for n in names:
         mod = registry.get(n)
@@ -200,9 +202,9 @@ def build_server_command(preset: ServerPreset, settings: Settings, branch: str,
         f"-port={preset.port}",
     ]
     if preset.mods:
-        args.append(f"-mod={_mods_arg(preset.mods, registry, cwd)}")
+        args.append(f"-mod={_mods_arg(preset.mods, registry, cwd, settings)}")
     if preset.server_mods:
-        args.append(f"-serverMod={_mods_arg(preset.server_mods, registry, cwd)}")
+        args.append(f"-serverMod={_mods_arg(preset.server_mods, registry, cwd, settings)}")
     args += _params_args(preset, SERVER)
     args += preset.extra_server.split()
     return exe, args, cwd
@@ -216,7 +218,7 @@ def build_client_command(preset: ServerPreset, settings: Settings, branch: str,
     exe = str(Path(client_root) / ("DayZDiag_x64.exe" if use_diag else "DayZ_x64.exe"))
     args = [f"-connect=127.0.0.1:{preset.port}"]
     if preset.mods:
-        args.append(f"-mod={_mods_arg(preset.mods, registry, client_root)}")
+        args.append(f"-mod={_mods_arg(preset.mods, registry, client_root, settings)}")
     args += _params_args(preset, CLIENT)
     args += preset.extra_client.split()
     return exe, args, client_root
@@ -287,6 +289,7 @@ class LaunchWorker(QThread):
     client_started = Signal(int)    # pid
     finished_ok = Signal()
     failed = Signal(str)
+    cancelled = Signal()            # запуск оборван по просьбе — не ошибка
 
     def __init__(self, preset: ServerPreset, settings: Settings, branch: str,
                  registry: ModRegistry, parent: QObject | None = None) -> None:
@@ -295,6 +298,24 @@ class LaunchWorker(QThread):
         self.settings = settings
         self.branch = branch
         self.registry = registry
+        self._abort = threading.Event()
+
+    def cancel(self) -> None:
+        """Просьба оборвать запуск. Зовут из потока интерфейса.
+
+        Оборвать можно только между шагами: посреди запаковки нельзя — pboProject
+        уже пишет pbo, и брошенный на середине файл хуже потерянной минуты.
+        Поэтому текущая запаковка доходит до конца, а вот сервер после неё уже
+        не поднимется. Процессы, которые успели стартовать, гасит окно: ему
+        виднее, какой способ выбран в настройках и что уже поднялось.
+        """
+        self._abort.set()
+
+    def _stop_asked(self) -> bool:
+        if not self._abort.is_set():
+            return False
+        self.cancelled.emit()
+        return True
 
     def run(self) -> None:
         try:
@@ -337,6 +358,9 @@ class LaunchWorker(QThread):
                     self.failed.emit(tr("launch.pack_failed",
                                         "Ошибка запаковки {mod}. Запуск отменён.", mod=mod.name))
                     return
+
+        if self._stop_asked():
+            return
 
         # 2. Убираем старые процессы — только тех видов, что сейчас запускаем.
         #    Иначе перезапуск одного клиента ронял бы работающий сервер.
@@ -399,6 +423,9 @@ class LaunchWorker(QThread):
             self.log.emit(tr("launch.vpp_password_flag",
                              "serverDZ.cfg: vppDisablePassword = {v}", v=flag), "info")
 
+        if self._stop_asked():
+            return
+
         # 5. Сервер
         server_proc = None
         if p.launch_server:
@@ -438,6 +465,10 @@ class LaunchWorker(QThread):
             t0 = time.monotonic()
             port_ok = mission_ok = False
             while time.monotonic() - t0 < READY_TIMEOUT:
+                if self._abort.is_set():
+                    # сам процесс не трогаем: способ завершения знает окно
+                    self.cancelled.emit()
+                    return
                 if server_proc.poll() is not None:
                     self.failed.emit(tr("launch.server_died",
                                         "Сервер завершился при запуске (код {code}). Смотрите RPT-лог.",
@@ -459,6 +490,9 @@ class LaunchWorker(QThread):
                 self.log.emit(tr("launch.server_slow",
                                  "Сервер {what} за {sec} с — запускаю клиент на свой страх.",
                                  what=missing, sec=READY_TIMEOUT), "warning")
+
+        if self._stop_asked():
+            return
 
         # 7. Клиент
         if p.launch_client:

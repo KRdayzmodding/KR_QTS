@@ -151,6 +151,19 @@ class AdvancedPresetDialog(ThemedDialog):
         self.files_hint = CaptionLabel("")
         self.files_hint.setWordWrap(True)
         form.addRow("", self.files_hint)
+
+        # Ярлык несёт только имя пресета — подготовку в любом случае делает
+        # приложение, см. core/shortcut. Кнопка здесь, а не в главном окне:
+        # ярлык относится к конкретному пресету, и создавать его логично там,
+        # где этот пресет перед глазами.
+        self.b_shortcut = PushButton(FIF.LINK, tr("preset.shortcut",
+                                                  "Ярлык на рабочий стол"))
+        self.b_shortcut.setToolTip(tr(
+            "preset.shortcut_tip",
+            "Запускает этот пресет без открытия окна программы. Если она "
+            "свёрнута в трей, там и останется."))
+        self.b_shortcut.clicked.connect(self._make_shortcut)
+        form.addRow("", self.b_shortcut)
         self._name_changed(preset.name)
 
         self.port = SpinBox()
@@ -328,15 +341,36 @@ class AdvancedPresetDialog(ThemedDialog):
         self.name_error.setText("")
         self.map_picker.set_preset_name(name.strip())
 
+    def _make_shortcut(self) -> None:
+        """Ярлык быстрого запуска на рабочем столе."""
+        from qfluentwidgets import InfoBar, InfoBarPosition
+
+        from core import shortcut
+        name = self.name.text().strip() or self.preset.name
+        stem = self.preset.file_stem()
+        path, err = shortcut.create(stem, tr("preset.shortcut_name",
+                                             "Запустить {n}", n=name))
+        if err:
+            InfoBar.error(title=tr("preset.shortcut_failed", "Не удалось создать ярлык"),
+                          content=err, parent=self, duration=8000,
+                          position=InfoBarPosition.TOP_RIGHT)
+            return
+        InfoBar.success(title=tr("preset.shortcut_ok", "Ярлык создан"),
+                        content=path.name, parent=self, duration=5000,
+                        position=InfoBarPosition.TOP_RIGHT)
+
     def _files_hint_update(self) -> None:
-        from core.layout import DEBUG_DIR, PROFILE_SUBDIR
+        # пути берём из настроек, а не из констант: человек мог задать свои
+        from core.layout import CONFIG, PROFILE, rel_path
         name = self.name.text().strip() or "?"
         world = self.map_picker.world()
         fname = f"{name}_{world}" if world else name
+        cfg, prof = rel_path(self.settings, CONFIG), rel_path(self.settings, PROFILE)
         self.files_hint.setText(tr(
             "preset.files_hint",
-            "Файлы пресета: {d}\\{f}.cfg,  {d}\\{p}\\{f},  миссия — см. выше.",
-            d=DEBUG_DIR, p=PROFILE_SUBDIR, f=fname))
+            "Файлы пресета: {c},  {p},  миссия — см. выше.",
+            c=str(Path(cfg) / f"{fname}.cfg") if cfg else f"{fname}.cfg",
+            p=str(Path(prof) / fname) if prof else fname))
 
     # Параметры: FLAG -> чекбокс; SWITCH -> комбо (—/вкл/выкл); INT/STR -> строка
     def _rebuild_params(self) -> None:
@@ -560,14 +594,16 @@ class LazyPresetWizard(ThemedWizard):
             self._update_note()
 
     def _update_note(self) -> None:
-        from core.layout import DEBUG_DIR, PROFILE_SUBDIR
+        from core.layout import CONFIG, PROFILE, rel_path
         name = self.name.text().strip()
         world = self.map_picker.world()
         fname = f"{name}_{world}" if world else name
+        cfg, prof = rel_path(self.settings, CONFIG), rel_path(self.settings, PROFILE)
         self.auto_note.setText(tr(
             "preset.lazy_auto",
-            "Конфиг и профиль будут созданы автоматически:\n"
-            "{d}\\{f}.cfg  и  {d}\\{p}\\{f}", d=DEBUG_DIR, p=PROFILE_SUBDIR, f=fname))
+            "Конфиг и профиль будут созданы автоматически:\n{c}  и  {p}",
+            c=str(Path(cfg) / f"{fname}.cfg") if cfg else f"{fname}.cfg",
+            p=str(Path(prof) / fname) if prof else fname))
 
     def _clear_name_error(self) -> None:
         self.name.setError(False)

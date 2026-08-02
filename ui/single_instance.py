@@ -21,22 +21,51 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 _NAME = "KR_QTS_single_instance"
 
 _WAIT_MS = 300      # столько ждём ответа уже запущенной копии
+_ACK_MS = 3000     # столько ждём, пока она прочтёт сообщение
+_ACK = b"ok"
 
 
 def _channel(user: str) -> str:
     return f"{_NAME}_{user}" if user else _NAME
 
 
-def already_running(user: str = "") -> bool:
-    """True — копия уже работает; ей отправлена просьба показаться."""
+SHOW = "show"                   # обычный повторный запуск — показать окно
+LAUNCH = "launch"               # ярлык: запустить пресет, окно не трогать
+
+
+def already_running(user: str = "", message: str = SHOW) -> bool:
+    """True — копия уже работает; ей передано сообщение.
+
+    Сообщений два. «show» — человек запустил программу второй раз, значит
+    хочет её увидеть. «launch:<пресет>» — нажат ярлык быстрого запуска, и
+    окно поднимать нельзя: свёрнутая в трей программа должна там и остаться.
+    """
     sock = QLocalSocket()
     sock.connectToServer(_channel(user))
     if not sock.waitForConnected(_WAIT_MS):
         return False
-    sock.write(b"show")
+    sock.write(message.encode("utf-8"))
+    sock.flush()
     sock.waitForBytesWritten(_WAIT_MS)
+    # Ждём ответной отметки, и только потом закрываем: закрытие сокета рвёт
+    # канал вместе с тем, что первая копия ещё не успела вычитать. Молча уйти
+    # нельзя — сообщение пропало бы, а ярлык быстрого запуска ничего бы не
+    # запустил. Ответ не пришёл — всё равно уходим: копия точно есть, и
+    # дублировать её запуском второй хуже, чем потерять одно сообщение.
+    sock.waitForReadyRead(_ACK_MS)
     sock.disconnectFromServer()
+    # Первая копия обычно рвёт соединение сама, и сокет к этому моменту уже
+    # закрыт; ждать разрыва на закрытом Qt не даёт и ругается в вывод.
+    if sock.state() != QLocalSocket.LocalSocketState.UnconnectedState:
+        sock.waitForDisconnected(_WAIT_MS)
     return True
+
+
+def confirm(conn) -> None:
+    """Отметка «сообщение прочитано» — её ждёт вторая копия, см. already_running."""
+    conn.write(_ACK)
+    conn.flush()
+    conn.waitForBytesWritten(_WAIT_MS)
 
 
 def listen(parent: QObject | None = None, user: str = "") -> QLocalServer:

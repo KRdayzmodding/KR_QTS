@@ -19,11 +19,37 @@ from ui.wizard import FirstRunWizard
 _THEMES = {"light": Theme.LIGHT, "dark": Theme.DARK, "auto": Theme.AUTO}
 
 
+def _preset_arg(argv: list[str]) -> str:
+    """Имя пресета из «--launch <пресет>». Пусто — обычный запуск."""
+    for i, a in enumerate(argv):
+        if a == "--launch" and i + 1 < len(argv):
+            return argv[i + 1].strip()
+        if a.startswith("--launch="):
+            return a.split("=", 1)[1].strip()
+    return ""
+
+
 def _greet(channel, window) -> None:
-    """Пришла вторая копия: разворачиваем окно вместо второго запуска."""
+    """Пришло сообщение от второй копии.
+
+    «show» — человек запустил программу второй раз и хочет её видеть.
+    «launch:<пресет>» — нажат ярлык быстрого запуска: окно не поднимаем,
+    свёрнутая в трей программа должна там и остаться.
+    """
     conn = channel.nextPendingConnection()
+    text = ""
     if conn is not None:
+        # Сначала смотрим, что уже пришло: вторая копия успевает написать и
+        # отключиться раньше, чем мы дойдём сюда, а на закрытом сокете
+        # waitForReadyRead возвращает ложь, хотя данные лежат в буфере.
+        if not conn.bytesAvailable():
+            conn.waitForReadyRead(300)
+        text = bytes(conn.readAll().data()).decode("utf-8", "replace").strip()
+        single_instance.confirm(conn)
         conn.disconnectFromServer()
+    if text.startswith(single_instance.LAUNCH + ":"):
+        window.launch_preset_by_stem(text.split(":", 1)[1])
+        return
     window.restore_from_tray()
 
 
@@ -45,8 +71,11 @@ def main() -> int:
     # До чтения настроек: вторая копия не должна успеть ничего ни прочитать,
     # ни записать — иначе два менеджера начнут спорить за одни файлы.
     user = os.environ.get("USERNAME", "")
-    if single_instance.already_running(user):
-        return 0            # первая копия уже показалась, нам делать нечего
+    wanted = _preset_arg(sys.argv)
+    msg = (f"{single_instance.LAUNCH}:{wanted}" if wanted
+           else single_instance.SHOW)
+    if single_instance.already_running(user, msg):
+        return 0            # работающая копия всё сделает сама
     channel = single_instance.listen(app, user)
 
     settings = Settings.load()
@@ -72,7 +101,11 @@ def main() -> int:
     window = MainWindow(settings)
     # вторая копия стучится в канал вместо запуска — показываем эту
     channel.newConnection.connect(lambda: _greet(channel, window))
-    window.show()
+    if wanted:
+        # запуск по ярлыку: окна не показываем вовсе, значок в трее уже есть
+        window.launch_preset_by_stem(wanted)
+    else:
+        window.show()
     # после показа: подхват уже работающих клиента и сервера прошлого запуска
     window.adopt_running()
     # проверка версии — после показа окна: сеть не должна задерживать запуск
