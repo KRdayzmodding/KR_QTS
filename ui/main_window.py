@@ -92,6 +92,14 @@ class LaunchInterface(QWidget):
         self.branch_combo.addItem("Experimental", userData=EXPERIMENTAL)
         top.addWidget(self.branch_combo)
         top.addStretch(1)
+        # Обновление — здесь, а не в панели навигации. Там оно было честным, но
+        # незаметным: пункт внизу списка, мимо которого человек ходит годами.
+        # На странице запуска, рядом с кнопками, которые он нажимает каждый раз,
+        # его невозможно не увидеть. Появляется только когда есть что сказать.
+        self.btn_update = PrimaryPushButton(FIF.UPDATE,
+                                            tr("main.update_btn", "Обновить приложение"))
+        self.btn_update.setVisible(False)
+        top.addWidget(self.btn_update)
         self.b_connect_mods = PushButton(FIF.APPLICATION, tr("main.connect_mods", "Подключить моды"))
         top.addWidget(self.b_connect_mods)
         layout.addLayout(top)
@@ -299,15 +307,6 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.settings_page, FIF.SETTING,
                              tr("menu.settings_nav", "Настройки"),
                              position=NavigationItemPosition.BOTTOM)
-        # Пункт обновления живёт в панели навигации: она видна с любой
-        # страницы, и признак остаётся на глазах постоянно, ничего не
-        # перекрывая и не требуя реакции. Появляется только когда есть что
-        # сказать — см. _update_nav_item.
-        self._upd_item = self.navigationInterface.addItem(
-            routeKey="update", icon=FIF.UPDATE, text=tr("upd.nav", "Обновление"),
-            onClick=self._open_update, selectable=False,
-            position=NavigationItemPosition.BOTTOM)
-        self._upd_item.setVisible(False)
         self.navigationInterface.addItem(
             routeKey="about", icon=FIF.INFO, text=tr("menu.about", "О программе"),
             onClick=self._about, selectable=False,
@@ -330,6 +329,7 @@ class MainWindow(FluentWindow):
         lp.btn_launch.clicked.connect(self.launch_button_clicked)
         lp.btn_logs.clicked.connect(self._show_logs)
         lp.btn_packlogs.clicked.connect(self._show_pack_logs)
+        lp.btn_update.clicked.connect(self._open_update)
         lp.btn_sources.clicked.connect(self._open_sources)
         lp.btn_pack_settings.clicked.connect(self._open_pack_settings)
 
@@ -1560,19 +1560,25 @@ class MainWindow(FluentWindow):
         # Пункт в навигации виден постоянно — этого достаточно.
 
     def _update_nav_item(self) -> None:
-        """Подпись и цвет пункта под текущее состояние."""
-        item = self._upd_item
+        """Подпись кнопки обновления под текущее состояние.
+
+        Сама кнопка живёт на странице запуска — там, куда человек смотрит перед
+        каждым запуском. Пока обновления нет, её не видно вовсе.
+        """
+        btn = self.launch_page.btn_update
         rel = self._upd_release
         if not rel:
-            item.setVisible(False)
+            btn.setVisible(False)
             return
         text = {
-            "available": tr("upd.nav_available", "Доступна версия {v}", v=rel.version),
+            "available": tr("main.update_btn", "Обновить приложение"),
             "downloading": tr("upd.nav_downloading", "Скачивание… {p}%", p=self._upd_percent),
             "ready": tr("upd.nav_ready", "Перезапустить для установки"),
-        }.get(self._upd_state, tr("upd.nav", "Обновление"))
-        item.setText(text)
-        item.setVisible(True)
+        }.get(self._upd_state, tr("main.update_btn", "Обновить приложение"))
+        btn.setText(text)
+        btn.setToolTip(tr("main.update_btn_tip", "Доступна версия {v}", v=rel.version))
+        btn.setEnabled(self._upd_state != "downloading")
+        btn.setVisible(True)
         if getattr(self, "mini", None):
             self.mini.set_update_mark(self._upd_state == "ready")
 
