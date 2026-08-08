@@ -374,6 +374,13 @@ class LaunchWorker(QThread):
             # должно быть видно сразу, а не по мере готовности
             self.pack_plan.emit([packer.pbo_for_source(m, src).name
                                  for m, stale in plan for src in stale])
+            if plan:
+                # Раньше состав перепаковки человек видел в окне предстартовой
+                # проверки. Окно убрано — но след в журнале нужен: по нему
+                # потом понятно, что именно пересобиралось перед этим запуском.
+                self.log.emit(tr("launch.repacking", "Перепаковка ({n}): {mods}",
+                                 n=sum(len(st) for _, st in plan),
+                                 mods=", ".join(m.name for m, _ in plan)), "info")
             for mod, stale in plan:
                 mod_failed = False
                 for src in stale:

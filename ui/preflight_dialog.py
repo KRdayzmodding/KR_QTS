@@ -42,7 +42,11 @@ class PreflightDialog(ThemedDialog):
         layout.addWidget(lst, 1)
 
         self.chk_ignore = CheckBox(tr("preflight.ignore",
-                                      "Игнорировать эти предупреждения до перезапуска программы"))
+                                      "Не спрашивать до перезапуска программы"))
+        self.chk_ignore.setToolTip(tr(
+            "preflight.ignore_tip",
+            "Эти же предупреждения больше не показываются, а работа по ним "
+            "делается молча: устаревшие моды перепакуются сами."))
         self.chk_ignore.setEnabled(not critical)
         layout.addWidget(self.chk_ignore)
 
@@ -50,7 +54,9 @@ class PreflightDialog(ThemedDialog):
         btns.addStretch(1)
         btn_cancel = PushButton(tr("common.cancel", "Отмена"))
         btn_cancel.clicked.connect(self.reject)
-        btn_skip = PrimaryPushButton(tr("preflight.skip", "Пропустить и запустить"))
+        # Подпись — по тому, что случится после нажатия, а не «пропустить»:
+        # ничего не пропускается, запуск идёт своим порядком.
+        btn_skip = PrimaryPushButton(tr("preflight.launch", "Запустить"))
         btn_skip.setEnabled(not critical)
         btn_skip.setDefault(not critical)
         btn_skip.clicked.connect(self._skip)

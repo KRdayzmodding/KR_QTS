@@ -110,9 +110,12 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
             crit("mod_" + name, tr("check.mod_gone",
                  "Папка мода исчезла: {m} ({p})", m=name, p=mod.path))
     selected = [m for m in (registry.get(n) for n in preset.mods + preset.server_mods) if m]
-    # Про устаревшие сорсы говорим, только когда перепаковка включена: при
-    # выключенной они ни во что не выльются, а при работе через filepatching
-    # это вообще штатное состояние — предупреждать не о чем.
+    # Устаревшие сорсы сами по себе не повод останавливать человека вопросом:
+    # перепаковку он уже включил в настройках, и спрашивать каждый запуск
+    # «точно перепаковать?» — значит требовать подтверждения тому, что он
+    # только что попросил делать всегда. Что именно пакуется, видно по ходу
+    # дела в таблице запаковки. А вот отсутствие pboProject — настоящий
+    # тупик: паковать нечем, и сервер поднимется со старыми pbo.
     if settings.repack_before_launch:
         stale_names = [mod.name for mod, _ in packer.stale_mods(selected)]
         if stale_names:
@@ -121,10 +124,6 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
                 crit("packer", tr("check.packer_missing",
                      "Моды {mods} требуют перепаковки, но {tool} не найден: {p}",
                      mods=", ".join(stale_names), tool=tool, p=exe))
-            else:
-                warn("stale", tr("check.stale",
-                     "Будут перепакованы устаревшие моды: {mods}",
-                     mods=", ".join(stale_names)))
 
     # Порт
     if preset.launch_server and not port_is_free(preset.port):
