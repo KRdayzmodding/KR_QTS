@@ -21,6 +21,9 @@ from .settings import Settings
 PROC_NAMES = {"dayz_x64.exe", "dayzdiag_x64.exe", "dayzserver_x64.exe"}
 
 READY_TIMEOUT = 180  # секунд ждём, пока сервер займёт UDP-порт
+# Секунд ждём, пока лаунчер BattlEye поднимет сам клиент. Он ставит службу,
+# показывает соглашение при первом запуске и только потом стартует игру.
+CLIENT_WAIT = 60
 
 
 def dayz_running() -> bool:
@@ -41,6 +44,8 @@ def dayz_running() -> bool:
 SERVER_EXE_NAME = "dayzserver_x64.exe"
 CLIENT_EXE_NAME = "dayz_x64.exe"
 DIAG_EXE_NAME = "dayzdiag_x64.exe"
+# Лаунчер BattlEye: поднимает службу BE и уже сам запускает клиент.
+BE_LAUNCHER_NAME = "DayZ_BE.exe"
 
 
 def _proc_kind(proc: psutil.Process) -> str | None:
@@ -215,7 +220,18 @@ def build_client_command(preset: ServerPreset, settings: Settings, branch: str,
     """Возвращает (exe, args, cwd) для клиента."""
     client_root = settings.client_root(branch)
     use_diag = preset.mode == MODE_DIAG or preset.client_use_diag
-    exe = str(Path(client_root) / ("DayZDiag_x64.exe" if use_diag else "DayZ_x64.exe"))
+    if use_diag:
+        exe = str(Path(client_root) / "DayZDiag_x64.exe")
+    else:
+        # Обычный клиент поднимаем через лаунчер BattlEye, а не сам exe: BE
+        # запускается только им. Прямой запуск DayZ_x64 оставляет службу BE
+        # лежать, и сервер с включённым BattlEye выкидывает игрока с «Game
+        # restart required» — секунд через сорок после входа в мир.
+        #
+        # Аргументы лаунчер передаёт игре как есть, сам exe брать не указываем:
+        # он записан в BattlEye\BELauncher.ini (64BitExe) и всегда верный.
+        be = Path(client_root) / BE_LAUNCHER_NAME
+        exe = str(be if be.is_file() else Path(client_root) / "DayZ_x64.exe")
     args = [f"-connect=127.0.0.1:{preset.port}"]
     if preset.mods:
         args.append(f"-mod={_mods_arg(preset.mods, registry, client_root, settings)}")
@@ -310,6 +326,25 @@ class LaunchWorker(QThread):
         виднее, какой способ выбран в настройках и что уже поднялось.
         """
         self._abort.set()
+
+    def _await_client(self, since: float) -> int | None:
+        """PID игры, поднятой лаунчером BattlEye. None — не дождались.
+
+        Ищем по имени процесса: лаунчер запускает игру не как своего ребёнка,
+        и связи «родитель — потомок» здесь нет. Старые клиенты к этому моменту
+        уже убиты (шаг 2), так что первый же найденный — наш.
+        """
+        while time.monotonic() - since < CLIENT_WAIT:
+            if self._abort.is_set():
+                return None
+            for proc in psutil.process_iter(["name"]):
+                try:
+                    if (proc.info["name"] or "").lower() == CLIENT_EXE_NAME:
+                        return proc.pid
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            time.sleep(0.5)
+        return None
 
     def _stop_asked(self) -> bool:
         if not self._abort.is_set():
@@ -497,7 +532,23 @@ class LaunchWorker(QThread):
         # 7. Клиент
         if p.launch_client:
             exe, args, cwd = build_client_command(p, s, self.branch, reg)
+            t0 = time.monotonic()
             client_proc = subprocess.Popen([exe] + args, cwd=cwd)
-            self.client_started.emit(client_proc.pid)
+            pid = client_proc.pid
+            if Path(exe).name.lower() == BE_LAUNCHER_NAME.lower():
+                self.log.emit(tr("launch.be_launcher",
+                                 "Клиент поднимается через лаунчер BattlEye"), "info")
+                # Лаунчер запускает игру и уходит; следить надо за самой игрой,
+                # иначе окно решит, что клиент умер через пару секунд.
+                found = self._await_client(t0)
+                if found:
+                    pid = found
+                else:
+                    self.log.emit(tr("launch.be_no_client",
+                                     "Лаунчер BattlEye не поднял клиент за {sec} с — "
+                                     "проверьте, установлена ли служба BattlEye "
+                                     "(BattlEye/Install_BattlEye.bat, нужны права админа).",
+                                     sec=CLIENT_WAIT), "warning")
+            self.client_started.emit(pid)
 
         self.finished_ok.emit()

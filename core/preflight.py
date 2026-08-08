@@ -132,6 +132,16 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
              "UDP-порт {port} занят — возможно, сервер уже запущен (старые процессы будут завершены).",
              port=preset.port))
 
+    # Обычный клиент запускается лаунчером BattlEye — без него сервер с
+    # включённым BE выкинет игрока уже после входа в мир
+    if preset.launch_client and preset.mode != MODE_DIAG and not preset.client_use_diag:
+        from .launcher import BE_LAUNCHER_NAME
+        root = settings.client_root(branch)
+        if root and not (Path(root) / BE_LAUNCHER_NAME).is_file():
+            warn("be_missing", tr("check.be_missing",
+                 "Рядом с клиентом нет DayZ_BE.exe — BattlEye не запустится, и сервер "
+                 "выкинет игрока. Проверьте целостность файлов игры."))
+
     # Режим diag и BattlEye
     if preset.mode == MODE_DIAG and preset.params_server.get("battleye", None) is not False:
         warn("battleye", tr("check.battleye",
