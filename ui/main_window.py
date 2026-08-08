@@ -223,6 +223,8 @@ class MainWindow(FluentWindow):
         # (имя пресета, останавливали ли что-то живое) — уведомление, которое
         # ждёт момента, когда сервер и клиент действительно улягутся
         self._down_notice: tuple[str, bool] | None = None
+        # заказан ли перезапуск нажатием кнопки во время выключения
+        self._restart_queued = False
         # консоль сервера в журнал — когда его окно спрятано, см. _console_start
         self._console_tailer: logsource.LogTailer | None = None
         self._console_win: winconsole.WindowConsole | None = None
@@ -944,6 +946,18 @@ class MainWindow(FluentWindow):
         if self.worker and self.worker.isRunning():
             return
 
+        # Поднимаем только то, чего не хватает: живую сторону трогать нельзя.
+        # Копия пресета, а не сам пресет: галки — его сохраняемые поля, и
+        # правка ради одного запуска осталась бы в файле навсегда.
+        self._restart_queued = False
+        want_srv, want_cli = self.sides_to_launch()
+        if not want_srv and not want_cli:
+            return
+        import dataclasses
+        p = dataclasses.replace(p, launch_server=want_srv, launch_client=want_cli)
+        keep = {side for side, alive in ((SERVER, self.server_running()),
+                                         (CLIENT, self.client_running())) if alive}
+
         branch = self._branch()
         problems = [pr for pr in run_checks(p, self.settings, branch, self.registry)
                     if pr.check_id not in self.ignored_checks]
@@ -978,16 +992,23 @@ class MainWindow(FluentWindow):
         self._starting = True
         self._launch_logged = False
         self._update_launch_button()
-        self._append_log(tr("main.launching", "— Запуск «{n}» ({b}) —", n=p.name, b=branch))
+        if keep:
+            self._append_log(tr("main.relaunching", "— Запуск: {s} «{n}» ({b}) —",
+                                s=self._side_name(SERVER if want_srv else CLIENT),
+                                n=p.name, b=branch))
+        else:
+            self._append_log(tr("main.launching", "— Запуск «{n}» ({b}) —", n=p.name, b=branch))
         self._log_launch_summary(p, cfg_path)
+        # keep — стороны, которые уже работают: их строка в блоке остаётся как
+        # есть, иначе живой сервер отобразился бы «не запущен»
         self.launch_status.start(
-            self._server_name(p, cfg_path) if p.launch_server else "",
-            self._client_name(p) if p.launch_client else "")
+            self._server_name(p, cfg_path) if want_srv else "",
+            self._client_name(p) if want_cli else "", keep=keep)
         # RPT читаем с самого начала: строки про память слоёв движок пишет в
         # первые секунды, до того как порт будет занят
-        if p.launch_server:
+        if want_srv:
             self.monitors[SERVER].start(Path(prof) if prof else None)
-        if p.launch_client:
+        if want_cli:
             # клиенту -profiles не передаётся, его RPT всегда в %LOCALAPPDATA%
             self.monitors[CLIENT].start(logsource.client_log_dir(branch))
         self.worker = LaunchWorker(p, self.settings, branch, self.registry)
@@ -1294,27 +1315,80 @@ class MainWindow(FluentWindow):
             # выключение уже идёт: второе нажатие ничего не ускорит, а вот
             # запустить всё заново посреди остановки — вполне
             return self.LB_STOPPING
-        # Жив хоть кто-то из отмеченных — предлагаем остановку. Смотреть только
-        # на сторону-«хозяина» кнопки нельзя: сервер может упасть сам, и тогда
-        # кнопка звала бы запускать заново, пока клиент ещё висит в памяти —
-        # а следом запуск упёрся бы в занятый порт.
         lp = self.launch_page
-        running = ((lp.chk_server.isChecked() and self.server_running())
-                   or (lp.chk_client.isChecked() and self.client_running()))
+        srv_on, cli_on = lp.chk_server.isChecked(), lp.chk_client.isChecked()
+        srv_run, cli_run = self.server_running(), self.client_running()
+        # Клиент упал, сервер жив, а отмечены оба — почти всегда это значит
+        # «хочу обратно на сервер», а не «выключай всё». Клиент в отладке
+        # падает по десять раз за вечер, и каждый раз снимать галку сервера,
+        # чтобы поднять один клиент, а потом возвращать её — работа руками
+        # вместо работы над модом. Поэтому предлагаем запуск, и поднимется
+        # только то, чего не хватает.
+        if srv_on and cli_on and srv_run and not cli_run:
+            return self.LB_LAUNCH
+        # Обратный случай трактуем наоборот: без сервера оставшийся клиент
+        # бесполезен — к упавшему серверу он всё равно не подключится, а новый
+        # сервер его в памяти уже не увидит. Значит, гасим.
+        running = (srv_on and srv_run) or (cli_on and cli_run)
         return self.LB_STOP if subject and running else self.LB_LAUNCH
+
+    def sides_to_launch(self) -> tuple[bool, bool]:
+        """(сервер, клиент) — что поднимать: отмеченное и ещё не живое."""
+        lp = self.launch_page
+        return (lp.chk_server.isChecked() and not self.server_running(),
+                lp.chk_client.isChecked() and not self.client_running())
+
+    def launch_label(self) -> str:
+        """Подпись кнопки запуска: уточняем сторону, когда поднимается не всё.
+
+        «Запустить» при живом сервере читается как «запустить всё заново» —
+        а поднимется один клиент. Пишем прямо, что произойдёт.
+        """
+        want_srv, want_cli = self.sides_to_launch()
+        if want_cli and not want_srv and self.server_running():
+            return tr("main.launch_client_btn", "Запустить клиент")
+        if want_srv and not want_cli and self.client_running():
+            return tr("main.launch_server_btn", "Запустить сервер")
+        return tr("main.launch_btn", "Запустить")
+
+    def button_look(self, state: str) -> tuple[str, object]:
+        """Подпись и значок кнопки запуска — одни на главное и мини-окно."""
+        if state == self.LB_LAUNCH:
+            return self.launch_label(), FIF.PLAY
+        if state == self.LB_STARTING:
+            return tr("main.starting_btn", "Запускается"), FIF.SYNC
+        if state == self.LB_STOP:
+            return tr("main.stop_btn", "Остановить"), FIF.POWER_BUTTON
+        # Выключается: вид зависит от того, ждёт ли своей очереди перезапуск.
+        # Значок не SYNC: круговые стрелки на четырнадцати пикселях мини-окна
+        # почти не отличаются друг от друга (мерил — четверть пикселей), а
+        # треугольник от них отличается двумя третями. Плюс цвет, см.
+        # MiniWindow._mark_queued.
+        if self._restart_queued:
+            return tr("main.restart_queued_btn", "Перезапустится"), FIF.PLAY_SOLID
+        return tr("main.stopping_btn", "Выключается"), FIF.SYNC
+
+    def button_enabled(self, state: str) -> bool:
+        """Во время выключения кнопка живая: ею заказывают перезапуск.
+
+        Мягкая остановка сервера занимает несколько секунд, и всё это время
+        человек сидел и ждал, чтобы нажать «Запустить». Теперь нажатие можно
+        сделать сразу — запуск начнётся сам, как только всё уляжется.
+        """
+        return state != self.LB_STARTING
 
     def _update_launch_button(self) -> None:
         state = self.launch_state()
-        text, icon = {
-            self.LB_LAUNCH: (tr("main.launch_btn", "Запустить"), FIF.PLAY),
-            self.LB_STARTING: (tr("main.starting_btn", "Запускается"), FIF.SYNC),
-            self.LB_STOP: (tr("main.stop_btn", "Остановить"), FIF.POWER_BUTTON),
-            self.LB_STOPPING: (tr("main.stopping_btn", "Выключается"), FIF.SYNC),
-        }[state]
+        text, icon = self.button_look(state)
         lp = self.launch_page
         lp.btn_launch.setText(text)
         lp.btn_launch.setIcon(icon)
-        lp.btn_launch.setEnabled(state not in (self.LB_STARTING, self.LB_STOPPING))
+        lp.btn_launch.setToolTip(
+            tr("main.restart_tip", "Нажмите ещё раз, чтобы отменить перезапуск")
+            if state == self.LB_STOPPING and self._restart_queued else
+            tr("main.stopping_tip", "Нажмите, чтобы запустить заново сразу после остановки")
+            if state == self.LB_STOPPING else "")
+        lp.btn_launch.setEnabled(self.button_enabled(state))
         # Пока идёт запуск, галки заблокированы: они определяют, чем управляет
         # кнопка, и смена на полпути рассогласовала бы её с тем, что реально
         # стартует в этот момент.
@@ -1417,6 +1491,12 @@ class MainWindow(FluentWindow):
             return
         if state == "stop":
             return      # выключение уже идёт, о его конце скажет уведомление
+        # Клиент упал при живом сервере — ярлык, как и кнопка, поднимает его
+        # обратно, а не гасит сервер. Иначе одно и то же нажатие означало бы
+        # разное в окне и на рабочем столе.
+        if state == "run" and self.launch_state() == self.LB_LAUNCH:
+            self._launch()
+            return
         self._abort_or_stop(name)
 
     def _abort_or_stop(self, name: str) -> None:
@@ -1468,6 +1548,22 @@ class MainWindow(FluentWindow):
         """
         self._down_notice = (name, stopped)
 
+    def _watch_restart(self) -> None:
+        """Заказанный перезапуск — как только всё, что гасили, ушло.
+
+        Ждём именно опустевшего списка выключаемых, а не полной тишины: когда
+        гасили один клиент при живом сервере, перезапускать надо тоже один
+        клиент, и ждать ухода сервера незачем — он и не уйдёт.
+        """
+        if not self._restart_queued or self._stopping:
+            return
+        if self.worker is not None and self.worker.isRunning():
+            return
+        self._restart_queued = False
+        self._down_notice = None    # это не «остановлен», а перезапуск
+        self._append_log(tr("main.restarting", "— Перезапуск —"))
+        self._launch()
+
     def _watch_down(self) -> None:
         """Всё ли улеглось. Зовётся из общего опроса раз в секунду."""
         notice = getattr(self, "_down_notice", None)
@@ -1495,7 +1591,24 @@ class MainWindow(FluentWindow):
         tray.showMessage(title, text, icon, 6000)
 
     def launch_button_clicked(self) -> None:
-        if self.launch_state() == self.LB_STOP:
+        state = self.launch_state()
+        if state == self.LB_STOPPING:
+            # Нажатие во время выключения — заказ на перезапуск. Начать его
+            # прямо сейчас нельзя: сервер ещё держит порт и файлы профиля,
+            # а новый запуск поверх старого — это два сервера на один порт.
+            # Поэтому запоминаем и стартуем, когда предыдущий уйдёт.
+            self._restart_queued = not self._restart_queued
+            self._append_log(
+                tr("main.restart_queued", "После остановки запустим заново")
+                if self._restart_queued else
+                tr("main.restart_cancelled", "Перезапуск отменён"))
+            self._update_launch_button()
+            return
+        # Запуск кнопку блокирует, но зовут её не только оттуда: мини-окно
+        # дёргает этот же метод напрямую.
+        if state == self.LB_STARTING:
+            return
+        if state == self.LB_STOP:
             self._stop_selected()
         else:
             self._launch()
@@ -1600,6 +1713,7 @@ class MainWindow(FluentWindow):
 
     def _update_status(self) -> None:
         self._watch_stopping()
+        self._watch_restart()
         self._watch_down()
         self._log_stopped()
         self._update_sources_button()

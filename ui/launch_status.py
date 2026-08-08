@@ -172,10 +172,19 @@ class LaunchStatus:
 
     # -------------------------------------------------------------- действия
 
-    def start(self, server_name: str = "", client_name: str = "") -> None:
+    def start(self, server_name: str = "", client_name: str = "",
+              keep: set[str] | None = None) -> None:
         """Начинает новый блок. Пустое имя = сторона не запускается и не
-        показывается вовсе — пустая строка «Клиент: [—]» только мешала бы."""
+        показывается вовсе — пустая строка «Клиент: [—]» только мешала бы.
+
+        keep — стороны, которые уже работают и в этом запуске не участвуют:
+        их строка переносится в новый блок как есть. Иначе перезапуск одного
+        клиента показывал бы живой сервер «не запущен», а его расход памяти
+        и счётчик ошибок обнулялись бы на ровном месте.
+        """
         for key, name in ((SERVER, server_name), (CLIENT, client_name)):
+            if keep and key in keep:
+                continue
             side = self.sides[key]
             side.name = name
             side.active = bool(name)

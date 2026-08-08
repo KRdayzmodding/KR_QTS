@@ -16,7 +16,7 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel
 from qfluentwidgets import (
     PrimaryToolButton, PushButton, TransparentToolButton, CheckBox,
-    ComboBox, FluentIcon as FIF, isDarkTheme, qconfig,
+    ComboBox, FluentIcon as FIF, FluentStyleSheet, isDarkTheme, qconfig,
 )
 
 from core.i18n import tr
@@ -28,6 +28,9 @@ _COLLAPSED = (100, 42)
 _EXPANDED = (244, 186)
 _DOT = 8
 _RUN_BTN = 30
+# Цвет кнопки, когда заказан перезапуск: тот же жёлтый, которым в блоке
+# статуса отмечены переходные состояния — «подожди, ещё не устоялось».
+_QUEUED_COLOR = "#e5c07b"
 
 
 class MiniWindow(QWidget):
@@ -45,6 +48,7 @@ class MiniWindow(QWidget):
                          | Qt.WindowType.WindowStaysOnTopHint)
         self.mw = main_window
         self._drag_from: QPoint | None = None
+        self._queued_look = False   # покрашена ли кнопка под заказ перезапуска
         self._syncing = False      # защита от петли при зеркалении списка
         # Окно беcрамочное и со скруглёнными углами: без прозрачного фона
         # вокруг карточки просвечивает системный фон QWidget (#f0f0f0) —
@@ -144,6 +148,26 @@ class MiniWindow(QWidget):
 
     # ----------------------------------------------------------------- вид
 
+    def _mark_queued(self, on: bool) -> None:
+        """Заказан перезапуск — красим кнопку.
+
+        Значка мало: в свёрнутом виде подписи нет, а значки на четырнадцати
+        пикселях различаются слабо — нажал и не понял, сработало ли. Цвет виден
+        сразу и берётся тот же, которым в блоке статуса отмечены переходные
+        состояния. Возврат — не пустой стиль (тогда кнопка теряет и акцент
+        темы, становясь белой), а стиль самой библиотеки заново.
+        """
+        if getattr(self, "_queued_look", None) == on:
+            return
+        self._queued_look = on
+        if on:
+            self.b_run.setStyleSheet(
+                f"PrimaryToolButton{{background-color:{_QUEUED_COLOR};"
+                f"border-radius:5px;}}")
+        else:
+            FluentStyleSheet.BUTTON.apply(self.b_run)
+
+
     def _apply_bg(self) -> None:
         """Фон и рамка: обычный QWidget сам под тему не красится (см. LogWindow)."""
         dark = isDarkTheme()
@@ -236,16 +260,19 @@ class MiniWindow(QWidget):
         self._set_dot(self.dot_server, self.mw.side_state(SERVER))
         self._set_dot(self.dot_client, self.mw.side_state(CLIENT))
         state = self.mw.launch_state()
-        # POWER_BUTTON, а не CLOSE: крестик уже занят кнопкой «свернуть в трей»
-        # в шапке, и два одинаковых значка рядом читались бы как одно действие
-        icon, action = {
-            self.mw.LB_LAUNCH: (FIF.PLAY, tr("main.launch_btn", "Запустить")),
-            self.mw.LB_STARTING: (FIF.SYNC, tr("main.starting_btn", "Запускается")),
-            self.mw.LB_STOP: (FIF.POWER_BUTTON, tr("main.stop_btn", "Остановить")),
-        }[state]
+        # Вид кнопки берём у главного окна: два окна не должны расходиться.
+        # Значок остановки там POWER_BUTTON, а не CLOSE, — крестик здесь уже
+        # занят кнопкой «свернуть в трей», и два одинаковых значка рядом
+        # читались бы как одно действие.
+        action, icon = self.mw.button_look(state)
         self.b_run.setIcon(icon)
-        busy = state == self.mw.LB_STARTING
-        self.b_run.setEnabled(not busy and self.mw.current is not None)
+        self._mark_queued(state == self.mw.LB_STOPPING and self.mw._restart_queued)
+        # Кнопка заперта только на запуске; во время выключения она живая —
+        # ею заказывают перезапуск, см. MainWindow.button_enabled. А галки
+        # заперты в обоих переходных состояниях: они решают, чем кнопка
+        # управляет, и смена на полпути рассогласовала бы её с делом.
+        busy = state in (self.mw.LB_STARTING, self.mw.LB_STOPPING)
+        self.b_run.setEnabled(self.mw.button_enabled(state) and self.mw.current is not None)
         # те же галки, что и на главной странице, — блокируем их так же
         self.chk_server.setEnabled(not busy)
         self.chk_client.setEnabled(not busy)
