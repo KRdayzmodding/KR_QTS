@@ -294,6 +294,8 @@ class LogWindow(QWidget):
         bottom.addWidget(btn_delete)
         layout.addLayout(bottom)
 
+        # ждём появления файла текущей сессии, см. _reload
+        self._awaiting = False
         self.timer = QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self._poll)
@@ -402,7 +404,8 @@ class LogWindow(QWidget):
         super().resizeEvent(event)
         self._show_path()
 
-    def set_directory(self, directory: Path | None, adopt: bool = False) -> None:
+    def set_directory(self, directory: Path | None, adopt: bool = False,
+                      keep: bool = False) -> None:
         """Задаёт папку логов.
 
         Обычно момент запуска запоминается снимком уже лежащих файлов: всё, что
@@ -414,14 +417,24 @@ class LogWindow(QWidget):
         сессией становится то, что в папке лежит. Именно обнуляется, а не
         пропускается: к этому моменту снимок уже сделан при создании окна, и
         в нём как раз лежит файл идущей сессии.
+
+        keep — сессия уже идёт, и снимок трогать нельзя. Перепривязка случается
+        не только перед запуском: её делают открытие окон логов, смена ветки,
+        сам старт процесса. Каждая такая пересъёмка заносила файл идущей сессии
+        в «уже лежало», и текущая сессия становилась пустой — при живом
+        сервере окно уверяло, что запусков не было.
         """
+        same = (directory is not None and self.directory is not None
+                and Path(directory) == Path(self.directory))
         self.directory = directory
         self._path_text = (str(directory) if directory else
                            tr("log.no_dir", "Папка логов не определена"))
         self._show_path()
-        self._known = set() if adopt else {
-            str(p) for kind in logsource.KINDS
-            for p in logsource.files_of_kind(directory, kind)}
+        if adopt:
+            self._known = set()
+        elif not (keep and same):
+            self._known = {str(p) for kind in logsource.KINDS
+                           for p in logsource.files_of_kind(directory, kind)}
         self._reload()
 
     def _kind_changed(self) -> None:
@@ -436,6 +449,7 @@ class LogWindow(QWidget):
     def _reload(self) -> None:
         """Пересобирает окно под выбранный вид и режим."""
         self.timer.stop()
+        self._awaiting = False
         self.tailers = []
         self.tailer = None
         self._buffer.clear()
@@ -452,11 +466,18 @@ class LogWindow(QWidget):
 
         if self.rb_current.isChecked():
             if self._session_file() is None:
+                # Файла ещё нет — это не приговор: движок заводит свой лог через
+                # секунду-другую после старта, и перепривязка происходит раньше.
+                # Поэтому не замираем с надписью навсегда, а ждём файл: как
+                # только он появится, окно само перейдёт на живой хвост.
                 self._placeholder = tr("log.no_session",
                                        "Клиент или сервер ещё не запускались — "
                                        "показывать нечего.")
                 self._show(self._placeholder, "session")
+                self._awaiting = True
+                self.timer.start()
                 return
+            self._awaiting = False
             # тейлер сам переходит на более новый файл, если движок его заведёт
             tailer = logsource.LogTailer(
                 self.directory, pattern_filter=logsource.KINDS[self.kind][0])
@@ -503,6 +524,13 @@ class LogWindow(QWidget):
         self._load_recent(self._shown_files + _FILES_STEP)
 
     def _poll(self) -> None:
+        if getattr(self, "_awaiting", False):
+            # ждём, когда движок заведёт лог этой сессии
+            if self._session_file() is None:
+                return
+            self._awaiting = False
+            self._reload()
+            return
         before = self._buffer_len()
         for tailer in self.tailers:
             for line in tailer.poll():

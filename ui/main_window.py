@@ -628,10 +628,13 @@ class MainWindow(FluentWindow):
             adopt = self._adopted
         p = self.current
         branch = self._branch()
+        # Пока сторона жива (или вот-вот появится), снимок «что лежало до
+        # запуска» пересчитывать нельзя, см. LogWindow.set_directory.
         self.log_server.set_directory(
             logsource.server_log_dir(p, self.settings, branch) if p else None,
-            adopt=adopt)
-        self.log_client.set_directory(logsource.client_log_dir(branch), adopt=adopt)
+            adopt=adopt, keep=self._starting or self.server_running())
+        self.log_client.set_directory(logsource.client_log_dir(branch), adopt=adopt,
+                                      keep=self._starting or self.client_running())
 
     def _branch(self) -> str:
         return self.launch_page.branch_combo.currentData() or STABLE
@@ -969,6 +972,9 @@ class MainWindow(FluentWindow):
             Path(prof).mkdir(parents=True, exist_ok=True)
 
         self._adopted = False   # запускаем сами: сессия начинается сейчас
+        # Снимок «что лежало до этого запуска» — здесь, пока _starting ещё не
+        # поднят: дальше перепривязки будут его беречь, а не пересчитывать.
+        self._bind_log_dirs(adopt=False)
         self._starting = True
         self._launch_logged = False
         self._update_launch_button()
