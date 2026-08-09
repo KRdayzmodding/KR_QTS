@@ -682,7 +682,6 @@
   "status.crash_head": "Start fehlgeschlagen",
   "status.crash_hint": "Details in {p}",
   "status.crash_log": "{s}: Start fehlgeschlagen — {r}",
-  "status.crash_title": "Start fehlgeschlagen: {s}",
   "status.crash_where": "Datei: {f}, Zeile {n}",
   "status.died": "beendet",
   "status.errors": "Fehler: {n}",

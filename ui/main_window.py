@@ -838,23 +838,22 @@ class MainWindow(FluentWindow):
     def _on_crash(self, side: str, report) -> None:
         """Запуск сорвался — скрипты не собрались.
 
-        Это единственное место, где сказано, из-за чего именно: файл и строка.
-        Поэтому и в журнал крупно, и отдельным окном — пропустить это нельзя,
-        сервер попросту не поднимется.
+        Только журнал и блок статуса, без модального окна. Окно повторяло то,
+        что уже написано крупным красным в журнале прямо на этой же странице,
+        и требовало нажать «Ок», чтобы вернуться к работе. Человек в этот
+        момент и так смотрит на менеджер: он только что нажал «Запустить».
         """
         self.launch_status.set_crash(side, report)
-        self._append_alarm(tr("status.crash_log", "{s}: запуск сорван — {r}",
-                              s=self._side_name(side), r=report.summary()))
         where = report.file and tr("status.crash_where", "Файл: {f}, строка {n}",
                                    f=report.file, n=report.line) or ""
-        self._alert(
-            tr("status.crash_title", "Запуск сорван: {s}", s=self._side_name(side)),
-            "\n\n".join(x for x in (
-                report.headline,
-                where,
-                report.message,
-                tr("status.crash_hint", "Подробности — в {p}", p=report.path.name),
-            ) if x))
+        self._append_alarm(tr("status.crash_log", "{s}: запуск сорван — {r}",
+                              s=self._side_name(side), r=report.summary()))
+        # Подробности — следом обычными строками: в них файл и строка, ради
+        # которых окно и открывалось.
+        for line in (where, report.message,
+                     tr("status.crash_hint", "Подробности — в {p}", p=report.path.name)):
+            if line:
+                self._append_log(line, "error")
 
     def _on_memory_danger(self, side: str, usage) -> None:
         self._append_alarm(tr(

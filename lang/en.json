@@ -682,7 +682,6 @@
   "status.crash_head": "Launch failed",
   "status.crash_hint": "Details in {p}",
   "status.crash_log": "{s}: launch failed — {r}",
-  "status.crash_title": "Launch failed: {s}",
   "status.crash_where": "File: {f}, line {n}",
   "status.died": "exited",
   "status.errors": "errors: {n}",

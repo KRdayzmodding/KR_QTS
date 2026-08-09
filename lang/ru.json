@@ -682,7 +682,6 @@
   "status.crash_head": "Запуск сорван",
   "status.crash_hint": "Подробности — в {p}",
   "status.crash_log": "{s}: запуск сорван — {r}",
-  "status.crash_title": "Запуск сорван: {s}",
   "status.crash_where": "Файл: {f}, строка {n}",
   "status.died": "завершился",
   "status.errors": "ошибок: {n}",
