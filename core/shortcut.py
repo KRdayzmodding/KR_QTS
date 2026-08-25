@@ -6,18 +6,44 @@
 junction-ссылки, права админок, время входа в миссии. Ярлык с готовой
 командной строкой пропустил бы всё это, и сервер поднялся бы сломанным.
 
-Создаём через WScript.Shell, а не через pywin32: тот стоит в системе, но в
-requirements его нет, и в собранную версию он может не попасть. PowerShell
-есть на любой Windows.
+Ярлык создаётся напрямую через IShellLinkW — системный интерфейс Windows,
+работающий с широкими строками. Прошлый способ, WScript.Shell через
+PowerShell, оказался негодным: этот старый ANSI-механизм переводит имя файла
+в кодовую страницу системы. На английской Windows русские буквы превращались
+в «?», а «?» в имени файла запрещён — ярлык не создавался вовсе. Проверено:
+имя «Ünïcode 日本語 кот» файловая система принимает, а WScript.Shell на нём
+падает.
+
+Заодно исчез запуск postороннего процесса: PowerShell для одного ярлыка
+поднимался почти секунду.
 """
 from __future__ import annotations
 
-import subprocess
+import ctypes
 import sys
+from ctypes import POINTER, byref, c_void_p, wintypes
 from pathlib import Path
 
 # Символы, которые нельзя ставить в имя файла Windows.
 _BAD = '<>:"/\\|?*'
+
+_CLSID_SHELL_LINK = "{00021401-0000-0000-C000-000000000046}"
+_IID_SHELL_LINK_W = "{000214F9-0000-0000-C000-000000000046}"
+_IID_PERSIST_FILE = "{0000010B-0000-0000-C000-000000000046}"
+_CLSCTX_INPROC_SERVER = 1
+
+# Номера методов в таблице интерфейса. Первые три у любого COM-интерфейса —
+# QueryInterface, AddRef, Release, поэтому свои методы начинаются с третьего.
+_SET_DESCRIPTION = 7
+_SET_WORKING_DIR = 9
+_SET_ARGUMENTS = 11
+_SET_PATH = 20
+_PERSIST_SAVE = 6
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
 
 
 def desktop() -> Path:
@@ -40,21 +66,31 @@ def app_target() -> tuple[str, str]:
     return str(Path(sys.executable).resolve()), str(root)
 
 
-def _powershell() -> str:
-    """Полный путь к PowerShell.
-
-    Не короткое имя: его ищут в PATH, а туда можно подложить свой powershell.exe
-    и выполнить чужой код от нашего имени. Полный путь эту возможность убирает.
-    """
-    import os
-    root = os.environ.get("SystemRoot", r"C:\Windows")
-    full = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    return str(full) if full.is_file() else "powershell.exe"
-
-
 def _safe_name(name: str) -> str:
     out = "".join("_" if c in _BAD else c for c in name).strip(" .")
     return out or "preset"
+
+
+def _guid(text: str) -> _GUID:
+    g = _GUID()
+    ctypes.oledll.ole32.CLSIDFromString(ctypes.c_wchar_p(text), byref(g))
+    return g
+
+
+def _method(ptr: c_void_p, index: int, *argtypes):
+    """Метод COM-объекта по номеру в таблице интерфейса.
+
+    Прототип объявляем как HRESULT: ctypes сам поднимет OSError, если метод
+    вернёт ошибку, и разбирать коды вручную не придётся.
+    """
+    vtable = ctypes.cast(ptr, POINTER(POINTER(c_void_p)))[0]
+    proto = ctypes.WINFUNCTYPE(ctypes.HRESULT, c_void_p, *argtypes)
+    return proto(vtable[index])
+
+
+def _wide(ptr: c_void_p, index: int, text: str) -> None:
+    """Вызов метода вида Set…(LPCWSTR) — все наши сеттеры такие."""
+    _method(ptr, index, ctypes.c_wchar_p)(ptr, ctypes.c_wchar_p(text))
 
 
 def create(preset_stem: str, title: str, folder: Path | None = None) -> tuple[Path, str]:
@@ -66,27 +102,41 @@ def create(preset_stem: str, title: str, folder: Path | None = None) -> tuple[Pa
         args = f'"{Path(workdir) / "main.py"}" {args}'
     path = (folder or desktop()) / f"{_safe_name(title)}.lnk"
 
-    # Кавычки внутри PowerShell-строки удваиваются; пути и имена приходят от
-    # человека, и одинарная кавычка в имени пресета иначе разорвала бы команду.
-    def q(s: str) -> str:
-        return "'" + str(s).replace("'", "''") + "'"
-
-    script = (
-        f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut({q(path)});"
-        f"$s.TargetPath={q(target)};"
-        f"$s.Arguments={q(args)};"
-        f"$s.WorkingDirectory={q(workdir)};"
-        f"$s.Description={q(title)};"
-        f"$s.Save()"
-    )
+    ole32 = ctypes.oledll.ole32
+    # S_FALSE означает «уже была инициализирована этим потоком» — не ошибка,
+    # но и разынициализировать в этом случае нельзя: чужую работу оборвём.
+    started = False
     try:
-        res = subprocess.run([_powershell(), "-NoProfile", "-NonInteractive",
-                              "-Command", script],
-                             capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as e:
+        ole32.CoInitialize(None)
+        started = True
+    except OSError:
+        pass
+    link = c_void_p()
+    try:
+        ole32.CoCreateInstance(byref(_guid(_CLSID_SHELL_LINK)), None,
+                               _CLSCTX_INPROC_SERVER,
+                               byref(_guid(_IID_SHELL_LINK_W)), byref(link))
+        try:
+            _wide(link, _SET_PATH, target)
+            _wide(link, _SET_ARGUMENTS, args)
+            _wide(link, _SET_WORKING_DIR, workdir)
+            _wide(link, _SET_DESCRIPTION, title)
+            persist = c_void_p()
+            _method(link, 0, POINTER(_GUID), POINTER(c_void_p))(
+                link, byref(_guid(_IID_PERSIST_FILE)), byref(persist))
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _method(persist, _PERSIST_SAVE, ctypes.c_wchar_p, wintypes.BOOL)(
+                    persist, ctypes.c_wchar_p(str(path)), True)
+            finally:
+                _method(persist, 2)(persist)        # Release
+        finally:
+            _method(link, 2)(link)                  # Release
+    except OSError as e:
         return path, str(e)
-    if res.returncode != 0:
-        return path, (res.stderr or res.stdout or "").strip()[:300]
+    finally:
+        if started:
+            ctypes.windll.ole32.CoUninitialize()
     if not path.is_file():
         return path, "ярлык не создался"
     return path, ""
