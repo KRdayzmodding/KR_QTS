@@ -250,6 +250,28 @@ class SettingsPage(QScrollArea):
                                          "Завершение процессов")),
                             self.stop_method)
 
+        # Автозапуск: правда о нём — в реестре, а не в настройках. Ключ могли
+        # снять снаружи (чистилками автозагрузки, другой копией программы), и
+        # галка, показывающая сохранённое желание вместо факта, врала бы.
+        from core import autostart
+        self.start_with_windows = CheckBox(tr("settings.start_with_windows",
+                                              "Запускать вместе с Windows"))
+        self.start_with_windows.setChecked(autostart.enabled())
+        self.start_with_windows.setToolTip(tr(
+            "settings.start_with_windows_tip",
+            "Программа поднимется сама после входа в систему. Пресеты с галкой "
+            "«Запускать сервер при старте программы» стартуют вместе с ней."))
+        form_general.addRow(BodyLabel(""), self.start_with_windows)
+
+        self.start_mode = ComboBox()
+        self.start_mode.addItem(tr("settings.start_window", "Обычным окном"), userData="window")
+        self.start_mode.addItem(tr("settings.start_tray", "Свернуть в трей"), userData="tray")
+        self.start_mode.addItem(tr("settings.start_mini", "Мини-окном"), userData="mini")
+        idx = self.start_mode.findData(getattr(settings, "start_mode", "window"))
+        self.start_mode.setCurrentIndex(max(idx, 0))
+        form_general.addRow(BodyLabel(tr("settings.start_mode", "Как показываться при запуске")),
+                            self.start_mode)
+
         form_paths = section(tr("settings.section_paths", "Клиент и сервер"))
         self.p_client = PathRow(settings.client_stable, self, "client_stable")
         self.p_client_exp = PathRow(settings.client_exp, self, "client_exp")
@@ -427,7 +449,8 @@ class SettingsPage(QScrollArea):
 
         # Подписываемся на все поля разом: перечислять сигналы по одному —
         # верный способ забыть новое поле и получить молча неверный индикатор.
-        for widget in (self.lang, self.pack_engine, self.theme, self.stop_method):
+        for widget in (self.lang, self.pack_engine, self.theme, self.stop_method,
+                       self.start_mode):
             widget.currentIndexChanged.connect(lambda _i: self._refresh_dirty())
         for widget in (self.project_prefix, self.admin_pass, self.steam_key):
             widget.textChanged.connect(lambda _t: self._refresh_dirty())
@@ -670,6 +693,8 @@ class SettingsPage(QScrollArea):
             "language": self.lang.currentData(),
             "check_updates": self.check_updates.isChecked(),
             "stop_method": self.stop_method.currentData(),
+            "start_with_windows": self.start_with_windows.isChecked(),
+            "start_mode": self.start_mode.currentData(),
             "project_prefix": self.project_prefix.text().strip(),
             "client_stable": self.p_client.text(),
             "client_exp": self.p_client_exp.text(),
@@ -710,6 +735,26 @@ class SettingsPage(QScrollArea):
         for key, value in self._form_values().items():
             setattr(s, key, value)
         s.save()
+        self._apply_autostart()
         self._refresh_dirty()
         if self.on_saved:
             self.on_saved()
+
+    def _apply_autostart(self) -> None:
+        """Правит запись в автозагрузке под галку.
+
+        Делается при каждом сохранении, а не только при смене галки: программу
+        могли переставить в другую папку, и запись вела бы в никуда — Windows
+        на это молчит, а человек считал бы, что автозапуск работает.
+        """
+        from core import autostart
+        want = self.start_with_windows.isChecked()
+        if not want and not autostart.enabled():
+            return
+        ok, err = autostart.apply(want)
+        if not ok:
+            InfoBar.warning(
+                title=tr("settings.autostart_failed", "Автозапуск не изменён"),
+                content=err, parent=self.window(), duration=8000,
+                position=InfoBarPosition.TOP_RIGHT)
+            self.start_with_windows.setChecked(autostart.enabled())

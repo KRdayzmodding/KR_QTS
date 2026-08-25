@@ -107,9 +107,13 @@ def main() -> int:
         # запуск по ярлыку: окна не показываем вовсе, значок в трее уже есть
         window.launch_preset_by_stem(wanted)
     else:
-        window.show()
+        window.show_as_configured()
     # после показа: подхват уже работающих клиента и сервера прошлого запуска
     window.adopt_running()
+    if not wanted:
+        # Автозапуск — после подхвата: сервер прошлой сессии мог пережить
+        # закрытие менеджера, и поднимать второй поверх него незачем.
+        window.autostart_presets()
     # проверка версии — после показа окна: сеть не должна задерживать запуск
     window.start_update_check()
     return app.exec()

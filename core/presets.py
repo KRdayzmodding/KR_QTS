@@ -17,6 +17,35 @@ def _slug(name: str) -> str:
     return s or "preset"
 
 
+# Единицы, которые раньше писали в самом шаблоне сообщения. Теперь их
+# подставляет %t вместе с числом (иначе на последней минуте выходило «через
+# 45 мин.»), и оставшийся в тексте хвост дал бы «через 45 сек. мин.».
+_UNIT_TAIL = (" мин.", " мин", " min.", " min", " Min.", " Min")
+
+
+def _times_from_old(preset: ServerPreset, data: dict) -> str:
+    """Перенос старых пресетов: «начиная с HH:MM каждые N минут» -> список.
+
+    Раскрываем прежнюю сетку в явные времена, чтобы расписание после
+    обновления осталось тем же, каким его задавали.
+    """
+    if data.get("restart_times") or "restart_at" not in data:
+        return preset.restart_times
+    from .watchdog import format_times, minutes_of
+    start = minutes_of(data.get("restart_at", "04:00"))
+    step = int(data.get("restart_every_min", 0) or 0)
+    if step <= 0:
+        return format_times([start])
+    return format_times([t for t in range(start, 24 * 60, step)])
+
+
+def _drop_unit(message: str) -> str:
+    """Убирает единицу, дописанную сразу после %t в старых пресетах."""
+    for tail in _UNIT_TAIL:
+        message = message.replace("%t" + tail, "%t")
+    return message
+
+
 @dataclass
 class ServerPreset:
     name: str = "Новый пресет"
@@ -44,6 +73,21 @@ class ServerPreset:
     # Состояние галок запуска
     launch_server: bool = True
     launch_client: bool = True
+
+    # Поднимать сервер этого пресета при старте программы (в том числе когда
+    # она стартует вместе с Windows). Только сервер: автозапуск клиента
+    # означал бы, что игра лезет на экран без спроса.
+    autostart: bool = False
+    # Перезапускать сервер по расписанию и поднимать его, если он упал.
+    # Значения — в core/watchdog; здесь только хранение.
+    auto_restart: bool = False
+    # Времена перезапусков через запятую: «01:00, 05:00, 15:00». Только
+    # список — прежние «через N минут работы» и «каждые N часов начиная с
+    # HH:MM» убраны: при них время суток гуляло, а нужно было обратное.
+    restart_times: str = "04:00"
+    restart_warn_min: int = 15          # за сколько минут начинать предупреждать
+    restart_message: str = "Перезапуск сервера через %t"
+    auto_revive: bool = False           # поднимать упавший сервер
 
     @property
     def world(self) -> str:
@@ -80,7 +124,10 @@ class ServerPreset:
     @classmethod
     def from_dict(cls, data: dict) -> ServerPreset:
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        return cls(**{k: v for k, v in data.items() if k in known})
+        p = cls(**{k: v for k, v in data.items() if k in known})
+        p.restart_message = _drop_unit(p.restart_message)
+        p.restart_times = _times_from_old(p, data)
+        return p
 
     @classmethod
     def load_all(cls) -> list[ServerPreset]:

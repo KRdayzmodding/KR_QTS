@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QApplication,
@@ -53,8 +53,33 @@ _STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
 _ALERT_MERGE_MS = 400
 # Сколько ждём закрытия по-хорошему, прежде чем убить
 _STOP_WAIT_SEC = 25
+# Как часто сторож спрашивает RCon, жив ли сервер. Чаще незачем: зависание —
+# не та беда, которую надо ловить в первые секунды, а каждый опрос это UDP и
+# отдельный поток.
+_RCON_PROBE_SEC = 30
 _CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
                 "border:1px solid #333;border-radius:6px;padding:4px;}")
+
+
+class _RconWorker(QThread):
+    """Один разговор с RCon в фоне: подключились, сказали, ушли.
+
+    Пустая команда означает «просто проверь, отвечает ли» — вход по паролю
+    уже и есть ответ на этот вопрос.
+    """
+    done = Signal(bool, str)     # получилось ли, ответ или текст ошибки
+
+    def __init__(self, host: str, port: int, password: str, command: str, parent=None):
+        super().__init__(parent)
+        self.host, self.port, self.password, self.command = host, port, password, command
+
+    def run(self) -> None:
+        from core import rcon
+        try:
+            with rcon.Rcon(self.host, self.port, self.password, timeout=3.0) as r:
+                self.done.emit(True, r.command(self.command) if self.command else "")
+        except rcon.RconError as e:
+            self.done.emit(False, str(e))
 
 
 class LaunchInterface(QWidget):
@@ -225,6 +250,15 @@ class MainWindow(FluentWindow):
         self._down_notice: tuple[str, bool] | None = None
         # заказан ли перезапуск нажатием кнопки во время выключения
         self._restart_queued = False
+        # сторож сервера: перезапуск по расписанию и подъём после падения
+        from core.watchdog import ServerWatch
+        self._watch = ServerWatch()
+        self._rcon_ok: bool | None = None    # ответил ли RCon в прошлый раз
+        self._rcon_fresh: bool | None = None  # ответ, который сторож ещё не видел
+        self._rcon_asked = 0.0
+        self._rcon_busy = False
+        self._rcon_worker = None
+        self._say_workers: list[QThread] = []
         # консоль сервера в журнал — когда его окно спрятано, см. _console_start
         self._console_tailer: logsource.LogTailer | None = None
         self._console_win: winconsole.WindowConsole | None = None
@@ -593,6 +627,12 @@ class MainWindow(FluentWindow):
         self._start_monitors_for_adopted()
         if self.server_pid:
             self._console_start()
+            # Подхваченный сервер тоже берём под сторожа: менеджер могли
+            # перезапустить (или перезагрузить машину с автозапуском), а
+            # сервер это пережил — следить за ним надо ровно так же.
+            # Отсчёт до планового перезапуска при этом начинается заново:
+            # когда он поднялся на самом деле, мы не знаем.
+            self._watch_arm()
         self._update_launch_button()
 
     def _start_monitors_for_adopted(self) -> None:
@@ -933,7 +973,8 @@ class MainWindow(FluentWindow):
         fn(title=title, content=text, parent=self, duration=duration,
            position=InfoBarPosition.TOP_RIGHT)
 
-    def _launch(self) -> None:
+    def _launch(self, only: set[str] | None = None) -> None:
+        """only — поднять лишь эти стороны (для сторожа: сервер без клиента)."""
         p = self.current
         if not p:
             self._notify("warning", tr("main.no_preset", "Сначала создайте пресет."))
@@ -950,6 +991,8 @@ class MainWindow(FluentWindow):
         # правка ради одного запуска осталась бы в файле навсегда.
         self._restart_queued = False
         want_srv, want_cli = self.sides_to_launch()
+        if only is not None:
+            want_srv, want_cli = want_srv and SERVER in only, want_cli and CLIENT in only
         if not want_srv and not want_cli:
             return
         import dataclasses
@@ -1092,6 +1135,7 @@ class MainWindow(FluentWindow):
         self.launch_status.set_connecting(SERVER)
         self._bind_log_dirs()
         self._console_start()
+        self._watch_arm()
 
     def _on_client_started(self, pid: int) -> None:
         self.client_pid = pid
@@ -1522,12 +1566,13 @@ class MainWindow(FluentWindow):
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
         soft = getattr(self.settings, "stop_method", "soft") != "hard"
-        started = False
+        started = touched_server = False
         for side, attr in ((SERVER, "server_pid"), (CLIENT, "client_pid")):
             pid = getattr(self, attr)
             if not pid or self.process_state(pid) != self.ST_RUN:
                 continue
             started = True
+            touched_server = touched_server or side == SERVER
             ready = self.side_state(side) == self.ST_RUN
             if ready and soft and winhide.ask_close(pid):
                 self.launch_status.set_process_state(side, PROC_STOPPING)
@@ -1542,6 +1587,8 @@ class MainWindow(FluentWindow):
             kill_pid(pid)
             setattr(self, attr, None)
             self._stopping.pop(attr, None)
+        if touched_server:
+            self._watch.disarm()
         # Ничего не поднялось — значит идёт подготовка: запаковку не рвём, она
         # дойдёт до конца, а сервер после неё уже не стартует.
         self._expect_down(name, stopped=started)
@@ -1557,6 +1604,150 @@ class MainWindow(FluentWindow):
         после него можно запускать заново.
         """
         self._down_notice = (name, stopped)
+
+    # ------------------------------------------------------- сторож сервера
+
+    def _watch_arm(self) -> None:
+        """Сервер поднялся — сторож берёт его под наблюдение.
+
+        Настройки читаем с пресета в этот момент, а не держим ссылку: пресет
+        могли отредактировать между запусками, и следить надо по свежим.
+        """
+        p = self.current
+        if p is None:
+            return
+        w = self._watch
+        w.restart_on = bool(getattr(p, "auto_restart", False))
+        from core.watchdog import parse_times
+        w.times = parse_times(getattr(p, "restart_times", ""))
+        w.warn_min = int(getattr(p, "restart_warn_min", 0) or 0)
+        w.message = str(getattr(p, "restart_message", "") or "")
+        w.revive = bool(getattr(p, "auto_revive", False))
+        self._rcon_ok = self._rcon_fresh = None   # прошлые ответы к новой сессии не относятся
+        self._rcon_asked = 0.0
+        w.arm(time.monotonic())
+        if w.restart_on or w.revive:
+            self._append_log(tr("watch.armed",
+                                "Сторож включён: {what}", what=self._watch_what(p)))
+
+    def _watch_what(self, p) -> str:
+        """Короткое описание того, что именно сторожим — для журнала."""
+        parts = []
+        if getattr(p, "auto_restart", False):
+            from core.watchdog import format_times, parse_times
+            parts.append(tr("watch.what_clock", "перезапуск в {t}",
+                            t=format_times(parse_times(p.restart_times))))
+        if getattr(p, "auto_revive", False):
+            parts.append(tr("watch.what_revive", "подъём после падения"))
+        return ", ".join(parts) or tr("watch.what_none", "ничего")
+
+    def _watch_server(self) -> None:
+        """Такт сторожа. Пока идёт запуск или остановка — не вмешиваемся."""
+        w = self._watch
+        if not w.armed or self._starting or self._stopping:
+            return
+        if self.worker is not None and self.worker.isRunning():
+            return
+        self._rcon_probe()
+        # Сторожу отдаём только свежий ответ и ровно один раз. Такт идёт раз в
+        # секунду, а опрос — раз в полминуты: если подсовывать ему прошлый
+        # ответ каждую секунду, три промаха наберутся за три секунды, и сервер,
+        # задумавшийся под сохранение базы, будет убит ни за что.
+        fresh, self._rcon_fresh = self._rcon_fresh, None
+        action = w.tick(time.monotonic(), self.server_running(), fresh, wall=time.time())
+        if action is None:
+            return
+        from core.watchdog import SAY, RESTART, REVIVE, KILL
+        if action.kind == SAY:
+            self._rcon_say(action.text)
+        elif action.kind == RESTART:
+            self._append_log(tr("watch.restart", "Плановый перезапуск сервера"))
+            self._stop_server_softly()
+        elif action.kind == KILL:
+            self._append_log(tr("watch.hang",
+                                "Сервер не отвечает по RCon — завершаем принудительно"),
+                             "warning")
+            kill_pid(self.server_pid)
+            self.server_pid = None
+            self._update_launch_button()
+        elif action.kind == REVIVE:
+            self._append_log(
+                tr("watch.revive_crash", "Сервер упал — поднимаем заново")
+                if action.reason == "crash" else
+                tr("watch.revive_restart", "Поднимаем сервер после остановки"),
+                "warning" if action.reason == "crash" else "info")
+            self._launch(only={SERVER})
+
+    def _stop_server_softly(self) -> None:
+        """Остановка ради планового перезапуска — всегда по-хорошему.
+
+        Способ из настроек здесь намеренно не смотрим: принудительное
+        завершение по расписанию, да ещё и в отсутствие человека, обрывало бы
+        сохранение базы каждые несколько часов.
+        """
+        pid = self.server_pid
+        if not pid:
+            return
+        if winhide.ask_close(pid):
+            self.launch_status.set_process_state(SERVER, PROC_STOPPING)
+            self._stopping["server_pid"] = time.monotonic()
+            self._append_log(tr("main.log_stopping", "Статус: {n} выключается",
+                                n=self._side_name(SERVER)))
+        else:
+            kill_pid(pid)
+            self.server_pid = None
+        self._update_launch_button()
+
+    # ------------------------------------------------------------------ RCon
+
+    def _rcon_conf(self) -> tuple[str, int, str] | None:
+        """(хост, порт, пароль) — или None, если RCon тут не работает."""
+        p = self.current
+        if p is None or p.mode == MODE_DIAG or not self.settings.rcon_enabled:
+            return None
+        if not self.settings.rcon_password:
+            return None
+        return "127.0.0.1", int(self.settings.rcon_port), self.settings.rcon_password
+
+    def _rcon_probe(self) -> None:
+        """Раз в полминуты спрашиваем RCon, жив ли он. Ответ — в фоне.
+
+        В основном потоке спрашивать нельзя: UDP-ожидание в пару секунд — это
+        замерший интерфейс, а опрос идёт постоянно.
+        """
+        conf = self._rcon_conf()
+        if conf is None:
+            self._rcon_ok = self._rcon_fresh = None
+            return
+        now = time.monotonic()
+        if self._rcon_busy or now - self._rcon_asked < _RCON_PROBE_SEC:
+            return
+        self._rcon_asked = now
+        self._rcon_busy = True
+        self._rcon_worker = _RconWorker(*conf, "", self)
+        self._rcon_worker.done.connect(self._rcon_probed)
+        self._rcon_worker.start()
+
+    def _rcon_probed(self, ok: bool, _text: str) -> None:
+        self._rcon_busy = False
+        self._rcon_ok = ok          # последнее известное состояние — для окна
+        self._rcon_fresh = ok       # непрочитанный ответ — для сторожа
+
+    def _rcon_say(self, text: str) -> None:
+        """Сообщение всем игрокам. Молча, если RCon недоступен."""
+        conf = self._rcon_conf()
+        if conf is None or not text:
+            return
+        self._append_log(tr("watch.say", "Игрокам: {t}", t=text))
+        worker = _RconWorker(*conf, f"say -1 {text}", self)
+        worker.done.connect(lambda ok, err, w=worker: self._rcon_said(ok, err))
+        self._say_workers.append(worker)
+        worker.start()
+
+    def _rcon_said(self, ok: bool, err: str) -> None:
+        if not ok:
+            self._append_log(tr("watch.say_failed",
+                                "Сообщение не доставлено: {e}", e=err), "warning")
 
     def _watch_restart(self) -> None:
         """Заказанный перезапуск — как только всё, что гасили, ушло.
@@ -1658,6 +1849,11 @@ class MainWindow(FluentWindow):
             kill_pid(pid)
             setattr(self, attr, None)
             self._stopping.pop(attr, None)
+        # Человек остановил сам — сторож молчит до следующего запуска. Но
+        # только если гасили сервер: перезапуск одного клиента при живом
+        # сервере снимать наблюдение не должен.
+        if srv:
+            self._watch.disarm()
         if self.current:
             self._expect_down(self.current.name, stopped=True)
         self._update_launch_button()
@@ -1724,6 +1920,7 @@ class MainWindow(FluentWindow):
     def _update_status(self) -> None:
         self._watch_stopping()
         self._watch_restart()
+        self._watch_server()
         self._watch_down()
         self._log_stopped()
         self._update_sources_button()
@@ -2007,6 +2204,52 @@ class MainWindow(FluentWindow):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger,
                       QSystemTrayIcon.ActivationReason.DoubleClick):
             self.restore_from_tray()
+
+    def show_as_configured(self) -> None:
+        """Показаться так, как выбрано в настройках: окном, в трее, мини-окном.
+
+        Значок в трее есть всегда — иначе запуск «в трей» выглядел бы как
+        программа, не запустившаяся вовсе.
+        """
+        mode = getattr(self.settings, "start_mode", "window")
+        if mode == "tray":
+            return
+        if mode == "mini":
+            self.mini.show_at_saved_pos()
+            return
+        self.show()
+
+    def autostart_presets(self) -> None:
+        """Поднимает серверы пресетов, отмеченных «запускать при старте».
+
+        Только сервер — клиент под автозапуск не попадает: игра, вылезающая на
+        экран сама, помощью не будет.
+
+        Окно устроено под один запущенный сервер: свои pid, свой блок статуса,
+        своя консоль. Поэтому если отмечено несколько, поднимаем первый, а про
+        остальные честно говорим — молча проглотить выбор человека хуже.
+        """
+        marked = [p for p in self.presets if getattr(p, "autostart", False)]
+        if not marked:
+            return
+        if self.server_running():
+            self._append_log(tr("main.autostart_busy",
+                                "Автозапуск пропущен: сервер уже работает"), "warning")
+            return
+        first = marked[0]
+        if len(marked) > 1:
+            self._append_log(tr(
+                "main.autostart_many",
+                "Автозапуск отмечен у нескольких пресетов ({n}). Поднимаем «{first}»: "
+                "программа рассчитана на один работающий сервер.",
+                n=len(marked), first=first.name), "warning")
+        idx = next((i for i, p in enumerate(self.presets)
+                    if p.file_stem() == first.file_stem()), -1)
+        if idx < 0:
+            return
+        self.launch_page.preset_combo.setCurrentIndex(idx)
+        self._append_log(tr("main.autostart", "Автозапуск: «{n}»", n=first.name))
+        self._launch(only={SERVER})
 
     def restore_from_tray(self) -> None:
         self.mini.hide()

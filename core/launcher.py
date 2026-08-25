@@ -483,6 +483,23 @@ class LaunchWorker(QThread):
             self.log.emit(tr("launch.vpp_password_flag",
                              "serverDZ.cfg: vppDisablePassword = {v}", v=flag), "info")
 
+        # 4.75. RCon — только у обычного сервера: он живёт внутри BattlEye, а
+        #       в diag тот выключен. Пароль пишем в конфиг BE перед стартом:
+        #       BattlEye читает его один раз при подъёме сервера.
+        if p.launch_server and p.mode != MODE_DIAG and s.rcon_enabled:
+            from . import rcon
+            from .layout import resolve_profiles as _rp3
+            if not s.rcon_password:
+                s.rcon_password = rcon.new_password()
+                s.save()
+            folder = rcon.be_dir(_rp3(p.profiles, s, self.branch, p.mode),
+                                 str(p.params_server.get("BEpath", "") or ""))
+            ok, err = rcon.ensure_config(folder, s.rcon_password, s.rcon_port)
+            self.log.emit(
+                tr("launch.rcon_ready", "RCon включён, порт {p}", p=s.rcon_port) if ok else
+                tr("launch.rcon_failed", "RCon настроить не удалось: {e}", e=err),
+                "info" if ok else "warning")
+
         if self._stop_asked():
             return
 

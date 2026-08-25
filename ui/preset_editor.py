@@ -17,6 +17,7 @@ from core.params import specs_for, FLAG, SWITCH, INT, SERVER, CLIENT
 from core.presets import ServerPreset, MODE_DIAG, MODE_DEDICATED
 from core.settings import Settings, STABLE, EXPERIMENTAL
 from ui.mission_picker import MapPicker
+from ui.times_list import TimesList
 from ui.theme import ThemedDialog, ThemedWizard
 
 
@@ -180,6 +181,10 @@ class AdvancedPresetDialog(ThemedDialog):
         self.time_login.setValue(self._read_time_login())
         form.addRow(tr("preset.time_login", "Время на вход/выход (секунды)"), self.time_login)
 
+        layout.addLayout(form)
+        layout.addWidget(self._auto_box(preset))
+        form = QFormLayout()
+
         clean_row = QHBoxLayout()
         b_clear_db = PushButton(FIF.DELETE, tr("preset.clear_db", "Очистить БД"))
         b_clear_db.setToolTip(tr("preset.clear_db_tip",
@@ -312,6 +317,113 @@ class AdvancedPresetDialog(ThemedDialog):
         InfoBar.success(title=tr("preset.admin_synced", "Обновлено админок: {n}", n=len(done)),
                         content=", ".join(t.title for t, _ in done),
                         parent=self, duration=4000, position=InfoBarPosition.TOP_RIGHT)
+
+    def _auto_box(self, preset: ServerPreset) -> QGroupBox:
+        """Автоматика сервера: автозапуск, перезапуск по часам, подъём после падения.
+
+        Только сервер — клиента автоматика не касается: игра, вылезающая на
+        экран без спроса, помощью не будет.
+        """
+        box = QGroupBox(tr("preset.auto_box", "Автоматика сервера"))
+        col = QVBoxLayout(box)
+
+        self.chk_autostart = CheckBox(tr("preset.autostart",
+                                         "Запускать сервер при старте программы"))
+        self.chk_autostart.setToolTip(tr(
+            "preset.autostart_tip",
+            "В том числе когда программа стартует вместе с Windows. "
+            "Клиент при этом не запускается."))
+        self.chk_autostart.setChecked(bool(getattr(preset, "autostart", False)))
+        col.addWidget(self.chk_autostart)
+
+        self.chk_revive = CheckBox(tr("preset.auto_revive",
+                                      "Поднимать сервер, если он упал или завис"))
+        self.chk_revive.setToolTip(tr(
+            "preset.auto_revive_tip",
+            "Зависание опознаётся по RCon: процесс жив, а сервер не отвечает. "
+            "Без RCon ловятся только падения."))
+        self.chk_revive.setChecked(bool(getattr(preset, "auto_revive", False)))
+        col.addWidget(self.chk_revive)
+
+        self.chk_restart = CheckBox(tr("preset.auto_restart",
+                                       "Перезапускать по расписанию"))
+        self.chk_restart.setChecked(bool(getattr(preset, "auto_restart", False)))
+        self.chk_restart.toggled.connect(self._auto_toggled)
+        col.addWidget(self.chk_restart)
+
+        grid = QFormLayout()
+        self.auto_grid = grid
+        self.restart_times = TimesList(str(getattr(preset, "restart_times", "") or ""))
+        self.restart_times.changed.connect(self._times_changed)
+        grid.addRow(tr("preset.restart_times", "Время перезапусков"), self.restart_times)
+        self.times_hint = CaptionLabel("")
+        self.times_hint.setWordWrap(True)
+        self.times_hint.setMinimumWidth(1)
+        grid.addRow("", self.times_hint)
+
+        self.warn_min = SpinBox()
+        self.warn_min.setRange(0, 120)
+        self.warn_min.setValue(int(getattr(preset, "restart_warn_min", 15) or 0))
+        self.warn_min.setToolTip(tr(
+            "preset.warn_min_tip",
+            "Дальше частота фиксированная: раз в минуту, в последнюю минуту — "
+            "каждые 10 секунд, в последние полминуты — каждые 5."))
+        grid.addRow(tr("preset.warn_min", "Предупреждать за, мин."), self.warn_min)
+
+        self.restart_msg = LineEdit()
+        self.restart_msg.setText(str(getattr(preset, "restart_message", "") or ""))
+        self.restart_msg.setToolTip(tr(
+            "preset.restart_msg_tip",
+            "%t заменяется на число секунд до перезапуска вместе с единицей: "
+            "«180 сек.». Писать единицу в тексте не нужно."))
+        grid.addRow(tr("preset.restart_msg", "Текст предупреждения"), self.restart_msg)
+        col.addLayout(grid)
+
+        self.auto_note = CaptionLabel("")
+        self.auto_note.setWordWrap(True)
+        col.addWidget(self.auto_note)
+        self._auto_toggled(self.chk_restart.isChecked())
+        # Подсказку про diag пересчитываем при смене режима — но подписываемся
+        # здесь, а не в конструкторе: там индекс меняется раньше, чем эта галка
+        # вообще существует.
+        self.mode.currentIndexChanged.connect(
+            lambda _i: self._auto_toggled(self.chk_restart.isChecked()))
+        return box
+
+    def _auto_toggled(self, on: bool) -> None:
+        """Поля расписания живут только вместе с самим расписанием."""
+        for w in (self.restart_times, self.warn_min, self.restart_msg):
+            w.setEnabled(on)
+        diag = self.mode.currentData() == MODE_DIAG
+        # Предупреждения идут через RCon, а он живёт внутри BattlEye, которого
+        # в diag нет. Сам перезапуск при этом работает — молчаливый.
+        self.auto_note.setText(
+            tr("preset.auto_note_diag",
+               "В режиме Diag предупреждения игрокам не отправляются: RCon работает "
+               "только на обычном сервере. Перезапуск и подъём работают.")
+            if on and diag else "")
+        self._times_changed()
+
+    def _times_changed(self) -> None:
+        """Показывает, что получится из набранного списка.
+
+        Пустой список при включённом расписании — это молчаливое «перезапусков
+        не будет», о таком надо сказать прямо.
+        """
+        if not hasattr(self, "times_hint"):
+            return
+        if not self.chk_restart.isChecked():
+            self.times_hint.setText("")
+            return
+        times = self.restart_times.text()
+        if not times:
+            self.times_hint.setStyleSheet("color:#d32f2f;")
+            self.times_hint.setText(tr("preset.times_none",
+                                       "Ни одного времени не задано — "
+                                       "перезапусков не будет."))
+            return
+        self.times_hint.setStyleSheet("")
+        self.times_hint.setText(tr("preset.times_ok", "Перезапуски: {t}", t=times))
 
     def _read_time_login(self) -> int:
         """Актуальное значение из globals.xml миссии; иначе из пресета;
@@ -475,6 +587,12 @@ class AdvancedPresetDialog(ThemedDialog):
         _attach_map_mods(p, self.map_picker)
         p.port = self.port.value()
         p.time_login = self.time_login.value()
+        p.autostart = self.chk_autostart.isChecked()
+        p.auto_revive = self.chk_revive.isChecked()
+        p.auto_restart = self.chk_restart.isChecked()
+        p.restart_times = self.restart_times.text()
+        p.restart_warn_min = self.warn_min.value()
+        p.restart_message = self.restart_msg.text().strip()
         # применяем сразу, если миссия уже на диске (иначе — перед запуском)
         from pathlib import Path as _P
         from core.layout import resolve_mission
