@@ -8,9 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .settings import Settings, RES_DIR
+from .settings import Settings, CONFIG_DIR, RES_DIR
 
 CATALOG_FILE = RES_DIR / "data" / "missions_catalog.json"
+# Свои карты — отдельным файлом рядом с настройками, а не в встроенном
+# каталоге: тот при обновлении программы затирается целиком, и добавленное
+# руками не пережило бы ни одного обновления.
+USER_CATALOG_FILE = CONFIG_DIR / "missions_user.json"
 META_NAME = ".krsm_mission.json"
 TEMPLATE_PREFIX = "actual"  # actual.<world> — скачанный шаблон карты
 
@@ -71,6 +75,14 @@ class CatalogEntry:
     # Steam Workshop id мода карты (для карт вроде Namalsk/DeerIsle/Banov —
     # отдельная подписка, не входит в репозиторий миссии); пусто — не нужен
     map_mod: str = ""
+    # Своя карта: папка с миссией на диске. Она же и есть шаблон — скачивать
+    # нечего, «обновить шаблон» для неё бессмысленно. Пусто — карта из
+    # встроенного каталога, шаблон берётся с GitHub.
+    folder: str = ""
+
+    @property
+    def custom(self) -> bool:
+        return bool(self.folder)
 
 
 @dataclass
@@ -85,15 +97,61 @@ class InstalledMission:
         return bool(self.meta.get("catalog_id"))
 
 
-def load_catalog() -> list[CatalogEntry]:
+def _entries(data: dict) -> list[CatalogEntry]:
+    out = []
+    for m in data.get("missions", []):
+        try:
+            out.append(CatalogEntry(
+                id=m["id"], title=m["title"], world=m["world"],
+                # у своих карт репозитория нет — эти поля пустые
+                repo=m.get("repo", ""), branch=m.get("branch", ""),
+                path=m.get("path", ""),
+                mods=m.get("mods", []), map_mod=m.get("map_mod", ""),
+                folder=m.get("folder", "")))
+        except (KeyError, TypeError):
+            continue        # битую запись пропускаем, остальные читаем
+    return out
+
+
+def _read(path: Path) -> dict:
     try:
-        data = json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
-        return [CatalogEntry(**{k: m[k] for k in
-                                ("id", "title", "world", "repo", "branch", "path")},
-                             mods=m.get("mods", []), map_mod=m.get("map_mod", ""))
-                for m in data.get("missions", [])]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def load_user_maps() -> list[CatalogEntry]:
+    """Карты, добавленные пользователем."""
+    return _entries(_read(USER_CATALOG_FILE))
+
+
+def save_user_maps(entries: list[CatalogEntry]) -> tuple[bool, str]:
+    data = {"missions": [
+        {"id": e.id, "title": e.title, "world": e.world, "folder": e.folder,
+         "mods": e.mods, "map_mod": e.map_mod} for e in entries]}
+    try:
+        USER_CATALOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        USER_CATALOG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                     encoding="utf-8")
+    except OSError as e:
+        return False, str(e)
+    return True, ""
+
+
+def add_user_map(entry: CatalogEntry) -> tuple[bool, str]:
+    """Добавляет или заменяет свою карту (по id)."""
+    rest = [e for e in load_user_maps() if e.id != entry.id]
+    return save_user_maps(rest + [entry])
+
+
+def remove_user_map(map_id: str) -> tuple[bool, str]:
+    return save_user_maps([e for e in load_user_maps() if e.id != map_id])
+
+
+def load_catalog() -> list[CatalogEntry]:
+    """Встроенные карты плюс свои. Свои — в конце, чтобы список не прыгал."""
+    return _entries(_read(CATALOG_FILE)) + load_user_maps()
 
 
 def map_mod_installed(settings: Settings, workshop_id: str) -> bool:

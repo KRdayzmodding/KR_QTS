@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Signal, Qt, QUrl
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from qfluentwidgets import (
@@ -120,9 +122,14 @@ class MapPicker(QWidget):
         self.b_recreate.setToolTip(tr("mission.recreate_tip",
                                       "Пересоздать миссию пресета из шаблона"))
         self.b_recreate.clicked.connect(self._recreate_mission)
+        self.b_custom = ToolButton(FIF.ADD)
+        self.b_custom.setToolTip(tr("mission.custom_tip",
+                                    "Добавить свою карту — папкой с миссией на диске"))
+        self.b_custom.clicked.connect(self._custom_map)
         row.addWidget(self.combo, 1)
         row.addWidget(self.b_upd)
         row.addWidget(self.b_recreate)
+        row.addWidget(self.b_custom)
         col.addLayout(row)
         self.status = CaptionLabel("")
         col.addWidget(self.status)
@@ -208,11 +215,32 @@ class MapPicker(QWidget):
         return (base / name) if (base and name) else None
 
     def _template_dir(self):
+        """Откуда брать миссию: для своих карт — прямо их папка."""
         from core.layout import templates_dir
+        entry = self.catalog_entry()
+        if entry is not None and entry.custom:
+            return Path(entry.folder) if entry.folder else None
         world = self.world()
         if not self.settings or not world:
             return None
         return templates_dir(self.settings) / template_name(world)
+
+    def _custom_map(self) -> None:
+        """Добавить свою карту или поправить выбранную."""
+        from ui.custom_map_dialog import CustomMapDialog
+        entry = self.catalog_entry()
+        current = entry if (entry and entry.custom) else None
+        dlg = CustomMapDialog(current, self.window())
+        if not dlg.exec():
+            return
+        # Список карт изменился — пересобираем его. Выбор стараемся сохранить:
+        # после добавления встаём на новую карту, после удаления — на то, что
+        # было выбрано раньше.
+        world = "" if dlg.removed else (dlg.entry.world if dlg.entry else "")
+        mission = f"{self.preset_name}.{world}" if world else self.mission_name()
+        self.set_context(self.settings, self.branch, self.mode, self.preset_name,
+                         current_mission=mission)
+        self.changed.emit()
 
     def _update_status(self) -> None:
         kind, _val = self._data()
@@ -236,14 +264,25 @@ class MapPicker(QWidget):
             self.status.setText(tr("mission.st_copy",
                                    "{n} — будет создана из шаблона {t} (без скачивания)",
                                    n=d.name if d else "?", t=t.name))
+        elif entry is not None and entry.custom:
+            self.status.setText(tr("mission.st_no_folder",
+                                   "Папка карты не найдена: {p}", p=entry.folder))
         else:
             self.status.setText(tr("mission.st_dl_tpl",
                                    "Шаблон {t} будет скачан с github.com/{repo}, "
                                    "миссия {n} — его локальная копия",
                                    t=t.name if t else "?", n=d.name if d else "?",
                                    repo=entry.repo if entry else "?"))
-        self.b_upd.setEnabled(template_ok and bool(entry))
+        # «Обновить шаблон» — только для карт с репозиторием: у своей карты
+        # шаблон и есть та папка, которую указал человек, качать нечего.
+        custom = bool(entry and entry.custom)
+        self.b_upd.setEnabled(template_ok and bool(entry) and not custom)
         self.b_recreate.setEnabled(installed and template_ok)
+        self.b_custom.setIcon(FIF.EDIT if custom else FIF.ADD)
+        self.b_custom.setToolTip(
+            tr("mission.custom_edit_tip", "Изменить или удалить свою карту") if custom
+            else tr("mission.custom_tip",
+                    "Добавить свою карту — папкой с миссией на диске"))
         self._update_map_warning(entry)
         self.changed.emit()
 
