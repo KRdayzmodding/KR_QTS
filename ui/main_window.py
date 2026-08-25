@@ -1154,10 +1154,17 @@ class MainWindow(FluentWindow):
             # поднимутся: здесь процессы только созданы
             self._check_launch_complete()
 
-    def remember_packed(self, names: list[str]) -> None:
+    def remember_packed(self, _names: list[str]) -> None:
         """Запоминает состав последней запаковки (имена без .pbo — так же
-        называются и файлы логов pboProject)."""
-        self._packed = [Path(n).stem for n in names]
+        называются и файлы логов pboProject).
+
+        Состав берём у таблицы, а не из аргумента: она уже решила, начинать
+        новую сборку или дополнить идущую. Со страницы модов можно нажать
+        «Ребилд» посреди запаковки при запуске сервера — тогда в списке логов
+        должны быть оба мода, а не последний. Своя копия этого решения здесь
+        зависела бы от того, в каком порядке подключены сигналы.
+        """
+        self._packed = [Path(n).stem for n in self.pack_table.names()]
 
     def _open_pack_settings(self) -> None:
         """Настройки pboProject прямо с главной страницы.
@@ -1194,6 +1201,10 @@ class MainWindow(FluentWindow):
         self.pack_table.start(names)
         self.remember_packed(names)
         self._pack_worker = PackWorker(self.settings, dlg.selected_jobs, self)
+        self._pack_worker.queued.connect(
+            lambda n: self._append_log(tr("launch.pack_queued",
+                                          "{pbo}: ждём, пока освободится pboProject",
+                                          pbo=n)))
         self._pack_worker.source_start.connect(
             lambda n: self.pack_table.set_status(n, "packing"))
         self._pack_worker.source_done.connect(

@@ -11,10 +11,42 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 from .mods import ModInfo
 from .settings import Settings
+
+# Два pboProject одновременно запускать нельзя. Свои настройки он держит в
+# реестре, а рабочую папку temp — общую, и в режиме FullBuild чистит её на
+# старте. Второй запуск вычищает temp первого прямо посреди его сборки: та
+# либо обрывается с невнятной ошибкой, либо повисает до таймаута. Случай не
+# выдуманный: запуск сервера пакует устаревшие моды, а со страницы модов в
+# это же время жмут «Ребилд». Поэтому — строго по одному, второй ждёт.
+_LOCK = threading.Lock()
+_WAIT_SEC = 1800     # столько ждём очереди; дальше честно сообщаем, а не висим
+
+
+def busy() -> bool:
+    """Занят ли pboProject прямо сейчас."""
+    return _LOCK.locked()
+
+
+def wait_idle(on_wait=None, timeout: int = _WAIT_SEC) -> bool:
+    """Ждёт, пока текущая запаковка закончится. False — не дождались.
+
+    Нужно тем, кто сам не пакует, но зависит от результата: сервер, читающий
+    pbo, не должен стартовать посреди чужой сборки — он прочитает файл,
+    записанный наполовину, и упадёт на непонятном месте.
+    """
+    if not _LOCK.acquire(blocking=False):
+        if on_wait is not None:
+            on_wait()
+        if not _LOCK.acquire(timeout=timeout):
+            return False
+    _LOCK.release()
+    return True
+
 
 # Служебные файлы, которые не считаются "изменением сорсов"
 _IGNORE_SUFFIXES = {".meta", ".txa", ".bak", ".tmp"}
@@ -150,7 +182,8 @@ def _pboproject_log(source_dir: str) -> str:
         return ""
 
 
-def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+def pack_source(settings: Settings, mod: ModInfo, source_dir: str,
+                on_wait=None) -> tuple[bool, str]:
     """Собирает один PBO. Возвращает (успех, текст для диагностики).
 
     ВАЖНО: stdout/stderr pboProject перенаправлять нельзя — ни в pipe, ни даже
@@ -161,6 +194,9 @@ def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool
 
     Перехват всё равно был бесполезен: в stdout pboProject не пишет ничего
     (это GUI-приложение), а вся диагностика идёт в свой лог — его и читаем.
+
+    on_wait зовётся один раз, если пришлось встать в очередь за другой
+    запаковкой: молчаливое ожидание неотличимо от зависания.
     """
     exe = settings.pbo_project_exe()
     if not Path(exe).is_file():
@@ -170,6 +206,23 @@ def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool
     if not Path(source_dir).is_dir():
         return False, f"папка сорсов не найдена: {source_dir}"
 
+    # Дальше начинается сама сборка — с этого места и до конца работает
+    # ровно один pboProject, см. _LOCK.
+    if not _LOCK.acquire(blocking=False):
+        if on_wait is not None:
+            on_wait()
+        if not _LOCK.acquire(timeout=_WAIT_SEC):
+            return False, ("другая запаковка не завершилась за "
+                           f"{_WAIT_SEC // 60} минут — сборка отменена")
+    try:
+        return _pack_locked(settings, mod, source_dir)
+    finally:
+        _LOCK.release()
+
+
+def _pack_locked(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+    """Сама сборка. Зовётся только под _LOCK — см. комментарий у него."""
+    exe = settings.pbo_project_exe()
     if settings.clean_meta:
         clean_meta(Path(source_dir))
 
@@ -211,6 +264,7 @@ def pack_source(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool
     return ok, "" if ok else _pboproject_log(source_dir)
 
 
-def pack_source_auto(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
+def pack_source_auto(settings: Settings, mod: ModInfo, source_dir: str,
+                     on_wait=None) -> tuple[bool, str]:
     """Единственный движок — pboProject; режим задаёт settings.pack_engine."""
-    return pack_source(settings, mod, source_dir)
+    return pack_source(settings, mod, source_dir, on_wait=on_wait)

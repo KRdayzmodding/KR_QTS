@@ -80,6 +80,7 @@ class RebuildWorker(QThread):
     done = Signal(bool, str)
     source_start = Signal(str)        # имя pbo — строка таблицы переходит в [packing]
     source_done = Signal(str, bool, int, int, int)   # имя pbo, успех, мс, warnings, errors
+    queued = Signal(str)              # имя pbo — встали в очередь за другой запаковкой
 
     def __init__(self, settings: Settings, mod: ModInfo, sources: list[str], parent=None):
         super().__init__(parent)
@@ -92,7 +93,9 @@ class RebuildWorker(QThread):
             name = packer.pbo_for_source(self.mod, src).name
             self.source_start.emit(name)
             t0 = time.monotonic()
-            ok, output = packer.pack_source_auto(self.settings, self.mod, src)
+            ok, output = packer.pack_source_auto(
+                self.settings, self.mod, src,
+                on_wait=lambda n=name: self.queued.emit(n))
             w, e = packlog.counts(Path(src).name)
             self.source_done.emit(name, ok, int((time.monotonic() - t0) * 1000), w, e)
             if not ok:
@@ -1317,11 +1320,26 @@ class ModsPanel(QWidget):
         if self.packed_cb is not None:
             self.packed_cb(names)
         worker = RebuildWorker(self.settings, mod, list(mod.sources), self)
+        worker.queued.connect(self._on_pack_queued)
         worker.source_start.connect(self._on_pack_source_start)
         worker.source_done.connect(self._on_pack_source_done)
         worker.done.connect(lambda ok, msg, m=mod: self._rebuild_done(ok, msg, m))
         self._rebuild_workers.append(worker)
         worker.start()
+
+    def _on_pack_queued(self, name: str) -> None:
+        """Встали в очередь: два pboProject одновременно работать не умеют.
+
+        Молчать нельзя — со стороны это неотличимо от зависшей сборки.
+        """
+        InfoBar.info(
+            title=tr("mods.pack_queued", "Ждём очереди на запаковку"),
+            content=tr("mods.pack_queued_body",
+                       "Сейчас пакуется другой мод — «{n}» соберётся следом.", n=name),
+            parent=self.window(), duration=6000, position=InfoBarPosition.TOP_RIGHT)
+        if self.log_cb:
+            self.log_cb(tr("mods.pack_queued_log",
+                           "{pbo}: ждём, пока освободится pboProject", pbo=name))
 
     def _on_pack_source_start(self, name: str) -> None:
         if self.pack_table is not None:

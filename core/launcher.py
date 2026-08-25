@@ -367,8 +367,29 @@ class LaunchWorker(QThread):
         selected: list[ModInfo] = [m for m in (reg.get(n) for n in
                                                (p.mods + p.server_mods)) if m]
 
-        # 1. Перепаковка устаревших локальных модов (только если включено в настройках)
-        if s.repack_before_launch:
+        # 1. Убираем старые процессы — только тех видов, что сейчас запускаем.
+        #    Иначе перезапуск одного клиента ронял бы работающий сервер.
+        #    Делаем это до запаковки, а не после: запущенная игра держит pbo
+        #    открытыми, и перепаковать их нельзя. Свои прошлые процессы мы всё
+        #    равно собирались убить — значит, надо раньше.
+        killed = kill_kinds({k for k, on in (("server", p.launch_server),
+                                             ("client", p.launch_client)) if on})
+        if killed:
+            self.log.emit(tr("launch.killed", "Завершено старых процессов: {n}", n=killed), "info")
+
+        if self._stop_asked():
+            return
+
+        # 2. Перепаковка устаревших локальных модов (только если включено в настройках)
+        if s.repack_before_launch and dayz_running():
+            # Осталась живая сторона — например, перезапускаем один клиент при
+            # работающем сервере. Она держит pbo, перепаковка упёрлась бы в
+            # занятый файл и отменила бы весь запуск. Молчать нельзя: человек
+            # должен понимать, что стартует со старыми pbo.
+            self.log.emit(tr("launch.pack_skipped",
+                             "Перепаковка пропущена: запущенная игра держит PBO. "
+                             "Запуск идёт с тем, что собрано."), "warning")
+        elif s.repack_before_launch:
             plan = packer.stale_mods(selected)
             # весь список объявляем заранее — сколько PBO предстоит собрать
             # должно быть видно сразу, а не по мере готовности
@@ -387,7 +408,11 @@ class LaunchWorker(QThread):
                     name = packer.pbo_for_source(mod, src).name
                     self.pack_status.emit(name, "packing", -1, 0, 0)
                     t0 = time.monotonic()
-                    ok, output = packer.pack_source_auto(s, mod, src)
+                    ok, output = packer.pack_source_auto(
+                        s, mod, src,
+                        on_wait=lambda n=name: self.log.emit(
+                            tr("launch.pack_queued",
+                               "{pbo}: ждём, пока освободится pboProject", pbo=n), "info"))
                     w, e = packlog.counts(Path(src).name)
                     self.pack_status.emit(name, "ok" if ok else "fail",
                                           int((time.monotonic() - t0) * 1000), w, e)
@@ -403,13 +428,6 @@ class LaunchWorker(QThread):
 
         if self._stop_asked():
             return
-
-        # 2. Убираем старые процессы — только тех видов, что сейчас запускаем.
-        #    Иначе перезапуск одного клиента ронял бы работающий сервер.
-        killed = kill_kinds({k for k, on in (("server", p.launch_server),
-                                             ("client", p.launch_client)) if on})
-        if killed:
-            self.log.emit(tr("launch.killed", "Завершено старых процессов: {n}", n=killed), "info")
 
         # 3. Junction для модов
         roots = [client_root]
@@ -466,6 +484,16 @@ class LaunchWorker(QThread):
                              "serverDZ.cfg: vppDisablePassword = {v}", v=flag), "info")
 
         if self._stop_asked():
+            return
+
+        # 4.8. Своя запаковка позади, но чужая могла начаться со страницы модов
+        #      или из списка сорсов. Сервер, стартовавший посреди неё, прочитает
+        #      наполовину записанный pbo и упадёт на непонятном месте.
+        if not packer.wait_idle(on_wait=lambda: self.log.emit(
+                tr("launch.pack_wait_other",
+                   "Идёт запаковка мода — ждём её окончания перед стартом"), "info")):
+            self.failed.emit(tr("launch.pack_wait_failed",
+                                "Запаковка не завершилась — запуск отменён."))
             return
 
         # 5. Сервер

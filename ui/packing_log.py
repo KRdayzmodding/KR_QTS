@@ -122,9 +122,36 @@ class PackingLog:
 
     # -------------------------------------------------------------- действия
 
+    def names(self) -> list[str]:
+        """Состав текущей таблицы — он же состав последней запаковки."""
+        return list(self._names)
+
+    def busy(self) -> bool:
+        """Идёт ли сборка прямо сейчас — что-то пакуется или ждёт очереди."""
+        return any(s in (WAIT, PACKING) for s in self._status.values())
+
+    def add(self, names: list[str]) -> None:
+        """Дописывает строки к идущей сборке, сохраняя уже показанное."""
+        fresh = [n for n in names if n not in self._status]
+        if not fresh:
+            return
+        self._names += fresh
+        self._status.update({n: WAIT for n in fresh})
+        self._width = max(self._width, max(len(n) for n in fresh) + 2)
+        self._render()
+
     def start(self, names: list[str]) -> None:
         """Печатает весь список сразу — сколько PBO предстоит собрать видно
-        с самого начала, а не по мере готовности."""
+        с самого начала, а не по мере готовности.
+
+        Если сборка уже идёт, список дополняется, а не затирается. Таблица
+        одна на всю программу: запуск сервера пакует устаревшие моды, а с
+        страницы модов в это же время можно нажать «Ребилд». Затирание
+        выглядело так, будто первая запаковка оборвалась, — хотя она шла.
+        """
+        if self.busy():
+            self.add(names)
+            return
         self.stop()
         self._names = list(names)
         self._status = {n: WAIT for n in names}

@@ -37,6 +37,7 @@ class PackWorker(QThread):
     source_start = Signal(str)              # имя pbo
     source_done = Signal(str, bool, int, int, int)  # pbo, успех, мс, warnings, errors
     finished_all = Signal(int, int)         # собрано, ошибок
+    queued = Signal(str)                    # встали в очередь за другой запаковкой
 
     def __init__(self, settings: Settings, jobs: list[tuple[ModInfo, str]], parent=None):
         super().__init__(parent)
@@ -49,7 +50,8 @@ class PackWorker(QThread):
             name = packer.pbo_for_source(mod, src).name
             self.source_start.emit(name)
             t0 = time.monotonic()
-            ok, _ = packer.pack_source_auto(self.settings, mod, src)
+            ok, _ = packer.pack_source_auto(
+                self.settings, mod, src, on_wait=lambda n=name: self.queued.emit(n))
             w, e = packlog.counts(Path(src).name)
             self.source_done.emit(name, ok, int((time.monotonic() - t0) * 1000), w, e)
             if ok:

@@ -147,6 +147,26 @@ def sort_key(mod: ModInfo) -> tuple:
     return (0, ranks or (len(order),), mod.name.lower())
 
 
+# Символы, недопустимые в имени папки Windows. В именах модов Workshop они
+# встречаются свободно.
+_BAD_IN_FOLDER = re.compile(r'[<>:"/\\|?*]')
+
+
+def as_folder(name: str) -> str:
+    """Имя мода -> имя @папки, под которым он лежит и в реестре, и на диске.
+
+    Одна функция и для создания папки, и для поиска по имени. Пока замена
+    запрещённых символов делалась только при создании, мод «STALKER: DayZone |
+    Map» ложился в реестр ключом «@stalker_ dayzone _ map», а искался как
+    «@stalker: dayzone | map» — и не находился. Для человека это выглядело
+    как «мод не найден», хотя он лежал на месте, и ссылка на него создавалась
+    без единой жалобы. В именах модов Workshop двоеточия и черты — обычное
+    дело, так что случай не редкий.
+    """
+    n = name if name.startswith("@") else "@" + name
+    return _BAD_IN_FOLDER.sub("_", n)
+
+
 @dataclass
 class ModInfo:
     name: str                 # отображаемое имя, оно же имя @папки при подключении
@@ -189,9 +209,7 @@ class ModInfo:
 
     @property
     def folder_name(self) -> str:
-        n = self.name if self.name.startswith("@") else "@" + self.name
-        # символы, недопустимые в имени папки Windows
-        return re.sub(r'[<>:"/\\|?*]', "_", n)
+        return as_folder(self.name)
 
 
 def _read_meta_name(mod_dir: Path) -> str:
@@ -444,8 +462,8 @@ class ModRegistry:
         return sorted(self.mods.values(), key=sort_key)
 
     def get(self, name: str) -> ModInfo | None:
-        n = name if name.startswith("@") else "@" + name
-        return self.mods.get(n.lower())
+        """Мод по имени из пресета. Имя приводим к имени папки — см. as_folder."""
+        return self.mods.get(as_folder(name).lower())
 
     def index_of(self, mod: ModInfo, names: list[str]) -> int | None:
         """Позиция мода в списке имён пресета (mods/server_mods) — сравнение
