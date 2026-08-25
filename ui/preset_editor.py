@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog,
-    QGroupBox, QWizardPage, QWidget,
+    QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QFileDialog, QApplication,
+    QGroupBox, QWizardPage, QWidget, QSizePolicy,
 )
 from qfluentwidgets import (
     LineEdit, ComboBox, CheckBox, SpinBox, PushButton, PrimaryPushButton,
-    ToolButton, RadioButton, BodyLabel, CaptionLabel, FluentIcon as FIF,
+    ToolButton, RadioButton, BodyLabel, CaptionLabel, SingleDirectionScrollArea, FluentIcon as FIF,
 )
 
 from core.i18n import tr
@@ -93,9 +94,33 @@ class AdvancedPresetDialog(ThemedDialog):
         self._original_key = (preset_key(preset.name, preset.world)
                               if preset.path().exists() else "")
         self.setWindowTitle(tr("preset.edit_title", "Пресет: {n}", n=preset.name))
-        self.resize(760, 680)
+        # Окно высокое, а экраны бывают низкие: на 1366×768 оно не помещалось
+        # целиком, уменьшить его было нельзя, и нижние поля вместе с кнопкой
+        # «Сохранить» просто оказывались за краем экрана. Поэтому содержимое
+        # кладём в прокручиваемую область, а желаемую высоту ограничиваем тем,
+        # что реально есть на экране.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
+        area.setWidgetResizable(True)
+        # Прокрутка вбок — не для повседневности, а на случай, когда окно
+        # сузили сильнее, чем содержимое умеет ужиматься: лучше докрутить,
+        # чем потерять поле за краем.
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        inner = QWidget()
+        inner.setStyleSheet("QWidget{background:transparent;}")
+        area.setWidget(inner)
+        outer.addWidget(area, 1)
+        layout = QVBoxLayout(inner)
 
-        layout = QVBoxLayout(self)
+        avail = 680
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            # оставляем место под панель задач и рамки окна
+            avail = min(avail, max(420, screen.availableGeometry().height() - 80))
+        self.resize(760, avail)
+        self.setMinimumSize(560, 360)
         form = QFormLayout()
 
         self.name = LineEdit()
@@ -113,6 +138,11 @@ class AdvancedPresetDialog(ThemedDialog):
         self.mode.addItem(tr("preset.mode_dedicated",
                              "Dedicated: отдельный DayZServer_x64 + обычный клиент"),
                           userData=MODE_DEDICATED)
+        # Списку с длинными подписями не даём диктовать ширину окна: пусть
+        # ужимается вместе с ним, а полный текст читается в раскрытом виде.
+        self.mode.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                self.mode.sizePolicy().verticalPolicy())
+        self.mode.setMinimumWidth(200)
         self.mode.setCurrentIndex(0 if preset.mode == MODE_DIAG else 1)
         self.mode.currentIndexChanged.connect(self._rebuild_params)
         form.addRow(tr("preset.mode", "Режим запуска"), self.mode)
@@ -151,6 +181,7 @@ class AdvancedPresetDialog(ThemedDialog):
         form.addRow(tr("preset.map", "Карта"), self.map_picker)
         self.files_hint = CaptionLabel("")
         self.files_hint.setWordWrap(True)
+        self.files_hint.setMinimumWidth(1)
         form.addRow("", self.files_hint)
 
         # Ярлык несёт только имя пресета — подготовку в любом случае делает
@@ -179,13 +210,16 @@ class AdvancedPresetDialog(ThemedDialog):
                                       "таймеры ожидания при входе и выходе. Задаются одним "
                                       "значением; для отладки удобно 0."))
         self.time_login.setValue(self._read_time_login())
-        form.addRow(tr("preset.time_login", "Время на вход/выход (секунды)"), self.time_login)
+        form.addRow(tr("preset.time_login", "Вход/выход, сек."), self.time_login)
 
         layout.addLayout(form)
         layout.addWidget(self._auto_box(preset))
         form = QFormLayout()
 
-        clean_row = QHBoxLayout()
+        # Сетка, а не строка: вчетвером эти кнопки требовали 1422 пикселя по
+        # горизонтали и растягивали окно шире любого экрана. В два столбца
+        # хватает семисот.
+        clean_row = QGridLayout()
         b_clear_db = PushButton(FIF.DELETE, tr("preset.clear_db", "Очистить БД"))
         b_clear_db.setToolTip(tr("preset.clear_db_tip",
                                  "Удаляет папки storage_* в миссии пресета — обнуление "
@@ -195,8 +229,7 @@ class AdvancedPresetDialog(ThemedDialog):
         b_clear_prof.setToolTip(tr("preset.clear_prof_tip",
                                    "Полностью чистит папку профиля сервера (логи, настройки модов)."))
         b_clear_prof.clicked.connect(self._clear_profile)
-        b_admin = PushButton(FIF.PEOPLE, tr("preset.admin_sync",
-                                            "Актуализировать данные для Admin Tools"))
+        b_admin = PushButton(FIF.PEOPLE, tr("preset.admin_sync", "Права админок"))
         b_admin.setToolTip(tr("preset.admin_sync_tip",
                               "Перезаписывает в профиле списки админов и пароль VPP "
                               "из «Настроек» — для COT, VPPAdminTools и LBmaster."))
@@ -205,11 +238,8 @@ class AdvancedPresetDialog(ThemedDialog):
         b_open_prof.setToolTip(tr("preset.open_prof_tip",
                                   "Открывает папку профиля сервера в проводнике."))
         b_open_prof.clicked.connect(self._open_profile)
-        clean_row.addWidget(b_clear_db)
-        clean_row.addWidget(b_clear_prof)
-        clean_row.addWidget(b_admin)
-        clean_row.addWidget(b_open_prof)
-        clean_row.addStretch(1)
+        for i, b in enumerate((b_clear_db, b_clear_prof, b_admin, b_open_prof)):
+            clean_row.addWidget(b, i // 2, i % 2)
         form.addRow("", clean_row)
         layout.addLayout(form)
 
@@ -238,7 +268,17 @@ class AdvancedPresetDialog(ThemedDialog):
         b_save.clicked.connect(self._save)
         btns.addWidget(b_cancel)
         btns.addWidget(b_save)
-        layout.addLayout(btns)
+        # Кнопки — за пределами прокрутки: до них должно быть можно дотянуться
+        # из любого положения списка, не докручивая до низа.
+        btns.setContentsMargins(16, 8, 16, 12)
+        outer.addLayout(btns)
+
+        # Ширину подгоняем под содержимое — но не здесь: пока окно не
+        # показано, раскладка ещё не сложилась и о своих размерах врёт.
+        # В diag-режиме параметров больше, и посчитанное заранее число
+        # оказывалось на пару сотен пикселей меньше нужного.
+        self._inner = inner
+        self._width_fitted = False
 
     def _clear_storage(self) -> None:
         from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
@@ -389,6 +429,19 @@ class AdvancedPresetDialog(ThemedDialog):
         self.mode.currentIndexChanged.connect(
             lambda _i: self._auto_toggled(self.chk_restart.isChecked()))
         return box
+
+    def showEvent(self, event):     # имя метода задаёт Qt
+        """Первый показ — подгоняем ширину под то, что реально сложилось."""
+        super().showEvent(event)
+        if self._width_fitted:
+            return
+        self._width_fitted = True
+        want = self._inner.minimumSizeHint().width() + 48
+        screen = QApplication.primaryScreen()
+        # Шире экрана окно бесполезно: до краёв всё равно не дотянуться.
+        limit = screen.availableGeometry().width() - 80 if screen else 1600
+        if want > self.width():
+            self.resize(min(want, limit), self.height())
 
     def _auto_toggled(self, on: bool) -> None:
         """Поля расписания живут только вместе с самим расписанием."""

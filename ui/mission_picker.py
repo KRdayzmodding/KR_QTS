@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal, Qt, QUrl
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
 from qfluentwidgets import (
     ComboBox, ToolButton, PushButton, PrimaryPushButton, CheckBox,
     BodyLabel, CaptionLabel, HyperlinkLabel, IndeterminateProgressBar, FluentIcon as FIF,
@@ -113,6 +113,9 @@ class MapPicker(QWidget):
         col.setSpacing(2)
         row = QHBoxLayout()
         self.combo = ComboBox()
+        self.combo.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                 self.combo.sizePolicy().verticalPolicy())
+        self.combo.setMinimumWidth(160)
         self.combo.currentIndexChanged.connect(lambda _i: self._update_status())
         self.b_upd = ToolButton(FIF.SYNC)
         self.b_upd.setToolTip(tr("mission.upd_tip",
@@ -132,11 +135,19 @@ class MapPicker(QWidget):
         row.addWidget(self.b_custom)
         col.addLayout(row)
         self.status = CaptionLabel("")
+        # Перенос по словам и право ужиматься: без второго QLabel требует
+        # ширину всей строки целиком, а строка тут длинная — «Шаблон
+        # actual.chernarusplus будет скачан с github.com/…». Из-за неё окно
+        # пресета требовало две тысячи пикселей по горизонтали, и всё, что не
+        # влезало, обрезалось без всякой возможности до этого добраться.
+        self.status.setWordWrap(True)
+        self.status.setMinimumWidth(1)
         col.addWidget(self.status)
         warn_row = QHBoxLayout()
         self.map_warn = CaptionLabel("")
         self.map_warn.setStyleSheet(f"color: {_WARN_COLOR};")
         self.map_warn.setWordWrap(True)
+        self.map_warn.setMinimumWidth(1)
         self.map_link = HyperlinkLabel(parent=self)
         self.map_link.setText(tr("mission.map_open_workshop", "Открыть в Workshop"))
         self.map_link.hide()
