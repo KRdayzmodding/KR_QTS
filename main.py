@@ -12,7 +12,7 @@ from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
 from ui.main_window import MainWindow
-from ui import single_instance
+from ui import nowheel, single_instance
 from ui.theme import outside_icon
 from ui.wizard import FirstRunWizard
 
@@ -67,6 +67,8 @@ def main() -> int:
     crashguard.install(f"{APP_NAME} {VERSION}", APP_DIR / "logs")
     # общая для всех окон: мастер, главное окно и окна логов берут её сами
     app.setWindowIcon(outside_icon())
+    # колесо мыши листает страницы, а не правит числа под курсором
+    nowheel.install(app)
 
     # До чтения настроек: вторая копия не должна успеть ничего ни прочитать,
     # ни записать — иначе два менеджера начнут спорить за одни файлы.
