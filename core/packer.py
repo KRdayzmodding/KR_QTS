@@ -123,13 +123,20 @@ def stale_sources(mod: ModInfo) -> list[str]:
     return out
 
 
-def stale_mods(mods: list[ModInfo]) -> list[tuple[ModInfo, list[str]]]:
-    """Локальные моды с сорсами, требующие перепаковки."""
+def stale_mods(mods: list[ModInfo],
+               force: bool = False) -> list[tuple[ModInfo, list[str]]]:
+    """Локальные моды с сорсами, требующие перепаковки.
+
+    force — собрать все, а не только изменившиеся. Нужно, когда изменилось не
+    содержимое сорсов, а условия сборки: настройки pboProject, версия
+    инструментов, содержимое чужого мода-зависимости. Сравнение дат про такое
+    ничего не знает и честно говорит «всё свежее».
+    """
     out = []
     for mod in mods:
         if not mod.can_have_sources or not mod.sources:
             continue
-        stale = stale_sources(mod)
+        stale = [s for s in mod.sources if Path(s).is_dir()] if force else stale_sources(mod)
         if stale:
             out.append((mod, stale))
     return out

@@ -929,5 +929,16 @@
   "cli.no_engine_hint": "Start the program, or add +start to bring it up silently, without a window.",
   "cli.start_failed": "Could not start KR QTS.",
   "cli.no_answer": "KR QTS is running but does not answer: {e}",
-  "cli.bad_reply": "Unreadable answer from KR QTS."
+  "cli.bad_reply": "Unreadable answer from KR QTS.",
+  "cli.unknown_cmd": "Unknown command «{c}».",
+  "cli.unknown_cmd_hint": "Known ones: launch, stop, status, show, quit.",
+  "cli.busy": "The program is busy: {s}.",
+  "cli.busy_hint": "Wait for it to finish, or shut down: qtsctl stop",
+  "cli.no_preset": "There is no preset «{n}».",
+  "cli.no_preset_hint": "Available: {list}",
+  "cli.no_presets": "The program has no presets at all.",
+  "cli.launch_note": "— Launched from outside: preset «{n}» —",
+  "cli.already": "A launch is already running.",
+  "cli.nothing_to_do": "Everything requested is already running.",
+  "cli.preflight": "The pre-launch check did not pass:"
 }

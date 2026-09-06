@@ -11,6 +11,7 @@ from core import console, crashguard, i18n, updater_apply
 from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
+from ui.cliserver import CliServer
 from ui.main_window import MainWindow
 from ui import nowheel, single_instance
 from ui import tokens
@@ -30,12 +31,22 @@ def _preset_arg(argv: list[str]) -> str:
     return ""
 
 
-def _greet(channel, window) -> None:
-    """Пришло сообщение от второй копии.
+def _quiet_arg(argv: list[str]) -> bool:
+    """«--quiet» — подняться без окна: так нас запускает qtsctl.
 
-    «show» — человек запустил программу второй раз и хочет её видеть.
+    Инструмент просил запустить сервер, а не лезть на экран. Значок в трее при
+    этом есть — иначе запуск выглядел бы как программа, не запустившаяся вовсе.
+    """
+    return "--quiet" in argv
+
+
+def _greet(channel, window) -> None:
+    """Пришло сообщение по каналу.
+
+    Три вида. «show» — человек запустил программу второй раз и хочет её видеть.
     «launch:<пресет>» — нажат ярлык быстрого запуска: окно не поднимаем,
-    свёрнутая в трей программа должна там и остаться.
+    свёрнутая в трей программа должна там и остаться. Строка JSON — внешнее
+    управление, см. ui/cliserver.
     """
     conn = channel.nextPendingConnection()
     text = ""
@@ -46,6 +57,11 @@ def _greet(channel, window) -> None:
         if not conn.bytesAvailable():
             conn.waitForReadyRead(300)
         text = bytes(conn.readAll().data()).decode("utf-8", "replace").strip()
+        if text.startswith("{"):
+            # Ответ пишет и соединение закрывает сам сервер команд: запуск с
+            # ожиданием отвечает через минуты, а не в этой же строке.
+            window.cliserver.handle(conn, text)
+            return
         single_instance.confirm(conn)
         conn.disconnectFromServer()
     if text.startswith(single_instance.LAUNCH + ":"):
@@ -75,6 +91,7 @@ def main() -> int:
     # ни записать — иначе два менеджера начнут спорить за одни файлы.
     user = os.environ.get("USERNAME", "")
     wanted = _preset_arg(sys.argv)
+    quiet = _quiet_arg(sys.argv)
     msg = (f"{single_instance.LAUNCH}:{wanted}" if wanted
            else single_instance.SHOW)
     if single_instance.already_running(user, msg):
@@ -102,16 +119,19 @@ def main() -> int:
             return 0  # пользователь закрыл мастер — выходим без сохранения
 
     window = MainWindow(settings)
+    window.cliserver = CliServer(window)
     # вторая копия стучится в канал вместо запуска — показываем эту
     channel.newConnection.connect(lambda: _greet(channel, window))
-    if wanted:
+    if quiet:
+        pass                    # подняты по просьбе qtsctl: окна не показываем
+    elif wanted:
         # запуск по ярлыку: окна не показываем вовсе, значок в трее уже есть
         window.launch_preset_by_stem(wanted)
     else:
         window.show_as_configured()
     # после показа: подхват уже работающих клиента и сервера прошлого запуска
     window.adopt_running()
-    if not wanted:
+    if not wanted and not quiet:
         # Автозапуск — после подхвата: сервер прошлой сессии мог пережить
         # закрытие менеджера, и поднимать второй поверх него незачем.
         window.autostart_presets()

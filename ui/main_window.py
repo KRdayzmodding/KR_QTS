@@ -970,28 +970,49 @@ class MainWindow(FluentWindow):
         fn(title=title, content=text, parent=self, duration=duration,
            position=InfoBarPosition.TOP_RIGHT)
 
-    def _launch(self, only: set[str] | None = None) -> None:
-        """only — поднять лишь эти стороны (для сторожа: сервер без клиента)."""
-        p = self.current
+    def _launch(self, only: set[str] | None = None, preset=None,
+                quiet: bool = False, pack: str | None = None,
+                rebuild: bool = False) -> str:
+        """Запуск. Пустая строка в ответе — пошло, иначе причина отказа.
+
+        only — поднять лишь эти стороны (для сторожа: сервер без клиента).
+        preset — готовая копия с наложенными аргументами внешнего управления:
+        тогда стороны берутся из неё, а не из галок окна, а сам пресет на диске
+        не меняется. quiet — не задавать вопросов: предстартовая проверка
+        возвращается текстом, а не диалогом, потому что снаружи отвечать
+        некому.
+        """
+        p = preset if preset is not None else self.current
         if not p:
-            self._notify("warning", tr("main.no_preset", "Сначала создайте пресет."))
-            return
+            text = tr("main.no_preset", "Сначала создайте пресет.")
+            if quiet:
+                return text
+            self._notify("warning", text)
+            return ""
         if not p.launch_server and not p.launch_client:
-            self._notify("warning", tr("main.nothing",
-                                       "Отметьте, что запускать: сервер и/или клиент."))
-            return
+            text = tr("main.nothing", "Отметьте, что запускать: сервер и/или клиент.")
+            if quiet:
+                return text
+            self._notify("warning", text)
+            return ""
         if self.worker and self.worker.isRunning():
-            return
+            return tr("cli.already", "Запуск уже идёт.") if quiet else ""
 
         # Поднимаем только то, чего не хватает: живую сторону трогать нельзя.
         # Копия пресета, а не сам пресет: галки — его сохраняемые поля, и
         # правка ради одного запуска осталась бы в файле навсегда.
         self._restart_queued = False
-        want_srv, want_cli = self.sides_to_launch()
+        if preset is not None:
+            # Стороны из накладки, а не из галок: команда снаружи говорит, что
+            # поднимать, и живую сторону при этом всё равно не трогаем.
+            want_srv = p.launch_server and not self.server_running()
+            want_cli = p.launch_client and not self.client_running()
+        else:
+            want_srv, want_cli = self.sides_to_launch()
         if only is not None:
             want_srv, want_cli = want_srv and SERVER in only, want_cli and CLIENT in only
         if not want_srv and not want_cli:
-            return
+            return tr("cli.nothing_to_do", "Всё запрошенное уже работает.") if quiet else ""
         import dataclasses
         p = dataclasses.replace(p, launch_server=want_srv, launch_client=want_cli)
         keep = {side for side, alive in ((SERVER, self.server_running()),
@@ -1000,10 +1021,14 @@ class MainWindow(FluentWindow):
         branch = self._branch()
         problems = [pr for pr in run_checks(p, self.settings, branch, self.registry)
                     if pr.check_id not in self.ignored_checks]
+        if problems and quiet:
+            # Снаружи спрашивать некого: отдаём список текстом и не запускаем.
+            return (tr("cli.preflight", "Проверка перед запуском не пройдена:")
+                    + "\n" + "\n".join("  " + pr.message for pr in problems))
         if problems:
             dlg = PreflightDialog(problems, self)
             if not dlg.exec():
-                return
+                return ""
             self.ignored_checks |= dlg.ignore_ids
 
         # Автоисправление кодировки конфига перед запуском
@@ -1050,7 +1075,16 @@ class MainWindow(FluentWindow):
         if want_cli:
             # клиенту -profiles не передаётся, его RPT всегда в %LOCALAPPDATA%
             self.monitors[CLIENT].start(logsource.client_log_dir(branch))
-        self.worker = LaunchWorker(p, self.settings, branch, self.registry)
+        settings = self.settings
+        if pack is not None:
+            # Копия настроек, а не правка: «+pack=full» относится к одному
+            # запуску, и остаться в файле навсегда он не должен.
+            settings = dataclasses.replace(
+                self.settings, repack_before_launch=bool(pack),
+                pack_engine=(pack if pack in ("normal", "full")
+                             else self.settings.pack_engine))
+        self.worker = LaunchWorker(p, settings, branch, self.registry,
+                                   rebuild=rebuild)
         self.worker.log.connect(self._append_log)
         self.worker.pack_plan.connect(self.pack_table.start)
         self.worker.pack_plan.connect(self.remember_packed)
@@ -1062,6 +1096,7 @@ class MainWindow(FluentWindow):
         self.worker.failed.connect(self._launch_done)
         self.worker.cancelled.connect(self._launch_cancelled)
         self.worker.start()
+        return ""
 
     def _server_name(self, preset: ServerPreset, cfg_path: str | None) -> str:
         """Название сервера так, как его увидят игроки.

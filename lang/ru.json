@@ -929,5 +929,16 @@
   "cli.no_engine_hint": "Запусти программу или добавь +start, чтобы поднять её молча, без окна.",
   "cli.start_failed": "Не удалось запустить KR QTS.",
   "cli.no_answer": "KR QTS запущен, но не отвечает: {e}",
-  "cli.bad_reply": "Непонятный ответ от KR QTS."
+  "cli.bad_reply": "Непонятный ответ от KR QTS.",
+  "cli.unknown_cmd": "Не знаю команду «{c}».",
+  "cli.unknown_cmd_hint": "Известные: launch, stop, status, show, quit.",
+  "cli.busy": "Программа занята: {s}.",
+  "cli.busy_hint": "Дождись окончания или потуши: qtsctl stop",
+  "cli.no_preset": "Пресета «{n}» нет.",
+  "cli.no_preset_hint": "Есть: {list}",
+  "cli.no_presets": "В программе нет ни одного пресета.",
+  "cli.launch_note": "— Запуск извне: пресет «{n}» —",
+  "cli.already": "Запуск уже идёт.",
+  "cli.nothing_to_do": "Всё запрошенное уже работает.",
+  "cli.preflight": "Проверка перед запуском не пройдена:"
 }

@@ -308,12 +308,14 @@ class LaunchWorker(QThread):
     cancelled = Signal()            # запуск оборван по просьбе — не ошибка
 
     def __init__(self, preset: ServerPreset, settings: Settings, branch: str,
-                 registry: ModRegistry, parent: QObject | None = None) -> None:
+                 registry: ModRegistry, parent: QObject | None = None,
+                 rebuild: bool = False) -> None:
         super().__init__(parent)
         self.preset = preset
         self.settings = settings
         self.branch = branch
         self.registry = registry
+        self.rebuild = rebuild      # собрать всё, а не только изменившееся
         self._abort = threading.Event()
 
     def cancel(self) -> None:
@@ -390,7 +392,7 @@ class LaunchWorker(QThread):
                              "Запаковка пропущена: запущенная игра держит PBO. "
                              "Запуск идёт с тем, что собрано."), "warning")
         elif s.repack_before_launch:
-            plan = packer.stale_mods(selected)
+            plan = packer.stale_mods(selected, force=self.rebuild)
             # весь список объявляем заранее — сколько PBO предстоит собрать
             # должно быть видно сразу, а не по мере готовности
             self.pack_plan.emit([packer.pbo_for_source(m, src).name
