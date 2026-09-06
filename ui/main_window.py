@@ -8,13 +8,12 @@ from pathlib import Path
 import psutil
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QApplication,
-    QSystemTrayIcon, QSplitter,
+    QVBoxLayout, QHBoxLayout, QApplication,
+    QSystemTrayIcon,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF,
-    ComboBox, CheckBox, PushButton, PrimaryPushButton, TransparentToolButton,
-    BodyLabel, StrongBodyLabel, CaptionLabel, CardWidget, InfoBar, InfoBarPosition, MessageBox,
+    CheckBox, PushButton, PrimaryPushButton, BodyLabel, InfoBar, InfoBarPosition, MessageBox,
     SystemTrayMenu, Action, qconfig,
 )
 
@@ -32,6 +31,7 @@ from core.steam_urls import SETTINGS_APPS
 from core.version import APP_NAME, VERSION
 from ui import tokens
 from ui.cfg_editor import CfgEditor
+from ui.launch_page import LaunchInterface
 from ui.log_window import LogWindow
 from ui.mods_panel import ModsPanel
 from ui.preflight_dialog import PreflightDialog
@@ -75,157 +75,6 @@ class _RconWorker(QThread):
                 self.done.emit(True, r.command(self.command) if self.command else "")
         except rcon.RconError as e:
             self.done.emit(False, str(e))
-
-
-class LaunchInterface(QWidget):
-    """Страница «Запуск»: пресет, ветка, галки, кнопки, статус, журнал запуска."""
-
-    def __init__(self, win: MainWindow):
-        super().__init__()
-        self.setObjectName("launchInterface")
-        self.win = win
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(12)
-
-        # Пресет + ветка — прижаты влево, чтобы справа осталось место для
-        # кнопки «Подключить моды» (см. ниже, addStretch перед ней)
-        top = QHBoxLayout()
-        top.addWidget(BodyLabel(tr("main.preset", "Пресет:")))
-        self.preset_combo = ComboBox()
-        self.preset_combo.setMinimumWidth(200)
-        self.preset_combo.setMaximumWidth(260)
-        top.addWidget(self.preset_combo)
-        self.b_new = TransparentToolButton(FIF.ADD)
-        self.b_new.setToolTip(tr("main.preset_new", "Создать"))
-        self.b_edit = TransparentToolButton(FIF.EDIT)
-        self.b_edit.setToolTip(tr("main.preset_edit", "Изменить"))
-        self.b_del = TransparentToolButton(FIF.DELETE)
-        self.b_del.setToolTip(tr("main.preset_del", "Удалить"))
-        top.addWidget(self.b_new)
-        top.addWidget(self.b_edit)
-        top.addWidget(self.b_del)
-        top.addSpacing(20)
-        top.addWidget(BodyLabel(tr("main.branch", "Ветка:")))
-        self.branch_combo = ComboBox()
-        self.branch_combo.addItem("Stable", userData=STABLE)
-        self.branch_combo.addItem("Experimental", userData=EXPERIMENTAL)
-        top.addWidget(self.branch_combo)
-        top.addStretch(1)
-        # Обновление — здесь, а не в панели навигации. Там оно было честным, но
-        # незаметным: пункт внизу списка, мимо которого человек ходит годами.
-        # На странице запуска, рядом с кнопками, которые он нажимает каждый раз,
-        # его невозможно не увидеть. Появляется только когда есть что сказать.
-        self.btn_update = PrimaryPushButton(FIF.UPDATE,
-                                            tr("main.update_btn", "Обновить приложение"))
-        self.btn_update.setVisible(False)
-        top.addWidget(self.btn_update)
-        self.b_connect_mods = PushButton(FIF.APPLICATION, tr("main.connect_mods", "Подключить моды"))
-        top.addWidget(self.b_connect_mods)
-        layout.addLayout(top)
-
-        def framed(title: str) -> QVBoxLayout:
-            """Обведённый рамкой блок с заголовком."""
-            card = CardWidget()
-            box = QVBoxLayout(card)
-            box.setContentsMargins(16, 10, 16, 12)
-            box.setSpacing(8)
-            box.addWidget(StrongBodyLabel(title))
-            layout.addWidget(card)
-            return box
-
-        # ------------------------------------------------------------ Сервер
-        srv = framed(tr("main.frame_server", "Сервер"))
-        row = QHBoxLayout()
-        self.chk_server = CheckBox(tr("common.server", "Сервер"))
-        self.chk_client = CheckBox(tr("common.client", "Клиент"))
-        row.addWidget(self.chk_server)
-        row.addWidget(self.chk_client)
-        self.chk_hide_window = CheckBox(tr("main.hide_server_window",
-                                           "Скрыть окно сервера"))
-        self.chk_hide_window.setToolTip(tr(
-            "main.hide_server_window_tip",
-            "Сервер запустится без своего окна. Всё, что оно показывает, будет "
-            "выводиться сюда, в журнал запуска."))
-        row.addWidget(self.chk_hide_window)
-        row.addStretch(1)
-        self.status_label = StrongBodyLabel("")
-        row.addWidget(self.status_label)
-        srv.addLayout(row)
-
-        row2 = QHBoxLayout()
-        self.btn_launch = PrimaryPushButton(FIF.PLAY, tr("main.launch_btn", "Запустить"))
-        self.btn_launch.setMinimumHeight(38)
-        self.btn_logs = PushButton(FIF.DOCUMENT, tr("main.show_logs",
-                                                    "Логи клиента/сервера"))
-        self.btn_logs.setMinimumHeight(38)
-        row2.addWidget(self.btn_launch, 2)
-        row2.addWidget(self.btn_logs, 1)
-        srv.addLayout(row2)
-
-        # ---------------------------------------------------------- Запаковка
-        pack = framed(tr("main.frame_pack", "Запаковка"))
-        row_pack = QHBoxLayout()
-        row_pack.addWidget(BodyLabel(tr("main.pack_engine",
-                                        "Запаковка изменённых модов перед запуском:")))
-        # три состояния одним списком: выключено + два режима pboProject
-        self.pack_engine = ComboBox()
-        self.pack_engine.addItem(tr("main.repack_off", "Не запаковывать"), userData="")
-        self.pack_engine.addItem(tr("settings.engine_normal",
-                                    "Обычная — переиспользует temp"), userData="normal")
-        self.pack_engine.addItem(tr("settings.engine_full",
-                                    "Полная (FullBuild) — чистит temp"), userData="full")
-        row_pack.addWidget(self.pack_engine, 1)
-        self.btn_pack_settings = TransparentToolButton(FIF.SETTING)
-        self.btn_pack_settings.setToolTip(tr("main.pack_settings_tip",
-                                             "Настройки pboProject — те же, что в «Настройках», "
-                                             "но под рукой. Сохраняются сразу."))
-        row_pack.addWidget(self.btn_pack_settings)
-        pack.addLayout(row_pack)
-
-        row3 = QHBoxLayout()
-        self.btn_sources = PushButton(FIF.SYNC, tr("main.mods_with_sources",
-                                                   "Запаковать моды"))
-        self.btn_sources.setMinimumHeight(38)
-        self.btn_packlogs = PushButton(FIF.ZIP_FOLDER, tr("main.show_packlogs",
-                                                          "Логи запаковки"))
-        self.btn_packlogs.setMinimumHeight(38)
-        self.btn_packlogs.setToolTip(tr("main.show_packlogs_tip",
-                                        "Логи pboProject по последней запаковке: "
-                                        "отдельно сборка pbo, отдельно бинаризация."))
-        row3.addWidget(self.btn_sources, 1)
-        row3.addWidget(self.btn_packlogs, 1)
-        pack.addLayout(row3)
-
-        # Журнал запуска и — когда окно сервера спрятано — его консоль под ним.
-        # Двумя областями, а не одной лентой: это разные потоки. Наш журнал
-        # редкий и осмысленный, консоль сервера частая и подробная; смешав их,
-        # мы утопили бы первое во втором.
-        self.launch_log = QPlainTextEdit()
-        self.launch_log.setReadOnly(True)
-        self.launch_log.setFont(tokens.mono_font())
-        tokens.apply_console(self.launch_log)
-
-        self.console_box = QWidget()
-        cbox = QVBoxLayout(self.console_box)
-        cbox.setContentsMargins(0, 0, 0, 0)
-        cbox.setSpacing(4)
-        cbox.addWidget(CaptionLabel(tr("main.server_console", "Консоль сервера")))
-        self.console_log = QPlainTextEdit()
-        self.console_log.setReadOnly(True)
-        self.console_log.setMaximumBlockCount(5000)
-        self.console_log.setFont(tokens.mono_font())
-        tokens.apply_console(self.console_log)
-        cbox.addWidget(self.console_log, 1)
-        # появляется только у сервера, запущенного без своего окна
-        self.console_box.setVisible(False)
-
-        self.log_split = QSplitter(Qt.Orientation.Vertical)
-        self.log_split.addWidget(self.launch_log)
-        self.log_split.addWidget(self.console_box)
-        self.log_split.setStretchFactor(0, 1)
-        self.log_split.setStretchFactor(1, 1)
-        layout.addWidget(self.log_split, 1)
 
 
 class MainWindow(FluentWindow):
@@ -360,7 +209,7 @@ class MainWindow(FluentWindow):
         lp.b_connect_mods.clicked.connect(self._open_connect_mods)
         lp.chk_server.toggled.connect(self._launch_flags_changed)
         lp.chk_hide_window.setChecked(settings.hide_server_window)
-        lp.chk_hide_window.toggled.connect(self._hide_window_changed)
+        lp.chk_hide_window.checkedChanged.connect(self._hide_window_changed)
         lp.chk_server.toggled.connect(lambda _v: self._update_launch_button())
         lp.chk_client.toggled.connect(lambda _v: self._update_launch_button())
         lp.chk_client.toggled.connect(self._launch_flags_changed)
@@ -725,8 +574,6 @@ class MainWindow(FluentWindow):
         p = self.current
         if not p:
             return
-        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout
-        from qfluentwidgets import BodyLabel
         from ui.theme import ThemedDialog
 
         dlg = ThemedDialog(self)
@@ -1477,6 +1324,10 @@ class MainWindow(FluentWindow):
         return state != self.LB_STARTING
 
     def _update_launch_button(self) -> None:
+        # Страница — представление: шапка состояния, итоги в свёрнутых
+        # карточках и сегмент состава пересчитываются здесь же, а не отдельным
+        # путём, иначе разойдутся с кнопкой.
+        self.launch_page.update_state()
         state = self.launch_state()
         text, icon = self.button_look(state)
         lp = self.launch_page

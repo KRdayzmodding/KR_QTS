@@ -74,8 +74,12 @@ def setting_row(title: str, desc: str, control, prefix=None) -> QWidget:
     text = QVBoxLayout()
     text.setSpacing(0)
     text.addWidget(shrink(StrongBodyLabel(title)))
-    if desc:
-        text.addWidget(shrink(CaptionLabel(desc)))
+    # Подпись создаём всегда, даже пустую: её текст меняется на ходу (список
+    # подключённых модов, режим запаковки), и добавлять её потом значило бы
+    # пересобирать строку.
+    row.desc_label = shrink(CaptionLabel(desc))
+    row.desc_label.setVisible(bool(desc))
+    text.addWidget(row.desc_label)
     holder = QWidget()
     holder.setLayout(text)
     holder.setMinimumWidth(TEXT_MIN)
