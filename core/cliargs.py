@@ -190,7 +190,8 @@ _STATIC: list[ArgSpec] = [
 
     ArgSpec("wait", G_OUTPUT, value="int", plus=False, optional=True,
             hint="сек",
-            help="Ждать готовности, не дольше указанного числа секунд."),
+            help="Ждать готовности, не дольше указанного числа секунд. "
+                 "Для консоли включено по умолчанию."),
     ArgSpec("timeout", G_OUTPUT, value="int", plus=False,
             hint="сек",
             help="Общий потолок ожидания. Запаковка считается отдельно."),

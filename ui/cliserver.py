@@ -220,9 +220,12 @@ class CliServer(QObject):
     def report(self, plan=None) -> dict:
         win = self.win
         out = {"preset": win.current.name if win.current else "",
+               "pack": win.pack_table.report(),
                "server": self._side(SERVER),
                "client": self._side(CLIENT),
                "problems": self._problems()}
+        if win.launch_error:
+            out["error"] = win.launch_error
         if plan is not None:
             out["notes"] = [n.as_dict() for n in plan.notes]
         return out
@@ -267,6 +270,13 @@ class CliServer(QObject):
             if found:
                 out[kind] = str(found)
         return out
+
+    def pack_failed(self) -> bool:
+        """Сорвалась ли сборка. По таблице, а не по тексту ошибки: разбирать
+        сообщение, чтобы понять, что случилось, — способ ошибиться при первом
+        же переводе."""
+        return any(i.get("status") == "fail"
+                   for i in self.win.pack_table.report()["items"])
 
     def _problems(self) -> list:
         """Ошибки скриптов и сорванные запуски — списком, а не кодом возврата.
@@ -348,8 +358,11 @@ class _Wait(QObject):
                     done = False
             if done:
                 return self._finish(cliproto.EXIT_OK)
-            # Сорванный запуск ждать бессмысленно: скрипты не собрались, и
-            # сторона уже не поднимется — отвечаем сразу, а не по таймауту.
+            # Сорванный запуск ждать бессмысленно: сторона уже не поднимется —
+            # отвечаем сразу, а не по таймауту.
+            if win.launch_error:
+                return self._finish(cliproto.EXIT_PACK if self.server.pack_failed()
+                                    else cliproto.EXIT_SERVER)
             for side, wanted in self.want.items():
                 if wanted and win.launch_status.sides[side].crash is not None:
                     return self._finish(cliproto.EXIT_SERVER if side == SERVER

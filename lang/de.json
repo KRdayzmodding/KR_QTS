@@ -867,7 +867,7 @@
   "cli.arg.serverMod": "Dasselbe, aber nur für den Server.",
   "cli.arg.src": "Quellordner des letzten Mods. Plus bindet, Minus löst. Explizite Form: +src:@Mod=Pfad.",
   "cli.arg.timeout": "Gesamte Wartegrenze. Das Packen zählt getrennt.",
-  "cli.arg.wait": "Auf Bereitschaft warten, höchstens die angegebene Anzahl Sekunden.",
+  "cli.arg.wait": "Auf Bereitschaft warten, höchstens die angegebene Anzahl Sekunden. In der Konsole standardmäßig an.",
   "cli.help.args": "Argumente",
   "cli.help.command": "Befehl",
   "cli.help.commands": "Befehle",
@@ -913,10 +913,6 @@
   "cli.rep.empty": "Kein Bericht.",
   "cli.rep.preset": "Preset",
   "cli.rep.pack": "Packen",
-  "cli.rep.built": "gebaut {n}",
-  "cli.rep.skipped": "unverändert {n}",
-  "cli.rep.failed": "fehlgeschlagen {n}",
-  "cli.rep.fail_line": "Build fehlgeschlagen: {m} — {e}",
   "cli.rep.skip": "nicht angefordert",
   "cli.rep.ready": "bereit",
   "cli.rep.started": "gestartet, Bereitschaft nicht bestätigt",
@@ -951,5 +947,12 @@
   "settings.copied": "Kopiert",
   "common.copy": "Kopieren",
   "cli.disabled": "Die externe Steuerung ist aus.",
-  "cli.disabled_hint": "Einschalten in den Einstellungen, Abschnitt «Externe Steuerung»."
+  "cli.disabled_hint": "Einschalten in den Einstellungen, Abschnitt «Externe Steuerung».",
+  "cli.rep.pack_ok": "ok",
+  "cli.rep.pack_fail": "Fehler",
+  "cli.rep.pack_now": "läuft",
+  "cli.rep.pack_wait": "in Warteschlange",
+  "cli.rep.pack_secs": "   {n} s",
+  "cli.rep.pack_errors": "Fehler {n}",
+  "cli.rep.pack_warnings": "Warnungen {n}"
 }

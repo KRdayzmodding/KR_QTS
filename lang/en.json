@@ -867,7 +867,7 @@
   "cli.arg.serverMod": "Same, but server only.",
   "cli.arg.src": "Source folder of the last mod. Plus binds, minus unbinds. Explicit form: +src:@Mod=path.",
   "cli.arg.timeout": "Overall wait limit. Packing is counted separately.",
-  "cli.arg.wait": "Wait for readiness, no longer than the given number of seconds.",
+  "cli.arg.wait": "Wait for readiness, no longer than the given number of seconds. On by default in the console.",
   "cli.help.args": "arguments",
   "cli.help.command": "command",
   "cli.help.commands": "Commands",
@@ -913,10 +913,6 @@
   "cli.rep.empty": "No report.",
   "cli.rep.preset": "Preset",
   "cli.rep.pack": "Packing",
-  "cli.rep.built": "built {n}",
-  "cli.rep.skipped": "unchanged {n}",
-  "cli.rep.failed": "failed {n}",
-  "cli.rep.fail_line": "build failed: {m} — {e}",
   "cli.rep.skip": "not requested",
   "cli.rep.ready": "ready",
   "cli.rep.started": "started, readiness not confirmed",
@@ -951,5 +947,12 @@
   "settings.copied": "Copied",
   "common.copy": "Copy",
   "cli.disabled": "External control is switched off.",
-  "cli.disabled_hint": "Turn it on in the settings, section «External control»."
+  "cli.disabled_hint": "Turn it on in the settings, section «External control».",
+  "cli.rep.pack_ok": "ok",
+  "cli.rep.pack_fail": "failed",
+  "cli.rep.pack_now": "packing",
+  "cli.rep.pack_wait": "queued",
+  "cli.rep.pack_secs": "   {n} s",
+  "cli.rep.pack_errors": "errors {n}",
+  "cli.rep.pack_warnings": "warnings {n}"
 }

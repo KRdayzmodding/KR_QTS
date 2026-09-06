@@ -125,6 +125,25 @@ class PackingLog:
         """Состав текущей таблицы — он же состав последней запаковки."""
         return list(self._names)
 
+    def report(self) -> dict:
+        """Состав и исход последней сборки — для отчёта внешнему управлению.
+
+        Данные уже собраны здесь ради таблицы в журнале; отдельного учёта для
+        отчёта заводить не надо, иначе они разойдутся при первой же правке.
+        """
+        items = []
+        for name in self._names:
+            w, e = self._issues.get(name, (0, 0))
+            item = {"pbo": name, "status": self._status.get(name, "")}
+            if name in self._elapsed:
+                item["ms"] = self._elapsed[name]
+            if w:
+                item["warnings"] = w
+            if e:
+                item["errors"] = e
+            items.append(item)
+        return {"plan": list(self._names), "items": items}
+
     def busy(self) -> bool:
         """Идёт ли сборка прямо сейчас — что-то пакуется или ждёт очереди."""
         return any(s in (WAIT, PACKING) for s in self._status.values())

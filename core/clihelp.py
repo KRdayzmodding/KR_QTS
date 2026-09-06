@@ -221,26 +221,38 @@ def render_report(report: dict) -> str:
         out.append(tr("cli.rep.preset", "Пресет") + ": " + str(report["preset"]))
 
     pack = report.get("pack") or {}
-    if pack:
-        built = pack.get("built") or []
-        counts = [tr("cli.rep.built", "собрано {n}").format(n=len(built))]
-        if pack.get("skipped"):
-            counts.append(tr("cli.rep.skipped", "без изменений {n}").format(
-                n=pack["skipped"]))
-        if pack.get("failed"):
-            counts.append(tr("cli.rep.failed", "не собрано {n}").format(
-                n=len(pack["failed"])))
+    items = pack.get("items") or []
+    if items:
+        # Состав объявляется целиком, а исход — по каждому PBO: приложение
+        # выясняет, что паковать, и отчитывается за каждый; разбираться с
+        # ошибкой будет тот, кто запускал.
         out.append("")
-        out.append(tr("cli.rep.pack", "Запаковка") + ": " + ", ".join(counts))
-        for item in built:
-            name = item.get("mod", "")
-            src = item.get("source", "")
-            secs = item.get("seconds")
-            tail = f"   {secs} c" if secs else ""
-            out.append(f"  {name} / {src}{tail}" if src else f"  {name}{tail}")
-        for item in pack.get("failed") or []:
-            out.append("  " + tr("cli.rep.fail_line", "не собралось: {m} — {e}").format(
-                m=item.get("mod", ""), e=item.get("error", "")))
+        out.append(tr("cli.rep.pack", "Запаковка") + f" ({len(items)}):")
+        width = max(len(str(i.get("pbo", ""))) for i in items)
+        for item in items:
+            state = {"ok": tr("cli.rep.pack_ok", "ок"),
+                     "fail": tr("cli.rep.pack_fail", "ошибка"),
+                     "packing": tr("cli.rep.pack_now", "идёт"),
+                     "wait": tr("cli.rep.pack_wait", "в очереди"),
+                     }.get(item.get("status", ""), item.get("status", ""))
+            line = f"  {str(item.get('pbo', '')):<{width}}  {state}"
+            if item.get("ms"):
+                line += tr("cli.rep.pack_secs", "   {n} c").format(
+                    n=round(item["ms"] / 1000, 1))
+            counts = []
+            if item.get("errors"):
+                counts.append(tr("cli.rep.pack_errors", "ошибок {n}").format(
+                    n=item["errors"]))
+            if item.get("warnings"):
+                counts.append(tr("cli.rep.pack_warnings", "предупреждений {n}").format(
+                    n=item["warnings"]))
+            if counts:
+                line += "   " + ", ".join(counts)
+            out.append(line)
+
+    if report.get("error"):
+        out.append("")
+        out.append(str(report["error"]))
 
     if report.get("server") or report.get("client"):
         out.append("")

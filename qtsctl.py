@@ -127,6 +127,11 @@ def main(argv: list[str]) -> int:
         _out(e.full())
         return cliproto.EXIT_ARGS
 
+    # Ждём по умолчанию: скрипт почти всегда хочет знать исход, а не «команда
+    # принята». Кому надо вернуться сразу — тот скажет это словом +detach.
+    if req.command == cliargs.LAUNCH and req.wait is None and not req.detach:
+        req.wait = cliargs.WAIT_DEFAULT
+
     if req.command == cliargs.HELP:
         if req.as_json:
             _out(json.dumps(clihelp.capabilities(), ensure_ascii=False, indent=2))

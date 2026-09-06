@@ -316,6 +316,7 @@ class MainWindow(FluentWindow):
         self.pack_table = PackingLog(self.launch_page.launch_log)
         self.launch_status = LaunchStatus(self.launch_page.launch_log)
         # у сервера и клиента свои RPT в разных папках — свой наблюдатель на каждого
+        self.launch_error = ""      # причина последнего сорванного запуска
         self.monitors = {side: LaunchMonitor(side, self) for side in (SERVER, CLIENT)}
         for mon in self.monitors.values():
             mon.usage.connect(self._on_usage)
@@ -1049,6 +1050,7 @@ class MainWindow(FluentWindow):
         if prof:
             Path(prof).mkdir(parents=True, exist_ok=True)
 
+        self.launch_error = ""  # прошлая причина к этому запуску не относится
         self._adopted = False   # запускаем сами: сессия начинается сейчас
         # Снимок «что лежало до этого запуска» — здесь, пока _starting ещё не
         # поднят: дальше перепривязки будут его беречь, а не пересчитывать.
@@ -1221,6 +1223,9 @@ class MainWindow(FluentWindow):
 
     def _launch_done(self, error: str | None) -> None:
         self._starting = False
+        # Причину запоминаем: журнал её показывает человеку, а внешнему
+        # управлению нужно вернуть её кодом возврата и текстом.
+        self.launch_error = error or ""
         self._update_launch_button()
         if error:
             self._append_log(error, "error")
