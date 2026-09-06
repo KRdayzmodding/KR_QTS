@@ -159,8 +159,38 @@ def screens(lang: str = "ru") -> None:
                   name in KNOWN_WIDE, f"требует {wd} px{note}")
 
 
+def external() -> None:
+    """Внешнее управление: грамматика и справка.
+
+    Здесь же, а не только отдельным запуском: справка строится из справочника
+    параметров, и новый параметр без описания должен ломать общий прогон, а не
+    обнаруживаться потом в консоли у человека.
+    """
+    print("Внешнее управление:")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import cli as cli_tests                       # tests/cli.py
+    from core import cliargs, clihelp, i18n
+    cli_tests._fails.clear()
+    for fn in (cli_tests.test_basic, cli_tests.test_params, cli_tests.test_mods,
+               cli_tests.test_pack_and_wait, cli_tests.test_help,
+               cli_tests.test_specs, cli_tests.test_plan_three_cases,
+               cli_tests.test_apply):
+        fn()
+    check(f"грамматика: {len(cliargs.all_specs())} аргументов",
+          not cli_tests._fails, "; ".join(cli_tests._fails))
+
+    for lang in LANGS:
+        i18n.load(lang)
+        pages = [clihelp.render(t) for t in ("",) + clihelp.TOPICS]
+        check(f"{lang}/справка строится", all(len(p) > 40 for p in pages))
+    caps = clihelp.capabilities()
+    check("capabilities отдаёт все аргументы",
+          len(caps["args"]) == len(cliargs.all_specs()))
+
+
 def main() -> int:
     dictionaries()
+    external()
     for lang in LANGS:
         screens(lang)
     print()
