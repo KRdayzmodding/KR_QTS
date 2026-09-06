@@ -20,6 +20,7 @@ from qfluentwidgets import (
 )
 
 from core.i18n import tr
+from ui import tokens
 
 # Окно должно занимать минимум места: в свёрнутом виде это кнопка, два
 # индикатора и имя пресета. В развёрнутом появляются подписи галок — под них
@@ -28,9 +29,6 @@ _COLLAPSED = (100, 42)
 _EXPANDED = (244, 186)
 _DOT = 8
 _RUN_BTN = 30
-# Цвет кнопки, когда заказан перезапуск: тот же жёлтый, которым в блоке
-# статуса отмечены переходные состояния — «подожди, ещё не устоялось».
-_QUEUED_COLOR = "#e5c07b"
 
 
 class MiniWindow(QWidget):
@@ -125,7 +123,7 @@ class MiniWindow(QWidget):
         row.addWidget(self.chk_client)
         row.addStretch(1)
         pbox.addLayout(row)
-        self.chk_repack = CheckBox(tr("mini.repack", "Перепаковывать моды"))
+        self.chk_repack = CheckBox(tr("mini.repack", "Запаковывать моды"))
         pbox.addWidget(self.chk_repack)
         self.b_logs = PushButton(FIF.DOCUMENT, tr("main.show_logs", "Показать логи"))
         self.b_logs.clicked.connect(self.mw._show_logs)
@@ -162,7 +160,9 @@ class MiniWindow(QWidget):
         self._queued_look = on
         if on:
             self.b_run.setStyleSheet(
-                f"PrimaryToolButton{{background-color:{_QUEUED_COLOR};"
+                # тот же цвет, которым в журнале отмечены переходные
+                # состояния: «подожди, ещё не устоялось»
+                f"PrimaryToolButton{{background-color:{tokens.color('warning')};"
                 f"border-radius:5px;}}")
         else:
             FluentStyleSheet.BUTTON.apply(self.b_run)
@@ -249,7 +249,7 @@ class MiniWindow(QWidget):
         return dot
 
     def _set_dot(self, dot: QLabel, state: str) -> None:
-        color = self.mw.STATE_COLORS[state]
+        color = self.mw.state_color(state)
         dot.setStyleSheet(f"background:{color};border-radius:{_DOT // 2}px;")
 
     def refresh_status(self) -> None:

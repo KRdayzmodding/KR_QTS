@@ -294,7 +294,7 @@ def _server_ready(proc: psutil.Process, port: int) -> bool:
 class LaunchWorker(QThread):
     """Последовательность запуска в отдельном потоке.
 
-    Шаги: перепаковка устаревших модов -> kill -> junction -> ключи ->
+    Шаги: запаковка устаревших модов -> kill -> junction -> ключи ->
     сервер -> ожидание готовности -> клиент.
     """
     log = Signal(str, str)          # message, level: info|warning|error
@@ -387,7 +387,7 @@ class LaunchWorker(QThread):
             # занятый файл и отменила бы весь запуск. Молчать нельзя: человек
             # должен понимать, что стартует со старыми pbo.
             self.log.emit(tr("launch.pack_skipped",
-                             "Перепаковка пропущена: запущенная игра держит PBO. "
+                             "Запаковка пропущена: запущенная игра держит PBO. "
                              "Запуск идёт с тем, что собрано."), "warning")
         elif s.repack_before_launch:
             plan = packer.stale_mods(selected)
@@ -399,7 +399,7 @@ class LaunchWorker(QThread):
                 # Раньше состав перепаковки человек видел в окне предстартовой
                 # проверки. Окно убрано — но след в журнале нужен: по нему
                 # потом понятно, что именно пересобиралось перед этим запуском.
-                self.log.emit(tr("launch.repacking", "Перепаковка ({n}): {mods}",
+                self.log.emit(tr("launch.repacking", "Запаковка ({n}): {mods}",
                                  n=sum(len(st) for _, st in plan),
                                  mods=", ".join(m.name for m, _ in plan)), "info")
             for mod, stale in plan:

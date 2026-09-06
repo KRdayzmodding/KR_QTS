@@ -13,6 +13,7 @@ from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
 from ui.main_window import MainWindow
 from ui import nowheel, single_instance
+from ui import tokens
 from ui.theme import outside_icon
 from ui.wizard import FirstRunWizard
 
@@ -82,7 +83,7 @@ def main() -> int:
 
     settings = Settings.load()
     setTheme(_THEMES.get(settings.theme, Theme.AUTO))
-    setThemeColor("#d0752b")  # оливково-оранжевый акцент под DayZ
+    setThemeColor(tokens.ACCENT)  # оливково-оранжевый акцент под DayZ
 
     i18n.load(settings.language)
 

@@ -21,9 +21,9 @@ from core.i18n import tr
 from core.missions import CatalogEntry, template_name
 from core.settings import Settings
 from ui.download_window import DownloadWindow
+from ui import tokens
 from ui.theme import ThemedDialog
 
-_WARN_COLOR = "#e08f00"
 
 
 class CopyDialog(ThemedDialog):
@@ -145,7 +145,7 @@ class MapPicker(QWidget):
         col.addWidget(self.status)
         warn_row = QHBoxLayout()
         self.map_warn = CaptionLabel("")
-        self.map_warn.setStyleSheet(f"color: {_WARN_COLOR};")
+        self.map_warn.setStyleSheet(f"color: {tokens.color('warning')};")
         self.map_warn.setWordWrap(True)
         self.map_warn.setMinimumWidth(1)
         self.map_link = HyperlinkLabel(parent=self)

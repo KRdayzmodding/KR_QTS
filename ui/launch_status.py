@@ -26,12 +26,10 @@ from PySide6.QtWidgets import QPlainTextEdit
 
 from core import crashlog, logsource, scriptmem
 from core.i18n import tr
+from ui import tokens
 
 SERVER, CLIENT = "server", "client"
 
-_DIM = "#777777"
-_ERR = "#ff6b6b"
-_ENGINE = "#e5c07b"
 _MIN_WIDTH = 34
 _INDENT = "&nbsp;&nbsp;"
 
@@ -106,13 +104,13 @@ class LaunchStatus:
     def _line_head(self, side: _Side) -> str:
         left = f"{side.name} ".ljust(_MIN_WIDTH, ".")
         text = html.escape(f"{side.title}: {left} [{side.state}]")
-        line = f'<span style="color:#d4d4d4;">{text}</span>'
+        line = f'<span style="color:{tokens.color("console_fg")};">{text}</span>'
         if side.errors:
             # Ошибки в скриптах запуск не срывают — это счётчик, а не приговор.
             # Держим их рядом с состоянием: смотреть надо туда же, куда и на
             # «запущен», а не искать отдельную строку.
             cnt = html.escape(tr("status.errors", "ошибок: {n}", n=side.errors))
-            line += f' <span style="color:{_ERR};">· {cnt}</span>'
+            line += f' <span style="color:{tokens.color("error")};">· {cnt}</span>'
         return line
 
     def _line_memory(self, side: _Side) -> str:
@@ -122,14 +120,14 @@ class LaunchStatus:
             if u is None:
                 # слой ещё не скомпилирован — показываем прочерк, а не 0%:
                 # ноль читался бы как «памяти не занято», а это не так
-                parts.append(f'<span style="color:{_DIM};">{layer} —</span>')
+                parts.append(f'<span style="color:{tokens.color("muted")};">{layer} —</span>')
                 continue
             col = scriptmem.color(u.percent)
             weight = ";font-weight:700" if u.dangerous else ""
             parts.append(f'<span style="color:{col}{weight};">{layer} '
                          f'{u.percent:.0f}%</span>')
         head = html.escape(tr("status.memory", "Скриптовая память") + ": ")
-        return _INDENT + f'<span style="color:#d4d4d4;">{head}</span>' + " · ".join(parts)
+        return _INDENT + f'<span style="color:{tokens.color("console_fg")};">{head}</span>' + " · ".join(parts)
 
     def _line_crash(self, side: _Side) -> str:
         """Причина сорвавшегося запуска — из crash-лога.
@@ -142,7 +140,7 @@ class LaunchStatus:
         if not c:
             return ""
         head = html.escape(tr("status.crash_head", "Запуск сорван") + ": ")
-        return (_INDENT + f'<span style="color:{_ERR};font-weight:700;">{head}'
+        return (_INDENT + f'<span style="color:{tokens.color("error")};font-weight:700;">{head}'
                 f'{html.escape(c.summary())}</span>')
 
     def _html(self) -> str:

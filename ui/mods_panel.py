@@ -4,7 +4,7 @@
 сортируемый список — переключается кнопкой «Вид».
 
 Колонки: Название мода | @папка (серым) | Размер | PBO | Серверный | Сорсы |
-Изменён | Ребилд. «Серверный» — глобальный признак мода (подсказка при
+Изменён | Запаковка. «Серверный» — глобальный признак мода (подсказка при
 подключении, см. ui/connect_mods_dialog.py), а не состояние в конкретном
 пресете — выбор модов для пресета теперь делается отдельным окном
 «Подключить моды» с главной страницы. Свои флаги (название + цвет, см.
@@ -76,7 +76,7 @@ class ModTreeItem(QTreeWidgetItem):
 
 
 class RebuildWorker(QThread):
-    """Пересборка всех сорсов мода по кнопке «Ребилд» (не только устаревших)."""
+    """Запаковка всех сорсов мода по кнопке «Запаковать» (не только устаревших)."""
     done = Signal(bool, str)
     source_start = Signal(str)        # имя pbo — строка таблицы переходит в [packing]
     source_done = Signal(str, bool, int, int, int)   # имя pbo, успех, мс, warnings, errors
@@ -653,7 +653,7 @@ class ModsPanel(QWidget):
             tr("mods.col_server", "Серверный"),
             tr("mods.col_sources", "Сорсы"), tr("mods.col_modified", "Изменён"), "",
         ])
-        self.tree.headerItem().setToolTip(COL_REBUILD, tr("mods.col_rebuild", "Ребилд"))
+        self.tree.headerItem().setToolTip(COL_REBUILD, tr("mods.col_rebuild", "Запаковка"))
         hdr = self.tree.header()
         # «Мод» — по содержимому (имена короткие и осмысленные, обрезать нечего),
         # тянется «Папка»: там длинные пути, которым лишняя ширина полезнее
@@ -960,7 +960,7 @@ class ModsPanel(QWidget):
     _REBUILD_CELL_SIZE = 22
 
     def _maybe_add_rebuild_button(self, item: QTreeWidgetItem, mod: ModInfo) -> None:
-        """Кнопка «Ребилд» только у модов с привязанными сорсами."""
+        """Кнопка запаковки только у модов с привязанными сорсами."""
         if not mod.sources:
             return
         btn = TransparentToolButton(FIF.UPDATE)
@@ -1125,7 +1125,7 @@ class ModsPanel(QWidget):
         menu = QMenu(self)
         act_update = menu.addAction(tr("mods.ctx_check_updates", "Проверить обновления")) \
             if mod.source == SOURCE_STEAM and mod.workshop_id else None
-        act_rebuild = menu.addAction(tr("mods.ctx_rebuild", "Сделать ребилд")) \
+        act_rebuild = menu.addAction(tr("mods.ctx_rebuild", "Запаковать")) \
             if mod.sources else None
         act_open_mod = menu.addAction(tr("mods.ctx_open_mod", "Открыть расположение мода"))
         act_open_src = menu.addAction(tr("mods.ctx_open_sources", "Открыть расположение сорсов")) \
@@ -1309,7 +1309,7 @@ class ModsPanel(QWidget):
             spinner.setFixedSize(self._REBUILD_CELL_SIZE, self._REBUILD_CELL_SIZE)
             spinner.setStrokeWidth(3)
             self.tree.setItemWidget(item, COL_REBUILD, spinner)
-        InfoBar.info(title=tr("mods.rebuild_started", "Пересборка «{n}»…", n=mod.name),
+        InfoBar.info(title=tr("mods.rebuild_started", "Запаковка «{n}»…", n=mod.name),
                     content="", parent=self.window(), duration=3000,
                     position=InfoBarPosition.TOP_RIGHT)
         if self.log_cb:
@@ -1358,13 +1358,13 @@ class ModsPanel(QWidget):
             if self.log_cb:
                 self.log_cb(tr("mods.rebuild_log_ok", "Запаковка мода «{n}» завершена", n=mod.name))
         else:
-            InfoBar.error(title=tr("mods.rebuild_failed", "Ошибка пересборки «{n}»", n=mod.name),
+            InfoBar.error(title=tr("mods.rebuild_failed", "Ошибка запаковки «{n}»", n=mod.name),
                          content=msg, parent=self.window(), duration=8000,
                          position=InfoBarPosition.TOP_RIGHT)
             if self.log_cb:
                 if msg:
                     self.log_cb(msg, "error")
-                self.log_cb(tr("mods.rebuild_log_failed", "Ошибка пересборки «{n}».", n=mod.name),
+                self.log_cb(tr("mods.rebuild_log_failed", "Ошибка запаковки «{n}».", n=mod.name),
                            "error")
         if self.log_cb:
             self.log_cb("=================")

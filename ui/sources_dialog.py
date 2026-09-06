@@ -1,4 +1,4 @@
-"""Моды с привязанными сорсами — и запуск их перепаковки.
+"""Моды с привязанными сорсами — и запуск их запаковки.
 
 Вкладка «Моды» показывает вообще всё, что нашлось, и пересобрать оттуда можно
 только по одному моду. Во время работы над модом нужно другое: видеть свои
@@ -29,7 +29,7 @@ _GREEN = QColor("#2e7d32")
 
 
 class PackWorker(QThread):
-    """Перепаковка нескольких модов подряд.
+    """Запаковка нескольких модов подряд.
 
     RebuildWorker с вкладки «Моды» умеет только один мод, а здесь выбирают
     сразу несколько — иначе пришлось бы городить очередь из воркеров.
@@ -62,7 +62,7 @@ class PackWorker(QThread):
 
 
 class SourcesDialog(ThemedDialog):
-    """Список локальных модов с сорсами; выбранные можно перепаковать."""
+    """Список локальных модов с сорсами; выбранные можно запаковать."""
 
     def __init__(self, registry: ModRegistry, settings: Settings, parent=None):
         super().__init__(parent)
@@ -70,13 +70,13 @@ class SourcesDialog(ThemedDialog):
         self.settings = settings
         self.selected_jobs: list[tuple[ModInfo, str]] = []
 
-        self.setWindowTitle(tr("sources.title", "Перепаковка модов"))
+        self.setWindowTitle(tr("sources.title", "Запаковка модов"))
         self.resize(620, 460)
         layout = QVBoxLayout(self)
 
         hint = CaptionLabel(tr("sources.hint",
                                "Отмечены моды, у которых сорсы новее собранных PBO. "
-                               "Перепаковываются только отмеченные."))
+                               "Запаковываются только отмеченные."))
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -106,7 +106,7 @@ class SourcesDialog(ThemedDialog):
         btns.addStretch(1)
         b_cancel = PushButton(tr("common.close", "Закрыть"))
         b_cancel.clicked.connect(self.reject)
-        self.b_pack = PrimaryPushButton(FIF.SYNC, tr("sources.repack", "Перепаковать"))
+        self.b_pack = PrimaryPushButton(FIF.SYNC, tr("sources.repack", "Запаковать"))
         self.b_pack.clicked.connect(self._accept_selection)
         btns.addWidget(b_cancel)
         btns.addWidget(self.b_pack)
@@ -156,8 +156,8 @@ class SourcesDialog(ThemedDialog):
     def _accept_selection(self) -> None:
         """Собирает задания: для отмеченных модов — все их папки сорсов.
 
-        Именно все, а не только устаревшие: кнопка называется «Перепаковать»,
-        и если мод отметили вручную, ожидается полная пересборка его pbo.
+        Именно все, а не только устаревшие: кнопка называется «Запаковать»,
+        и если мод отметили вручную, ожидается полная запаковка его pbo.
         """
         self.selected_jobs = [
             (item.data(COL_MOD, Qt.ItemDataRole.UserRole), src)

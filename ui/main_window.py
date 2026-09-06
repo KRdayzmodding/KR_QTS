@@ -7,7 +7,6 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QApplication,
     QSystemTrayIcon, QSplitter,
@@ -31,6 +30,7 @@ from core.settings import (
 )
 from core.steam_urls import SETTINGS_APPS
 from core.version import APP_NAME, VERSION
+from ui import tokens
 from ui.cfg_editor import CfgEditor
 from ui.log_window import LogWindow
 from ui.mods_panel import ModsPanel
@@ -45,9 +45,6 @@ from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
 from ui.packlog_window import PackLogWindow
 from ui.theme import app_icon, link_html, outside_icon
 
-_STATUS_COLORS = {"info": "#d4d4d4", "success": "#4caf50",
-                  "warning": "#e5c07b", "error": "#ff6b6b",
-}
 # Пауза перед показом накопившихся сообщений: за неё прилетает вся пачка
 # событий одного обвала, и человек читает их одним окном, а не вереницей.
 _ALERT_MERGE_MS = 400
@@ -57,8 +54,6 @@ _STOP_WAIT_SEC = 25
 # не та беда, которую надо ловить в первые секунды, а каждый опрос это UDP и
 # отдельный поток.
 _RCON_PROBE_SEC = 30
-_CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
-                "border:1px solid #333;border-radius:6px;padding:4px;}")
 
 
 class _RconWorker(QThread):
@@ -172,10 +167,10 @@ class LaunchInterface(QWidget):
         pack = framed(tr("main.frame_pack", "Запаковка"))
         row_pack = QHBoxLayout()
         row_pack.addWidget(BodyLabel(tr("main.pack_engine",
-                                        "Перепаковка изменённых модов перед запуском:")))
+                                        "Запаковка изменённых модов перед запуском:")))
         # три состояния одним списком: выключено + два режима pboProject
         self.pack_engine = ComboBox()
-        self.pack_engine.addItem(tr("main.repack_off", "Не перепаковывать"), userData="")
+        self.pack_engine.addItem(tr("main.repack_off", "Не запаковывать"), userData="")
         self.pack_engine.addItem(tr("settings.engine_normal",
                                     "Обычная — переиспользует temp"), userData="normal")
         self.pack_engine.addItem(tr("settings.engine_full",
@@ -190,7 +185,7 @@ class LaunchInterface(QWidget):
 
         row3 = QHBoxLayout()
         self.btn_sources = PushButton(FIF.SYNC, tr("main.mods_with_sources",
-                                                   "Перепаковка модов"))
+                                                   "Запаковать моды"))
         self.btn_sources.setMinimumHeight(38)
         self.btn_packlogs = PushButton(FIF.ZIP_FOLDER, tr("main.show_packlogs",
                                                           "Логи запаковки"))
@@ -208,8 +203,8 @@ class LaunchInterface(QWidget):
         # мы утопили бы первое во втором.
         self.launch_log = QPlainTextEdit()
         self.launch_log.setReadOnly(True)
-        self.launch_log.setFont(QFont("Consolas", 9))
-        self.launch_log.setStyleSheet(_CONSOLE_QSS)
+        self.launch_log.setFont(tokens.mono_font())
+        tokens.apply_console(self.launch_log)
 
         self.console_box = QWidget()
         cbox = QVBoxLayout(self.console_box)
@@ -219,8 +214,8 @@ class LaunchInterface(QWidget):
         self.console_log = QPlainTextEdit()
         self.console_log.setReadOnly(True)
         self.console_log.setMaximumBlockCount(5000)
-        self.console_log.setFont(QFont("Consolas", 9))
-        self.console_log.setStyleSheet(_CONSOLE_QSS)
+        self.console_log.setFont(tokens.mono_font())
+        tokens.apply_console(self.console_log)
         cbox.addWidget(self.console_log, 1)
         # появляется только у сервера, запущенного без своего окна
         self.console_box.setVisible(False)
@@ -695,8 +690,8 @@ class MainWindow(FluentWindow):
             self.current.save()
 
     def _pack_engine_changed(self, _idx: int) -> None:
-        """Пустой userData — «не перепаковывать»; движок при этом не сбрасываем:
-        он всё ещё нужен кнопке «Ребилд» на вкладке модов."""
+        """Пустой userData — «не запаковывать»; движок при этом не сбрасываем:
+        он всё ещё нужен кнопке запаковки на вкладке модов."""
         engine = self.launch_page.pack_engine.currentData()
         self.settings.repack_before_launch = bool(engine)
         if engine:
@@ -767,7 +762,7 @@ class MainWindow(FluentWindow):
     # ------------------------------------------------------------------ запуск
 
     def _append_log(self, msg: str, level: str = "info") -> None:
-        color = _STATUS_COLORS.get(level, "#d4d4d4")
+        color = tokens.level_colors().get(level, tokens.color("console_fg"))
         self.launch_page.launch_log.appendHtml(
             f'<span style="color:{color};">{html.escape(msg)}</span>')
 
@@ -835,7 +830,8 @@ class MainWindow(FluentWindow):
     def _console_lines(self, lines: list) -> None:
         view = self.launch_page.console_log
         for line in lines:
-            color = _STATUS_COLORS.get(logsource.classify(line), "#d4d4d4")
+            color = tokens.level_colors().get(logsource.classify(line),
+                                             tokens.color("console_fg"))
             view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
 
     def _console_poll(self) -> None:
@@ -846,7 +842,8 @@ class MainWindow(FluentWindow):
             line = line.rstrip()
             if not line:
                 continue
-            color = _STATUS_COLORS.get(logsource.classify(line), "#d4d4d4")
+            color = tokens.level_colors().get(logsource.classify(line),
+                                             tokens.color("console_fg"))
             view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
 
     def _append_alarm(self, msg: str) -> None:
@@ -1204,7 +1201,7 @@ class MainWindow(FluentWindow):
 
         Состав берём у таблицы, а не из аргумента: она уже решила, начинать
         новую сборку или дополнить идущую. Со страницы модов можно нажать
-        «Ребилд» посреди запаковки при запуске сервера — тогда в списке логов
+        «Запаковать» посреди запаковки при запуске сервера — тогда в списке логов
         должны быть оба мода, а не последний. Своя копия этого решения здесь
         зависела бы от того, в каком порядке подключены сигналы.
         """
@@ -1260,11 +1257,11 @@ class MainWindow(FluentWindow):
     def _packing_done(self, done: int, failed: int) -> None:
         if failed:
             self._notify("error", tr("sources.done_failed",
-                                     "Перепаковка: собрано {d}, с ошибками {f}",
+                                     "Запаковка: собрано {d}, с ошибками {f}",
                                      d=done, f=failed))
         else:
             self._notify("success", tr("sources.done_ok",
-                                       "Перепаковано PBO: {d}", d=done))
+                                       "Запаковано PBO: {d}", d=done))
 
     def _show_pack_logs(self) -> None:
         for i, (kind, win) in enumerate(self.packlog_windows.items()):
@@ -1303,11 +1300,16 @@ class MainWindow(FluentWindow):
     # верный способ показать в одном месте «работает», а в другом «запускается».
     ST_RUN, ST_STARTING, ST_DEAD, ST_OFF = "run", "starting", "dead", "off"
     ST_STOPPING = "stopping"
-    STATE_COLORS = {ST_RUN: "#4caf50", ST_STARTING: "#e5c07b",
-                    # выключается — тот же жёлтый, что и «запускается»: оба про
-                    # переход, и оба означают «подожди, ещё не устоялось»
-                    ST_STOPPING: "#e5c07b",
-                    ST_DEAD: "#ff6b6b", ST_OFF: "#777777"}
+    # Не сами цвета, а их роли: тон под текущую тему знает ui.tokens.
+    # Выключается и запускается — одна роль: оба про переход, оба означают
+    # «подожди, ещё не устоялось».
+    STATE_ROLES = {ST_RUN: "success", ST_STARTING: "warning",
+                   ST_STOPPING: "warning", ST_DEAD: "error", ST_OFF: "muted"}
+
+    @classmethod
+    def state_color(cls, state: str) -> str:
+        """Цвет индикатора стороны — один на шапку, мини-окно и журнал."""
+        return tokens.color(cls.STATE_ROLES.get(state, "muted"))
 
     @staticmethod
     def process_state(pid: int | None) -> str:
@@ -1903,7 +1905,7 @@ class MainWindow(FluentWindow):
             self._alive[attr] = alive
 
     def _update_sources_button(self) -> None:
-        """Перепаковывать нечего, пока ни одному моду не заданы сорсы.
+        """Запаковывать нечего, пока ни одному моду не заданы сорсы.
 
         Кнопка в этом случае гаснет, но подсказка объясняет почему — иначе
         неактивная кнопка выглядит поломкой.
@@ -1913,7 +1915,7 @@ class MainWindow(FluentWindow):
         btn.setEnabled(bool(mods))
         btn.setToolTip(tr("main.mods_with_sources_tip",
                           "Локальные моды, у которых заданы папки сорсов — "
-                          "оттуда же их можно перепаковать.") if mods else
+                          "оттуда же их можно запаковать.") if mods else
                        tr("main.no_mods_with_sources",
                           "Нет модов, которым указаны сорсы"))
 
@@ -1945,7 +1947,7 @@ class MainWindow(FluentWindow):
                                      n=name, p=self.side_pid(side)),
                 self.ST_DEAD: tr("main.st_dead", "{n}: завершился", n=name),
             }.get(st, tr("main.st_off", "{n}: не запущен", n=name))
-            return f'<span style="color:{self.STATE_COLORS[st]};">●</span> {text}'
+            return f'<span style="color:{self.state_color(st)};">●</span> {text}'
 
         self.launch_page.status_label.setText(
             state(SERVER, tr("common.server", "Сервер")) + "  "
@@ -1997,10 +1999,10 @@ class MainWindow(FluentWindow):
             idx = engine.findData(data)
             engine.setItemEnabled(idx, ok)
             if not ok and engine.currentIndex() == idx:
-                engine.setCurrentIndex(0)   # «Не перепаковывать»
+                engine.setCurrentIndex(0)   # «Не запаковывать»
         if not ok:
             engine.setToolTip(tr("main.repack_unavailable",
-                                 "Перепаковка недоступна: нужны pboProject и DayZ Tools."))
+                                 "Запаковка недоступна: нужны pboProject и DayZ Tools."))
         else:
             engine.setToolTip("")
 

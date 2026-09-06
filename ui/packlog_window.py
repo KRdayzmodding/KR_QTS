@@ -12,19 +12,13 @@ from __future__ import annotations
 import html
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit
-from qfluentwidgets import CheckBox, CaptionLabel, isDarkTheme, qconfig
+from qfluentwidgets import CheckBox, CaptionLabel, qconfig
 
 from core import packlog
 from core.i18n import tr
+from ui import tokens
 
-_WARN_COLOR = "#e5c07b"
-_ERR_COLOR = "#ff6b6b"
-_OK_COLOR = "#4caf50"
-_TEXT_COLOR = "#d4d4d4"
-_CONSOLE_QSS = ("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
-                "border:1px solid #333;border-radius:6px;padding:4px;}")
 
 _TITLES = {
     packlog.PACKING: ("Логи запаковки", "#2e7d32"),
@@ -65,8 +59,8 @@ class PackLogWindow(QWidget):
 
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
-        self.view.setFont(QFont("Consolas", 9))
-        self.view.setStyleSheet(_CONSOLE_QSS)
+        self.view.setFont(tokens.mono_font())
+        self.view.setStyleSheet(tokens.console_qss())
         layout.addWidget(self.view, 1)
 
         self._apply_bg()
@@ -74,8 +68,8 @@ class PackLogWindow(QWidget):
 
     def _apply_bg(self) -> None:
         """Обычный QWidget под тему сам не красится (как и окна логов сервера)."""
-        bg = "rgb(43, 43, 43)" if isDarkTheme() else "white"
-        self.setStyleSheet(f"QWidget{{background-color:{bg};}}" + _CONSOLE_QSS)
+        bg = tokens.color("card")
+        self.setStyleSheet(f"QWidget{{background-color:{bg};}}" + tokens.console_qss())
 
     # ----------------------------------------------------------------- данные
 
@@ -87,14 +81,14 @@ class PackLogWindow(QWidget):
 
     def _summary(self, rep: packlog.LogReport) -> str:
         head = tr("packlog.summary", "[Результаты запаковки {n}]", n=f"{rep.name}.pbo")
-        color = _OK_COLOR if rep.clean else _TEXT_COLOR
+        color = tokens.color("success" if rep.clean else "console_fg")
         parts = [f'<span style="color:{color};font-weight:600;">{html.escape(head)}</span>']
         if rep.clean:
-            parts.append(f'<span style="color:{_OK_COLOR};">'
+            parts.append(f'<span style="color:{tokens.color("success")};">'
                          + html.escape(tr("packlog.no_issues", "без замечаний")) + "</span>")
         else:
-            parts.append(f'<span style="color:{_WARN_COLOR};">Warnings: {rep.warnings}</span>')
-            parts.append(f'<span style="color:{_ERR_COLOR};">Errors: {rep.errors}</span>')
+            parts.append(f'<span style="color:{tokens.color("warning")};">Warnings: {rep.warnings}</span>')
+            parts.append(f'<span style="color:{tokens.color("error")};">Errors: {rep.errors}</span>')
         return " ".join(parts)
 
     def _line_html(self, line: str) -> str:
@@ -102,15 +96,16 @@ class PackLogWindow(QWidget):
         так текст остаётся читаемым."""
         n = packlog.mark_len(line)
         if not n:
-            return f'<span style="color:{_TEXT_COLOR};">{html.escape(line)}</span>'
-        color = _WARN_COLOR if packlog.mark_of(line) == packlog.WARNING else _ERR_COLOR
+            return f'<span style="color:{tokens.color("console_fg")};">{html.escape(line)}</span>'
+        color = tokens.color("warning" if packlog.mark_of(line) == packlog.WARNING
+                             else "error")
         return (f'<span style="color:{color};font-weight:600;">{html.escape(line[:n])}</span>'
-                f'<span style="color:{_TEXT_COLOR};">{html.escape(line[n:])}</span>')
+                f'<span style="color:{tokens.color("console_fg")};">{html.escape(line[n:])}</span>')
 
     def _render(self) -> None:
         self.view.clear()
         if not self._reports:
-            self.view.appendHtml(f'<span style="color:{_TEXT_COLOR};">'
+            self.view.appendHtml(f'<span style="color:{tokens.color("console_fg")};">'
                                  + html.escape(tr("packlog.empty",
                                                   "Пока ничего не паковалось."))
                                  + "</span>")
@@ -132,7 +127,7 @@ class PackLogWindow(QWidget):
                        n=packlog.MAX_LINES)))
             blocks.append("<br>".join(block))
         self.view.appendHtml("<br><br>".join(blocks) if blocks else
-                             f'<span style="color:{_TEXT_COLOR};">'
+                             f'<span style="color:{tokens.color("console_fg")};">'
                              + html.escape(tr("packlog.no_logs",
                                               "Логи не найдены."))
                              + "</span>")

@@ -20,17 +20,16 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QPlainTextEdit
 
+from ui import tokens
+
 WAIT, PACKING, OK, FAIL = "wait", "packing", "ok", "fail"
 
-_WARN_COLOR = "#e5c07b"
-_ERR_COLOR = "#ff6b6b"
+# Роли, а не цвета: тон под текущую тему знает ui.tokens.
+_ROLES = {WAIT: "muted", PACKING: "warning", OK: "success", FAIL: "error"}
 
-_COLORS = {
-    WAIT: "#777777",
-    PACKING: "#e5c07b",
-    OK: "#4caf50",
-    FAIL: "#ff6b6b",
-}
+
+def _color(status: str) -> str:
+    return tokens.color(_ROLES.get(status, "muted"))
 _MIN_WIDTH = 34      # до какой ширины тянуть точки, если имена короткие
 
 
@@ -82,15 +81,15 @@ class PackingLog:
             # аргументы) и падение через полминуты (ошибка сборки) — разное
             ms = self._elapsed.get(name)
         tail = f" ({fmt_ms(ms)} ms)" if ms is not None else ""
-        out = (f'<span style="color:{_COLORS[status]};">'
+        out = (f'<span style="color:{_color(status)};">'
                f'{html.escape(f"{left} [{status}]{tail}")}</span>')
         # предупреждения и ошибки — отдельным блоком и своими цветами; если их
         # нет, блока нет вовсе, чтобы не зашумлять чистые сборки
         w, e = self._issues.get(name, (0, 0))
         if w:
-            out += f' <span style="color:{_WARN_COLOR};">[W: {w}]</span>'
+            out += f' <span style="color:{tokens.color("warning")};">[W: {w}]</span>'
         if e:
-            out += f' <span style="color:{_ERR_COLOR};">[E: {e}]</span>'
+            out += f' <span style="color:{tokens.color("error")};">[E: {e}]</span>'
         return out
 
     def _render(self) -> None:
@@ -146,7 +145,7 @@ class PackingLog:
 
         Если сборка уже идёт, список дополняется, а не затирается. Таблица
         одна на всю программу: запуск сервера пакует устаревшие моды, а с
-        страницы модов в это же время можно нажать «Ребилд». Затирание
+        страницы модов в это же время можно нажать «Запаковать». Затирание
         выглядело так, будто первая запаковка оборвалась, — хотя она шла.
         """
         if self.busy():

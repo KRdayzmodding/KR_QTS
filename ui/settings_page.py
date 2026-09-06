@@ -247,7 +247,7 @@ class SettingsPage(QScrollArea):
             "Мягкий способ даёт серверу завершиться своим порядком и сохранить "
             "данные; жёсткий обрывает его сразу."))
         form_general.addRow(BodyLabel(tr("settings.stop_method",
-                                         "Завершение процессов")),
+                                         "Остановка сервера и клиента")),
                             self.stop_method)
 
         # Автозапуск: правда о нём — в реестре, а не в настройках. Ключ могли
@@ -407,7 +407,7 @@ class SettingsPage(QScrollArea):
         form_fp.addRow("", fp_row)
 
         fp_row2 = QHBoxLayout()
-        self.b_fp_sync = PushButton(FIF.SYNC, tr("filepatch.sync", "Актуализировать Simlink"))
+        self.b_fp_sync = PushButton(FIF.SYNC, tr("filepatch.sync", "Обновить ссылки"))
         self.b_fp_sync.setToolTip(tr("filepatch.sync_tip",
                                      "Досоздаёт недостающие ссылки во всех корнях и убирает те, "
                                      "чья папка на диске P: пропала."))
@@ -597,7 +597,7 @@ class SettingsPage(QScrollArea):
             title=tr("settings.section_filepatch", "Filepatching"),
             content=tr("filepatch.help",
                        "Симлинк нужен для корректной работы filepatching. Filepatching "
-                       "позволяет подтягивать скрипты без перепаковки PBO — достаточно "
+                       "позволяет подтягивать скрипты без запаковки PBO — достаточно "
                        "перезапустить клиент и сервер.\n\n"
                        "Для подключения укажите папку скриптов вашего мода на диске P:. "
                        "Дальше ссылки создадутся автоматически везде, где это требуется — "
@@ -652,7 +652,7 @@ class SettingsPage(QScrollArea):
 
     def _filepatch_sync(self) -> None:
         self._filepatch_report(filepatch.sync(self.settings),
-                               tr("filepatch.synced", "Симлинки актуализированы"))
+                               tr("filepatch.synced", "Ссылки обновлены"))
 
     def _filepatch_clear(self) -> None:
         if not self.settings.filepatch_links:

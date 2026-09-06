@@ -11,12 +11,13 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QTextBrowser
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, BodyLabel, StrongBodyLabel, CaptionLabel,
-    ProgressBar, IndeterminateProgressRing, FluentIcon as FIF, isDarkTheme,
+    ProgressBar, IndeterminateProgressRing, FluentIcon as FIF,
 )
 
 from core.i18n import tr
 from core.updater import Release
 from core.version import VERSION
+from ui import tokens
 from ui.theme import ThemedDialog
 
 
@@ -65,10 +66,11 @@ class UpdateDialog(ThemedDialog):
             "upd.no_notes", "Автор не оставил описания изменений."))
         # тёмный текст на светлой теме и наоборот — QTextBrowser своего фона
         # от qfluentwidgets не наследует
-        bg, fg = ("#2b2b2b", "#d4d4d4") if isDarkTheme() else ("#ffffff", "#202020")
         self.notes.setStyleSheet(
-            f"QTextBrowser{{background:{bg};color:{fg};border:1px solid #444;"
-            f"border-radius:6px;padding:6px;}}")
+            f"QTextBrowser{{background:{tokens.color('card')};"
+            f"color:{tokens.color('text')};"
+            f"border:1px solid {tokens.color('border')};"
+            f"border-radius:{tokens.RADIUS_FIELD}px;padding:6px;}}")
         layout.addWidget(self.notes, 1)
 
         self.bar = ProgressBar(self)

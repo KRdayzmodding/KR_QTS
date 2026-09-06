@@ -9,7 +9,7 @@ from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QTextEdit,
                                QLabel, QSizePolicy)
 from qfluentwidgets import (
@@ -19,11 +19,11 @@ from qfluentwidgets import (
 
 from core.i18n import tr
 from core import logsource
+from ui import tokens
 
 # По сколько файлов подтягивать в режиме «во всех файлах». Их бывают сотни,
 # и читать всё разом незачем: нужное почти всегда в последних.
 _FILES_STEP = 10
-_COLORS = {"error": "#ff6b6b", "warning": "#e5c07b", "info": "#d4d4d4", "session": "#61afef"}
 _MAX_BLOCKS = 20000  # строк в окне, старые вытесняются
 # Сколько строк показывать при загрузке файлов. Вставка в виджет стоит около
 # 0.1 мс на строку и делается только на главном потоке: 20 000 строк — это две
@@ -43,16 +43,8 @@ _TOKEN_RE = re.compile(
     r"|(?P<number>-?\d+\.\d+|\b\d{5,}\b)",
     re.IGNORECASE,
 )
-_TOKEN_COLORS = {
-    "time": "#61afef",     # синий — временные метки
-    "tag": "#c678dd",      # фиолетовый — [KR_CORE] и подобные теги в скобках
-    "string": "#98c379",   # зелёный — строки в кавычках
-    "number": "#d19a66",   # оранжевый — числа/координаты, SteamID и т.п.
-}
 
 
-_MATCH_DIM_BG = "#3d3a1a"      # все совпадения — приглушённо
-_MATCH_ACTIVE_BG = "#8a6b00"   # текущее — ярко
 def _highlight(line: str) -> str:
     """HTML с раскрашенными токенами; текст вне токенов — без цвета (наследует
     цвет уровня строки, заданный обёрткой в _show).
@@ -64,15 +56,18 @@ def _highlight(line: str) -> str:
     """
     out = []
     pos = 0
+    # цвета спрашиваем раз на строку, а не на каждый токен: их в строке
+    # бывает под десяток, а ответ на всю строку один
+    err, tc = tokens.color("error"), tokens.token_colors()
     for m in _TOKEN_RE.finditer(line):
         if m.start() > pos:
             out.append(html.escape(line[pos:m.start()]))
         kind = m.lastgroup
         text = html.escape(m.group())
         if kind == "keyword":
-            out.append(f'<b style="color:{_COLORS["error"]};">{text}</b>')
+            out.append(f'<b style="color:{err};">{text}</b>')
         else:
-            out.append(f'<span style="color:{_TOKEN_COLORS[kind]};">{text}</span>')
+            out.append(f'<span style="color:{tc[kind]};">{text}</span>')
         pos = m.end()
     out.append(html.escape(line[pos:]))
     return "".join(out)
@@ -267,9 +262,8 @@ class LogWindow(QWidget):
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
         self.view.setMaximumBlockCount(_MAX_BLOCKS)
-        self.view.setFont(QFont("Consolas", 9))
-        self.view.setStyleSheet("QPlainTextEdit{background:#1e1e1e;color:#d4d4d4;"
-                                "border:1px solid #333;border-radius:6px;padding:4px;}")
+        self.view.setFont(tokens.mono_font())
+        tokens.apply_console(self.view)
         layout.addWidget(self.view, 1)
 
         bottom = QHBoxLayout()
@@ -561,7 +555,7 @@ class LogWindow(QWidget):
             self._show(line, level)
 
     def _show(self, line: str, level: str) -> None:
-        color = _COLORS.get(level, _COLORS["info"])
+        color = tokens.level_colors().get(level, tokens.color("console_fg"))
         # совпадения красит _mark_matches дополнительными выделениями — в обоих
         # режимах одинаково, иначе в отсеве не было бы ни счётчика, ни переходов
         self.view.appendHtml(f'<span style="color:{color};">'
@@ -605,9 +599,10 @@ class LogWindow(QWidget):
             sel.cursor = cur
             fmt = QTextCharFormat()
             active = i == self._match_at
-            fmt.setBackground(QColor(_MATCH_ACTIVE_BG if active else _MATCH_DIM_BG))
+            fmt.setBackground(QColor(tokens.color(
+                "match_active" if active else "match_dim")))
             if active:
-                fmt.setForeground(QColor("#ffffff"))
+                fmt.setForeground(QColor(tokens.color("match_fg")))
             sel.format = fmt
             sels.append(sel)
         self.view.setExtraSelections(sels)

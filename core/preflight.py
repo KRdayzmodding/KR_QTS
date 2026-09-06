@@ -122,7 +122,7 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
             exe, tool = settings.pbo_project_exe(), "pboProject"
             if not Path(exe).is_file():
                 crit("packer", tr("check.packer_missing",
-                     "Моды {mods} требуют перепаковки, но {tool} не найден: {p}",
+                     "Моды {mods} требуют запаковки, но {tool} не найден: {p}",
                      mods=", ".join(stale_names), tool=tool, p=exe))
 
     # Порт
