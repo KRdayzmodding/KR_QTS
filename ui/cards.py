@@ -25,6 +25,7 @@ from ui.rows import shrink
 from qfluentwidgets import CaptionLabel
 
 DURATION_MS = 180                       # шкала движения из docs/UX.md, раздел 10
+FREE = 16777215                         # «потолка нет» на языке Qt
 
 
 class Section(CardWidget):
@@ -91,14 +92,20 @@ class Section(CardWidget):
             return
         self._open = open_
         self.chevron.setIcon(FIF.CHEVRON_DOWN_MED if open_ else FIF.CHEVRON_RIGHT_MED)
-        height = self.body.sizeHint().height()
         self._ani.stop()
         if open_:
             self.body.setVisible(True)
+            # Целевую высоту меряем при снятом потолке. Иначе она берётся у
+            # свёрнутого тела и отличается от настоящей на десятки пикселей:
+            # анимация доезжала не туда, а раскладка в последнем кадре
+            # дёргала карточку на место — это и выглядело морганием.
+            self.body.setMaximumHeight(FREE)
+            full = self.body.sizeHint().height()
+            self.body.setMaximumHeight(0)
             self._ani.setStartValue(0)
-            self._ani.setEndValue(height)
+            self._ani.setEndValue(full)
         else:
-            self._ani.setStartValue(self.body.height() or height)
+            self._ani.setStartValue(self.body.height())
             self._ani.setEndValue(0)
         self._ani.start()
 
@@ -109,7 +116,7 @@ class Section(CardWidget):
         обрезал бы содержимое, если текст в строке станет длиннее.
         """
         if self._open:
-            self.body.setMaximumHeight(16777215)
+            self.body.setMaximumHeight(FREE)
         else:
             self.body.setVisible(False)
 

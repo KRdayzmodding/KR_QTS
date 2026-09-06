@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QPoint
+from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -42,6 +42,7 @@ from qfluentwidgets import (
 )
 
 from ui import tokens
+from ui.cards import Section, rows_card  # noqa: F401
 
 # Состояния, в которых нужно уметь смотреть каждый экран.
 ST_IDLE, ST_STARTING, ST_RUNNING, ST_FAILED = "idle", "starting", "running", "failed"
@@ -139,96 +140,6 @@ def shrink(label):
     # строке. Нужно другое: желаемую ширину учитывать, а требовать её — нет.
     label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
     return label
-
-
-class Section(CardWidget):
-    """Сворачиваемый раздел: шапка с итогом, под ней строки.
-
-    Своя, а не ExpandGroupSettingCard из библиотеки: та считает высоту
-    содержимого по своим меркам — её строки одинаковой высоты, а у нас в строке
-    два-три ряда текста. Из-за расхождения под содержимым оставалась пустая
-    полоса и в раскрытом, и в свёрнутом виде.
-
-    Свёрнутая шапка обязана показывать итог: «Базовый · модов: 3», «Выключена —
-    правки не попадут в игру». Иначе сворачивание прячет состояние, и человек
-    запускает сервер, не зная, что запаковка выключена.
-    """
-
-    def __init__(self, icon, title: str, rows: list[QWidget], parent=None):
-        super().__init__(parent)
-        col = QVBoxLayout(self)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(0)
-
-        self.head = QWidget(self)
-        self.head.setCursor(Qt.CursorShape.PointingHandCursor)
-        hrow = QHBoxLayout(self.head)
-        hrow.setContentsMargins(tokens.SPACE_M, tokens.SPACE_S,
-                                tokens.SPACE_M, tokens.SPACE_S)
-        hrow.setSpacing(tokens.SPACE_S)
-        ic = IconWidget(icon, self.head)
-        ic.setFixedSize(18, 18)
-        hrow.addWidget(ic)
-        text = QVBoxLayout()
-        text.setSpacing(0)
-        text.addWidget(StrongBodyLabel(title))
-        self.summary = shrink(CaptionLabel(""))
-        text.addWidget(self.summary)
-        hrow.addLayout(text, 1)
-        self.chevron = TransparentToolButton(FIF.CHEVRON_DOWN_MED)
-        self.chevron.setFixedSize(24, 24)
-        self.chevron.clicked.connect(self.toggle)
-        hrow.addWidget(self.chevron)
-        col.addWidget(self.head)
-        self.head.mousePressEvent = lambda _e: self.toggle()
-
-        self.body = QWidget(self)
-        brow = QVBoxLayout(self.body)
-        brow.setContentsMargins(tokens.SPACE_M, 0, tokens.SPACE_M, tokens.SPACE_S)
-        brow.setSpacing(tokens.SPACE_XS)
-        for r in rows:
-            brow.addWidget(r)
-        col.addWidget(self.body)
-
-        self._open = True
-        self._ani = QPropertyAnimation(self.body, b"maximumHeight", self)
-        self._ani.setDuration(180)                     # шкала движения из раздела 10
-        self._ani.setEasingCurve(QEasingCurve.Type.OutQuad)
-        # Подключаемся один раз: перецепление обработчика на каждый щелчок
-        # заставляло Qt ругаться на отключение несуществующей связи.
-        self._ani.finished.connect(self._after)
-
-    def _after(self) -> None:
-        # свёрнутое тело прячем совсем, иначе от него остаётся полоска в пиксель
-        if not self._open:
-            self.body.setVisible(False)
-
-    def set_summary(self, text: str) -> None:
-        self.summary.setText(text)
-
-    def is_open(self) -> bool:
-        return self._open
-
-    def set_open(self, open_: bool) -> None:
-        if open_ != self._open:
-            self.toggle()
-
-    def toggle(self) -> None:
-        self._open = not self._open
-        full = self.body.sizeHint().height()
-        self.chevron.setIcon(FIF.CHEVRON_DOWN_MED if self._open else FIF.CHEVRON_RIGHT)
-        if self._open:
-            self.body.setVisible(True)
-        self._ani.stop()
-        self._ani.setStartValue(full if not self._open else 0)
-        self._ani.setEndValue(full if self._open else 0)
-        self._ani.start()
-
-
-def rows_card(icon, title: str, summary: str, rows: list[QWidget]) -> Section:
-    card = Section(icon, title, rows)
-    card.set_summary(summary)
-    return card
 
 
 CONTROL_SLOT = 190      # ширина места под контрол: колонки выравниваются по нему
