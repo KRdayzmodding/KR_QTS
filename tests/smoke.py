@@ -33,7 +33,7 @@ PAGE_MAX_W = 840        # ширина содержимого при окне 10
 # Экраны, которые в бюджет пока не укладываются. Это не «сломалось», а «ещё не
 # переделано»: список сокращается по мере работы и должен дойти до пустого.
 # Пока запись здесь — прогон о ней сообщает, но не считает провалом.
-KNOWN_WIDE = {"редактор конфига"}
+KNOWN_WIDE: set[str] = set()
 
 # Страницы живут внутри главного окна и делят ширину с панелью навигации.
 # Отдельные окна (логи, запаковка) к этому бюджету отношения не имеют: их
@@ -153,10 +153,14 @@ def screens(lang: str = "ru") -> None:
         if isinstance(w, QDialog):
             check(f"{lang}/{name}: {wd}x{h} в бюджете {DIALOG_MAX_W}x{DIALOG_MAX_H}",
                   h <= DIALOG_MAX_H and wd <= DIALOG_MAX_W)
-        elif name in PAGES and wd > PAGE_MAX_W:
+        elif name in PAGES:
+            # Печатаем и уложившиеся: иначе «ничего не сказано» неотличимо от
+            # «проверка не запускалась», а список известных превышений должен
+            # на глазах пустеть, а не молча.
             note = " (известно, ждёт переделки)" if name in KNOWN_WIDE else ""
             check(f"{lang}/{name}: ширина {wd} px не больше {PAGE_MAX_W}",
-                  name in KNOWN_WIDE, f"требует {wd} px{note}")
+                  wd <= PAGE_MAX_W or name in KNOWN_WIDE,
+                  "" if wd <= PAGE_MAX_W else f"требует {wd} px{note}")
 
 
 def external() -> None:
@@ -171,6 +175,15 @@ def external() -> None:
     import cli as cli_tests                       # tests/cli.py
     from core import cliargs, clihelp, i18n
     cli_tests._fails.clear()
+    import cfg as cfg_tests                       # tests/cfg.py
+    cfg_tests._fails.clear()
+    for fn in (cfg_tests.test_specs, cfg_tests.test_read, cfg_tests.test_change,
+               cfg_tests.test_add, cfg_tests.test_remove, cfg_tests.test_apply):
+        fn()
+    from core import servercfg
+    check(f"конфиг: {len(servercfg.SPECS)} известных ключей",
+          not cfg_tests._fails, "; ".join(cfg_tests._fails))
+
     for fn in (cli_tests.test_basic, cli_tests.test_params, cli_tests.test_mods,
                cli_tests.test_pack_and_wait, cli_tests.test_help,
                cli_tests.test_specs, cli_tests.test_plan_three_cases,

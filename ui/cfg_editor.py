@@ -1,139 +1,273 @@
-"""Вкладка редактора serverDZ.cfg: переменная -> поле ввода, кодировка UTF-8 без BOM."""
+"""Редактор serverDZ.cfg: все известные ключи, а не только написанные в файле.
+
+Раньше здесь была таблица «переменная → текст», и она показывала ровно то, что
+уже есть в файле. Ответить на вопрос «а что вообще можно настроить» было
+нечем: ключ, которого в файле нет, не показывался, добавить его было нельзя, а
+булевы значения набирались цифрами.
+
+Теперь наоборот: список идёт от справочника (67 ключей), а файл только говорит,
+какие из них включены. Галка слева — «писать этот ключ в файл»; снял галку —
+ключ уходит из файла, и сервер берёт своё умолчание.
+
+Значения типизированы: тумблер там, где 0/1, выбор там, где вариантов
+несколько, поле там, где число или текст. Цифру «2» в графе «проверка
+подписей» помнить больше не нужно.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidgetItem, QHeaderView,
-)
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, TableWidget, BodyLabel, CaptionLabel,
-    InfoBar, InfoBarPosition, FluentIcon as FIF,
+    BodyLabel, CaptionLabel, CheckBox, ComboBox, InfoBar, InfoBarPosition,
+    LineEdit, PrimaryPushButton, PushButton, SearchLineEdit, SmoothScrollArea,
+    SwitchButton, FluentIcon as FIF,
 )
 
+from core import servercfg
 from core.i18n import tr
-from core.servercfg import ServerCfg
+from core.servercfg import BOOL, BOOLSTR, CHOICE, ServerCfg, VarSpec
+from ui import tokens
+from ui.rows import Columns, setting_row, shrink, subheading
 
-# Подсказки к самым ходовым переменным
-_HINTS_RU = {
-    "hostname": "Название сервера в браузере серверов.",
-    "password": "Пароль для входа на сервер (пусто — без пароля).",
-    "passwordAdmin": "Пароль администратора (команды #login).",
-    "maxPlayers": "Максимум игроков.",
-    "verifySignatures": "Проверка подписей PBO: 2 — включена (нужны .bikey в keys), 0 — выключена (для разработки).",
-    "forceSameBuild": "Пускать только клиентов с той же сборкой игры.",
-    "disableVoN": "Отключить голосовой чат.",
-    "vonCodecQuality": "Качество кодека голоса (0–30).",
-    "disable3rdPerson": "Запретить вид от третьего лица.",
-    "disableCrosshair": "Убрать прицел.",
-    "serverTime": "Стартовое время сервера: SystemTime или \"YYYY/MM/DD/HH/MM\".",
-    "serverTimeAcceleration": "Ускорение игрового времени (множитель).",
-    "serverNightTimeAcceleration": "Дополнительное ускорение ночи.",
-    "serverTimePersistent": "Сохранять игровое время между рестартами.",
-    "instanceId": "Идентификатор инстанса (папка storage_<id> в миссии).",
-    "storageAutoFix": "Автопочинка битого persistence-файла.",
-    "steamQueryPort": "Порт Steam Query (обычно порт+2).",
-    "enableDebugMonitor": "Показать отладочный монитор игрокам.",
-    "allowFilePatching": "Пускать клиентов с -filePatching (обязательно для отладки сорсов).",
-    "lightingConfig": "Освещение ночи: 0 — яркая, 1 — тёмная, 2 — вариант Сахала.",
-    "disableBaseDamage": "Отключить урон по базам (заборы, вышки).",
-    "disableContainerDamage": "Отключить урон по контейнерам (палатки, бочки, ящики).",
-    "disableRespawnDialog": "Скрыть диалог выбора точки респауна.",
-    "description": "Описание сервера в браузере серверов (до 255 символов).",
-    "enableWhitelist": "Включить вайтлист (0-1).",
-    "disableBanlist": "Не использовать ban.txt (по умолчанию false).",
-    "disablePrioritylist": "Не использовать priority.txt (по умолчанию false).",
-    "disableMultiAccountMitigation": "Отключить защиту от мультиаккаунтов (консоли).",
-    "pingWarning": "Пинг (мс), при котором показывается жёлтое предупреждение.",
-    "pingCritical": "Пинг (мс), при котором показывается красное предупреждение.",
-    "MaxPing": "Пинг (мс), при котором игрока кикает с сервера.",
-    "serverFpsWarning": "FPS сервера, ниже которого показывается предупреждение (минимум 11).",
-    "shotValidation": "Валидация выстрелов: 1 — включена, 0 — выключена.",
-    "clientPort": "Принудительный порт для подключения клиентов.",
-    "template": "Миссия сервера в формате <Миссия>.<Террейн> (class Missions).",
-    "networkRangeClose": "Сетевой пузырь (м): ближние объекты с предметами внутри (рюкзаки). По умолчанию 20.",
-    "networkRangeNear": "Сетевой пузырь (м): ближние предметы инвентаря. По умолчанию 150.",
-    "networkRangeFar": "Сетевой пузырь (м): дальние объекты. По умолчанию 1000.",
-    "networkRangeDistantEffect": "Сетевой пузырь (м): эффекты (звуки). По умолчанию 4000.",
-    "defaultVisibility": "Максимальная дальность отрисовки террейна на сервере.",
-    "defaultObjectViewDistance": "Максимальная дальность отрисовки объектов на сервере.",
-    "guaranteedUpdates": "Протокол связи с сервером (только 1).",
-    "loginQueueConcurrentPlayers": "Сколько игроков одновременно обрабатывается при входе.",
-    "loginQueueMaxPlayers": "Максимум игроков в очереди на вход.",
-    "respawnTime": "Задержка (сек) перед созданием нового персонажа после смерти.",
-    "motdInterval": "Интервал (сек) между сообщениями motd.",
-    "timeStampFormat": "Формат таймштампов в RPT: Full или Short.",
-    "logAverageFps": "Писать средний FPS сервера каждые N секунд (нужен -doLogs).",
-    "logMemory": "Писать потребление памяти каждые N секунд (нужен -doLogs).",
-    "logPlayers": "Писать число игроков каждые N секунд (нужен -doLogs).",
-    "logFile": "Файл консольного лога сервера в папке профиля.",
-    "adminLogPlayerHitsOnly": "1 — только попадания по игрокам, 0 — все попадания.",
-    "adminLogPlacement": "Логировать установку ловушек и палаток.",
-    "adminLogBuildActions": "Логировать действия базостроения.",
-    "adminLogPlayerList": "Периодический список игроков с позициями (раз в 5 минут).",
-    "simulatedPlayersBatch": "Лимит игроков, симулируемых за один кадр сервера.",
-    "multithreadedReplication": "Многопоточная репликация (число потоков — из dayzsettings.xml).",
-    "speedhackDetection": "Детект спидхака: 1 — строгий … 10 — мягкий.",
-    "disablePersonalLight": "Отключить персональную подсветку у всех клиентов.",
-    "networkObjectBatchLogSlow": "Порог (сек): если обработка сетевого «пузыря» занимает дольше — пишется в лог.",
-    "networkObjectBatchEnforceBandwidthLimits": "Ограничивать создание объектов по статистике использования канала.",
-    "networkObjectBatchUseEstimatedBandwidth": "0 — реально отправленные данные за прошлый кадр, 1 — грубая оценка.",
-    "networkObjectBatchUseDynamicMaximumBandwidth": "Лимит канала — доля от текущего максимума, а не жёсткое число.",
-    "networkObjectBatchBandwidthLimit": "Сам лимит канала: доля [0,1] или число [1,∞) — смотря что выше.",
-    "networkObjectBatchCompute": "Сколько объектов на создание/удаление проверяется за один кадр сервера.",
-    "networkObjectBatchSendCreate": "Максимум объектов, отправляемых на создание за кадр.",
-    "networkObjectBatchSendDelete": "Максимум объектов, отправляемых на удаление за кадр.",
-}
+OTHER = "other"          # группа для ключей, которых нет в справочнике
+
+
+class _Row:
+    """Одна настройка: галка «в файле», контрол и умение отдать значение.
+
+    Держим отдельным объектом, а не разбираем виджеты обратно: разбор формы
+    ради сохранения — источник ошибок вида «поменял поле, а сохранилось
+    старое».
+    """
+
+    def __init__(self, spec: VarSpec, editor: CfgEditor) -> None:
+        self.spec = spec
+        self.editor = editor
+        self.check = CheckBox()
+        self.check.setToolTip(tr("cfg.in_file", "Писать этот ключ в файл"))
+        self.control = self._make_control()
+        self.widget = setting_row(spec.name, spec.tooltip(), self.control,
+                                  prefix=self.check)
+        self.check.stateChanged.connect(editor._touch)
+
+    # ------------------------------------------------------------- контролы
+
+    def _make_control(self):
+        kind = self.spec.kind
+        if kind in (BOOL, BOOLSTR):
+            sw = SwitchButton()
+            sw.setOnText("")
+            sw.setOffText("")
+            sw.checkedChanged.connect(self._changed)
+            return sw
+        if kind == CHOICE:
+            box = ComboBox()
+            for value, label in self.spec.choices:
+                box.addItem(label, userData=value)
+            box.setFixedWidth(140)
+            box.currentIndexChanged.connect(self._changed)
+            return box
+        edit = LineEdit()
+        edit.setFixedWidth(170)
+        edit.textEdited.connect(self._changed)
+        return edit
+
+    def _changed(self, *_a) -> None:
+        """Поменял значение — ключ должен попасть в файл.
+
+        Иначе получается ловушка: человек выставил значение, сохранил и не
+        понял, почему ничего не изменилось, — галку он не заметил.
+        """
+        if not self.check.isChecked():
+            self.check.setChecked(True)
+        self.editor._touch()
+
+    # -------------------------------------------------------------- значения
+
+    def set_value(self, value: str | None) -> None:
+        """value = None означает «в файле этого ключа нет»."""
+        present = value is not None
+        self.check.setChecked(present)
+        shown = value if present else self.spec.default
+        kind = self.spec.kind
+        if kind == BOOL:
+            self.control.setChecked(str(shown).strip() in ("1", "true", "True"))
+        elif kind == BOOLSTR:
+            self.control.setChecked(str(shown).strip().lower() == "true")
+        elif kind == CHOICE:
+            idx = self.control.findData(str(shown).strip())
+            self.control.setCurrentIndex(idx if idx >= 0 else 0)
+        else:
+            self.control.setText(str(shown))
+            # Показать начало значения, а не хвост: длинный путь миссии иначе
+            # виден с середины слова и опознаётся не сразу.
+            self.control.setCursorPosition(0)
+
+    def value(self) -> str | None:
+        if not self.check.isChecked():
+            return None
+        kind = self.spec.kind
+        if kind == BOOL:
+            return "1" if self.control.isChecked() else "0"
+        if kind == BOOLSTR:
+            return "true" if self.control.isChecked() else "false"
+        if kind == CHOICE:
+            return str(self.control.currentData())
+        return self.control.text().strip()
+
+    def matches(self, query: str) -> bool:
+        if not query:
+            return True
+        return query in self.spec.name.lower() or query in self.spec.hint.lower()
 
 
 class CfgEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.cfg: ServerCfg | None = None
+        self._path: Path | None = None
+        self.rows: dict[str, _Row] = {}
+        # Пока раскладываем прочитанные значения по контролам, каждый из них
+        # шлёт сигнал «поменялось». Без этого признака окно объявляло
+        # несохранённые изменения сразу после открытия файла.
+        self._loading = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setContentsMargins(tokens.SPACE_L, tokens.SPACE_L,
+                                  tokens.SPACE_L, tokens.SPACE_L)
+        layout.setSpacing(tokens.SPACE_S)
+
         top = QHBoxLayout()
-        self.path_label = BodyLabel(tr("cfg.no_file", "Конфиг не загружен"))
+        top.setSpacing(tokens.SPACE_S)
+        # Путь длинный, и требовать под него ширину нельзя: окно из-за одной
+        # подписи начинало требовать почти тысячу пикселей.
+        self.path_label = shrink(BodyLabel(tr("cfg.no_file", "Конфиг не загружен")))
         self.enc_label = BodyLabel("")
-        self.enc_label.setStyleSheet("color:#b8860b;")
+        self.enc_label.setStyleSheet(f"color:{tokens.color('warning')};")
+        self.unsaved = CaptionLabel("")
+        self.unsaved.setStyleSheet(f"color:{tokens.color('warning')};")
         btn_reload = PushButton(FIF.SYNC, tr("cfg.reload", "Перечитать"))
         btn_reload.clicked.connect(self.reload)
-        btn_save = PrimaryPushButton(FIF.SAVE, tr("cfg.save", "Сохранить (UTF-8 без BOM)"))
+        btn_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
         btn_save.clicked.connect(self.save)
         top.addWidget(self.path_label, 1)
         top.addWidget(self.enc_label)
+        top.addWidget(self.unsaved)
         top.addWidget(btn_reload)
         top.addWidget(btn_save)
         layout.addLayout(top)
 
-        self.table = TableWidget(self)
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels([
-            tr("cfg.var", "Переменная"), tr("cfg.value", "Значение"),
-        ])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        layout.addWidget(self.table, 1)
+        self.search = SearchLineEdit()
+        self.search.setPlaceholderText(
+            tr("cfg.search", "Найти среди {n} ключей…").format(n=len(servercfg.SPECS)))
+        self.search.textChanged.connect(self._filter)
+        layout.addWidget(self.search)
 
-        hint = CaptionLabel(tr("cfg.hint",
-                               "Меняются только значения — комментарии и структура файла сохраняются."))
+        # Содержимое в прокрутке: 67 строк в окно не помещаются ни при какой
+        # ширине, а распирать окно до высоты содержимого нельзя.
+        scroll = SmoothScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(SmoothScrollArea.Shape.NoFrame)
+        # Вбок страница не ездит никогда: содержимое перекладывается в меньшее
+        # число колонок, а не уезжает за край. Иначе внизу появляется вторая
+        # полоса прокрутки, и до правого контрола надо доскроллить.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}"
+                             " QWidget#cfgInner{background:transparent;}")
+        inner = QWidget()
+        inner.setObjectName("cfgInner")
+        self.inner_box = QVBoxLayout(inner)
+        # справа — место под полосу прокрутки: без него контролы правой
+        # колонки упираются в неё и обрезаются
+        self.inner_box.setContentsMargins(0, 0, tokens.SPACE_XL, 0)
+        self.inner_box.setSpacing(tokens.SPACE_XS)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
+
+        self.nothing = CaptionLabel(tr("cfg.nothing", "Ничего не нашлось."))
+        self.nothing.hide()
+        self.inner_box.addWidget(self.nothing)
+
+        self.groups: dict[str, tuple[QWidget, Columns]] = {}
+        for group in servercfg.GROUPS:
+            self._add_group(group, servercfg.specs_of_group(group))
+        self.inner_box.addStretch(1)
+
+        hint = CaptionLabel(tr(
+            "cfg.hint2",
+            "Снятая галка означает, что ключа в файле нет и сервер возьмёт своё "
+            "умолчание. Комментарии и порядок строк сохраняются, файл пишется "
+            "в UTF-8 без BOM."))
+        hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        self._path: Path | None = None
+    # ---------------------------------------------------------------- группы
+
+    def _add_group(self, group: str, specs: list[VarSpec]) -> None:
+        if not specs:
+            return
+        title = tr(f"cfg.group.{group}", servercfg.GROUP_NAMES.get(group, group))
+        head = subheading(title, line=bool(self.groups))
+        widgets = []
+        for spec in specs:
+            row = _Row(spec, self)
+            self.rows[spec.name] = row
+            widgets.append(row.widget)
+        cols = Columns(widgets)
+        self.inner_box.addWidget(head)
+        self.inner_box.addWidget(cols)
+        self.groups[group] = (head, cols)
+
+    def _touch(self, *_a) -> None:
+        if self._loading:
+            return
+        self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
+
+    def _filter(self, text: str) -> None:
+        query = (text or "").strip().lower()
+        found = 0
+        for group, (head, cols) in self.groups.items():
+            visible = [r.widget for r in self.rows.values()
+                       if r.spec.group == group and r.matches(query)]
+            cols.set_active(visible)
+            head.setVisible(bool(visible))
+            cols.setVisible(bool(visible))
+            found += len(visible)
+        self.nothing.setVisible(found == 0)
+
+    # ---------------------------------------------------------------- данные
 
     def set_path(self, path: Path | None) -> None:
         self._path = path
         self.reload()
 
     def reload(self) -> None:
-        self.table.setRowCount(0)
         self.cfg = None
         self.enc_label.setText("")
+        self.unsaved.setText("")
+        for name, row in list(self.rows.items()):
+            if row.spec.group == OTHER:
+                row.widget.setParent(None)
+                del self.rows[name]
+        if OTHER in self.groups:
+            head, cols = self.groups.pop(OTHER)
+            head.setParent(None)
+            cols.setParent(None)
+
+        self._loading = True
+        try:
+            self._reload_values()
+        finally:
+            self._loading = False
+        self._filter(self.search.text())
+
+    def _reload_values(self) -> None:
         if not self._path or not self._path.is_file():
             self.path_label.setText(tr("cfg.no_file", "Конфиг не загружен"))
+            for row in self.rows.values():
+                row.set_value(None)
             return
         try:
             self.cfg = ServerCfg(self._path)
@@ -145,19 +279,23 @@ class CfgEditor(QWidget):
             self.enc_label.setText(tr("cfg.bad_enc",
                                       "Кодировка {enc} — при сохранении станет UTF-8 без BOM",
                                       enc=self.cfg.encoding))
-        for v in self.cfg.variables():
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            name_item = QTableWidgetItem(v.name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            hint = _HINTS_RU.get(v.name)
-            if hint:
-                name_item.setToolTip(tr(f"cfgvar.{v.name}", hint))
-            val_item = QTableWidgetItem(v.value)
-            if hint:
-                val_item.setToolTip(tr(f"cfgvar.{v.name}", hint))
-            self.table.setItem(row, 0, name_item)
-            self.table.setItem(row, 1, val_item)
+        values = self.cfg.values()
+        for name, row in self.rows.items():
+            row.set_value(values.get(name))
+
+        # Ключи, которых нет в справочнике: чужой мод, опечатка, новая версия
+        # игры. Прятать их нельзя — сохранение тогда молча вынесло бы их из
+        # файла; показываем как есть, текстом.
+        unknown = [n for n in values if n not in servercfg.BY_NAME]
+        if unknown:
+            specs = [VarSpec(name=n, kind="str", group=OTHER, default=values[n],
+                             hint=tr("cfg.unknown_hint",
+                                     "Ключа нет в справочнике — программа его "
+                                     "не трогает."))
+                     for n in unknown]
+            self._add_group(OTHER, specs)
+            for spec in specs:
+                self.rows[spec.name].set_value(values[spec.name])
 
     def save(self) -> None:
         if not self.cfg:
@@ -170,17 +308,15 @@ class CfgEditor(QWidget):
                                        "подхватит на лету, а при выходе может перезаписать файл."),
                             parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
             return
-        values = {}
-        for row in range(self.table.rowCount()):
-            name = self.table.item(row, 0).text()
-            values[name] = self.table.item(row, 1).text()
+        wanted = {name: row.value() for name, row in self.rows.items()}
         try:
-            self.cfg.set_values(values)
+            self.cfg.apply(wanted)
             self.cfg.save()
         except OSError as e:
             InfoBar.error(title=tr("cfg.save_err_title", "Ошибка сохранения"), content=str(e),
                           parent=self, duration=5000, position=InfoBarPosition.TOP_RIGHT)
             return
         self.enc_label.setText("")
+        self.unsaved.setText("")
         InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
                         parent=self, duration=3000, position=InfoBarPosition.TOP_RIGHT)
