@@ -23,10 +23,34 @@ from .params import CLIENT, SERVER
 WIDTH = 78
 _PAD = "        "
 
-TOPICS = (cliargs.G_BASIC, cliargs.G_MODS, cliargs.G_PACK,
+TOPICS = ("commands", cliargs.G_BASIC, cliargs.G_MODS, cliargs.G_PACK,
           cliargs.G_PARAMS, cliargs.G_OUTPUT, "exit")
 
+# Команды с объяснением. Голый список имён отвечает на вопрос «что можно
+# написать», но не на вопрос «что из этого мне нужно», а спрашивают именно
+# второе.
+COMMANDS_HELP = (
+    (cliargs.LAUNCH, "cli.cmd.launch",
+     "Поднять сервер и клиент по пресету. Глагол можно не писать — команда "
+     "без глагола означает запуск."),
+    (cliargs.RESTART, "cli.cmd.restart",
+     "Потушить и поднять снова. Принимает те же аргументы, что и запуск. "
+     "Если ничего не работало, просто поднимает."),
+    (cliargs.STOP, "cli.cmd.stop",
+     "Потушить. Без уточнения — всё, что работает; +server или +client — "
+     "только их."),
+    (cliargs.STATUS, "cli.cmd.status",
+     "Что сейчас работает. Стороны, состояние, ошибки скриптов, "
+     "пути к логам."),
+    (cliargs.SHOW, "cli.cmd.show", "Показать окно программы."),
+    (cliargs.QUIT, "cli.cmd.quit",
+     "Завершить программу. Запущенный сервер при этом продолжает работать — "
+     "это отдельный процесс."),
+    (cliargs.HELP, "cli.cmd.help", "Эта справка."),
+)
+
 _TITLES = {
+    "commands": ("cli.help.t_commands", "Команды"),
     cliargs.G_BASIC: ("cli.help.t_basic", "Что запускаем"),
     cliargs.G_MODS: ("cli.help.t_mods", "Моды и сорсы"),
     cliargs.G_PACK: ("cli.help.t_pack", "Запаковка"),
@@ -100,6 +124,14 @@ def _exit_page() -> str:
     return "\n".join(out)
 
 
+def _commands_page() -> str:
+    out = [_title("commands"), ""]
+    for name, key, default in COMMANDS_HELP:
+        out.append(f"  qtsctl {name}")
+        out.append(_wrap(tr(key, default)))
+    return "\n".join(out)
+
+
 def _group_page(topic: str) -> str:
     out = [_title(topic), ""]
     for s in cliargs.all_specs():
@@ -135,14 +167,16 @@ def _general() -> str:
     out.append("")
 
     out.append(tr("cli.help.commands", "Команды") + ":")
-    out.append("  " + ", ".join(cliargs.COMMANDS) + "   "
-               + tr("cli.help.launch_default",
-                    "(без команды — запуск)"))
+    width = max(len(name) for name, _k, _d in COMMANDS_HELP)
+    for name, key, default in COMMANDS_HELP:
+        first = tr(key, default).split(".")[0]
+        out.append(f"  {name:<{width}}  {first}.")
     out.append("")
 
     out.append(tr("cli.help.topics", "Разделы справки") + ":")
     for topic in TOPICS:
-        out.append(f"  -help {topic:<8} {_title(topic)}")
+        width = max(len(t) for t in TOPICS)
+        out.append(f"  -help {topic:<{width}}  {_title(topic)}")
     out.append("")
     out.append(_wrap(tr("cli.help.json_note",
                         "«-help -json» отдаёт то же самое машине: список команд "
@@ -159,6 +193,8 @@ def render(topic: str = "") -> str:
         return _params_page()
     if topic == "exit":
         return _exit_page()
+    if topic == "commands":
+        return _commands_page()
     if topic in _TITLES:
         return _group_page(topic)
     known = ", ".join(TOPICS)
@@ -188,6 +224,8 @@ def capabilities() -> dict:
         args.append(item)
     return {"v": cliproto.API,
             "commands": list(cliargs.COMMANDS),
+            "command_help": {name: tr(key, default)
+                             for name, key, default in COMMANDS_HELP},
             "args": args,
             "exit_codes": {str(k): v for k, v in cliproto.EXIT_NAMES.items()}}
 

@@ -856,7 +856,7 @@
   "cli.arg.client": "Launch the client. Minus means do not, even if the preset says so.",
   "cli.arg.detach": "Return immediately without waiting for readiness.",
   "cli.arg.forget": "Forget the record about a mod. Never touches files.",
-  "cli.arg.help": "Help on a topic: basic, mods, pack, params, output, exit.",
+  "cli.arg.help": "Help on a topic: commands, basic, mods, pack, params, output, exit.",
   "cli.arg.json": "Machine-readable report instead of a human one.",
   "cli.arg.mod": "Mods for client and server. Plus adds to the preset, minus replaces the whole list.",
   "cli.arg.pack": "Pack changed sources of the launch mods. Minus means do not pack at all.",
@@ -880,7 +880,6 @@
   "cli.help.examples": "Examples",
   "cli.help.exit_note": "Script errors never affect the exit code — they go to the report as a separate list, and what to do with them is up to the caller.",
   "cli.help.json_note": "«-help -json» gives a program the same thing: commands and arguments with types.",
-  "cli.help.launch_default": "(no command means launch)",
   "cli.help.no_topic": "Unknown topic «{topic}».",
   "cli.help.params_note": "An empty value removes a parameter set in the preset: «-cScrDef=» means «do not pass it at all».",
   "cli.help.rule": "Sign rule",
@@ -956,5 +955,13 @@
   "cli.rep.pack_errors": "errors {n}",
   "cli.rep.pack_warnings": "warnings {n}",
   "cli.arg.hard": "Shut down forcefully, without waiting for a clean exit. Minus means the opposite, gracefully only. Without a sign — as configured in the program.",
-  "cli.help.ex_restart": "Restart the server, rebuilding what changed"
+  "cli.help.ex_restart": "Restart the server, rebuilding what changed",
+  "cli.help.t_commands": "Commands",
+  "cli.cmd.launch": "Start the server and client from a preset. The verb may be omitted — a command without a verb means launch.",
+  "cli.cmd.restart": "Shut down and start again. Takes the same arguments as launch. If nothing was running, it simply starts.",
+  "cli.cmd.stop": "Shut down. Without a qualifier — everything that runs; +server or +client — only those.",
+  "cli.cmd.status": "What is running now. Sides, state, script errors, paths to the logs.",
+  "cli.cmd.show": "Show the program window.",
+  "cli.cmd.quit": "Quit the program. A running server keeps working — it is a separate process.",
+  "cli.cmd.help": "This help."
 }

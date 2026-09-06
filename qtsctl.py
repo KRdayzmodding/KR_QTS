@@ -28,12 +28,33 @@ SLACK_SEC = 60.0
 DEFAULT_TIMEOUT = 900.0
 
 
-def _out(text: str) -> None:
-    """Печать без падения на кодировке консоли.
+def _utf8_output() -> None:
+    """Переводит вывод в UTF-8 — всегда, а не как повезёт с локалью.
 
-    Windows-консоль под русской локалью — cp866, и «—» в ней нет. Ронять
-    инструмент из-за тире недопустимо: он мог только что поднять сервер.
+    По умолчанию Windows отдаёт консоли cp866, а перенаправленному потоку —
+    cp1251. Для отчёта, который читает программа, это негодно: JSON с русским
+    текстом приезжал бы в кодировке, о которой вызывающий не договаривался, а
+    в другой стране — в третьей. Поэтому кодировку задаём сами, а живой
+    консоли заодно переключаем страницу, иначе она покажет кракозябры.
+
+    Всё в try: не сумели переключить — печатаем как получится, но работать
+    инструмент обязан. Он мог только что поднять сервер.
     """
+    try:
+        if sys.stdout is not None and sys.stdout.isatty():
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:                                   # noqa: BLE001
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                               # noqa: BLE001
+            pass
+
+
+def _out(text: str) -> None:
+    """Печать, которая не роняет инструмент из-за одного символа."""
     enc = getattr(sys.stdout, "encoding", None) or "utf-8"
     sys.stdout.write(text.encode(enc, "replace").decode(enc, "replace") + "\n")
 
@@ -116,6 +137,7 @@ def _talk(req: cliargs.Request) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    _utf8_output()
     try:
         i18n.load(Settings.load().language)
     except Exception:                                   # noqa: BLE001

@@ -32,7 +32,31 @@ a = Analysis(
     ],
     noarchive=False,
 )
+# Консольный вход внешнего управления. Отдельный exe, а не ключ основного:
+# основной собран как оконный, у него нет stdout и быть не должно — консоль
+# прячется первой строкой main(), иначе консольные помощники pboProject заводят
+# себе окна. А задача в редакторе — это командная строка с выводом в панель.
+#
+# Анализ отдельный, но зависимости общие: COLLECT кладёт оба exe в одну папку,
+# и второй комплект Qt рядом не появляется.
+b = Analysis(
+    ["qtsctl.py"],
+    pathex=[],
+    binaries=[],
+    datas=[("lang", "lang")],
+    hiddenimports=[],
+    excludes=[
+        "tkinter", "unittest", "pydoc_data",
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
+        "PySide6.QtMultimedia", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtCharts",
+    ],
+    noarchive=False,
+)
+
+MERGE((a, "KR_QTS", "KR_QTS"), (b, "qtsctl", "qtsctl"))
+
 pyz = PYZ(a.pure)
+pyz_ctl = PYZ(b.pure)
 
 exe = EXE(
     pyz,
@@ -48,10 +72,27 @@ exe = EXE(
     version="build/version_info.txt",
 )
 
+exe_ctl = EXE(
+    pyz_ctl,
+    b.scripts,
+    [],
+    exclude_binaries=True,
+    name="qtsctl",
+    debug=False,
+    strip=False,
+    upx=False,
+    console=True,           # ради вывода он и существует
+    icon="build/icon.ico",
+    version="build/version_info.txt",
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
+    exe_ctl,
+    b.binaries,
+    b.datas,
     strip=False,
     upx=False,
     name="KR_QTS",

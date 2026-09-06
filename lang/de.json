@@ -856,7 +856,7 @@
   "cli.arg.client": "Client starten. Minus heißt nicht starten, auch wenn das Preset es vorsieht.",
   "cli.arg.detach": "Sofort zurückkehren, ohne auf Bereitschaft zu warten.",
   "cli.arg.forget": "Den Eintrag zu einem Mod vergessen. Dateien werden nie angerührt.",
-  "cli.arg.help": "Hilfe zum Thema: basic, mods, pack, params, output, exit.",
+  "cli.arg.help": "Hilfe zum Thema: commands, basic, mods, pack, params, output, exit.",
   "cli.arg.json": "Maschinenlesbarer Bericht statt eines menschlichen.",
   "cli.arg.mod": "Mods für Client und Server. Plus ergänzt das Preset, Minus ersetzt die ganze Liste.",
   "cli.arg.pack": "Geänderte Quellen der Start-Mods packen. Minus heißt gar nicht packen.",
@@ -880,7 +880,6 @@
   "cli.help.examples": "Beispiele",
   "cli.help.exit_note": "Skriptfehler beeinflussen den Rückgabewert nie — sie stehen als eigene Liste im Bericht, und was damit geschieht, entscheidet der Aufrufer.",
   "cli.help.json_note": "«-help -json» liefert Programmen dasselbe: Befehle und Argumente mit Typen.",
-  "cli.help.launch_default": "(ohne Befehl wird gestartet)",
   "cli.help.no_topic": "Thema «{topic}» ist unbekannt.",
   "cli.help.params_note": "Ein leerer Wert entfernt einen im Preset gesetzten Parameter: «-cScrDef=» heißt «gar nicht übergeben».",
   "cli.help.rule": "Regel der Vorzeichen",
@@ -956,5 +955,13 @@
   "cli.rep.pack_errors": "Fehler {n}",
   "cli.rep.pack_warnings": "Warnungen {n}",
   "cli.arg.hard": "Hart beenden, ohne auf sauberes Herunterfahren zu warten. Minus bedeutet das Gegenteil, nur sanft. Ohne Vorzeichen — wie im Programm eingestellt.",
-  "cli.help.ex_restart": "Server neu starten und Geändertes neu bauen"
+  "cli.help.ex_restart": "Server neu starten und Geändertes neu bauen",
+  "cli.help.t_commands": "Befehle",
+  "cli.cmd.launch": "Server und Client aus einem Preset starten. Das Verb kann entfallen — ein Befehl ohne Verb bedeutet Start.",
+  "cli.cmd.restart": "Herunterfahren und neu starten. Nimmt dieselben Argumente wie der Start. Lief nichts, wird einfach gestartet.",
+  "cli.cmd.stop": "Herunterfahren. Ohne Angabe alles, was läuft; +server oder +client nur diese.",
+  "cli.cmd.status": "Was gerade läuft. Seiten, Zustand, Skriptfehler, Pfade zu den Logs.",
+  "cli.cmd.show": "Das Programmfenster zeigen.",
+  "cli.cmd.quit": "Das Programm beenden. Ein laufender Server arbeitet weiter — er ist ein eigener Prozess.",
+  "cli.cmd.help": "Diese Hilfe."
 }

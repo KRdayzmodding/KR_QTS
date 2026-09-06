@@ -207,7 +207,8 @@ _STATIC: list[ArgSpec] = [
             help="Машинный отчёт вместо человеческого."),
     ArgSpec("help", G_OUTPUT, value="str", plus=False, optional=True,
             hint="раздел",
-            help="Справка по разделу: basic, mods, pack, params, output, exit."),
+            help="Справка по разделу: commands, basic, mods, pack, params, "
+                 "output, exit."),
 ]
 
 # Сквозной проход. Держим отдельно от справочника: это не параметр DayZ, а
