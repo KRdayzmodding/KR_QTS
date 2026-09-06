@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, CheckBox, ComboBox, InfoBar, InfoBarPosition,
@@ -42,15 +42,15 @@ class _Row:
     старое».
     """
 
-    def __init__(self, spec: VarSpec, editor: CfgEditor) -> None:
+    def __init__(self, spec: VarSpec, owner: CfgKeys) -> None:
         self.spec = spec
-        self.editor = editor
+        self.editor = owner
         self.check = CheckBox()
         self.check.setToolTip(tr("cfg.in_file", "Писать этот ключ в файл"))
         self.control = self._make_control()
         self.widget = setting_row(spec.name, spec.tooltip(), self.control,
                                   prefix=self.check)
-        self.check.stateChanged.connect(editor._touch)
+        self.check.stateChanged.connect(owner._touch)
 
     # ------------------------------------------------------------- контролы
 
@@ -123,16 +123,131 @@ class _Row:
         return query in self.spec.name.lower() or query in self.spec.hint.lower()
 
 
-class CfgEditor(QWidget):
+class CfgKeys(QWidget):
+    """Список известных ключей конфига: поиск, группы, строки со значениями.
+
+    Не знает ни про файл, ни про сохранение — ему дают значения и спрашивают,
+    что должно оказаться в файле. Благодаря этому он одинаково работает и
+    страницей, и внутри карточки на «Запуске».
+    """
+
+    changed = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.cfg: ServerCfg | None = None
-        self._path: Path | None = None
         self.rows: dict[str, _Row] = {}
+        self.groups: dict[str, tuple[QWidget, Columns]] = {}
         # Пока раскладываем прочитанные значения по контролам, каждый из них
         # шлёт сигнал «поменялось». Без этого признака окно объявляло
         # несохранённые изменения сразу после открытия файла.
         self._loading = False
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(tokens.SPACE_XS)
+
+        self.search = SearchLineEdit()
+        self.search.setPlaceholderText(
+            tr("cfg.search", "Найти среди {n} ключей…").format(n=len(servercfg.SPECS)))
+        self.search.setMaximumWidth(320)
+        self.search.textChanged.connect(self._filter)
+        box.addWidget(self.search)
+
+        self.nothing = CaptionLabel(tr("cfg.nothing", "Ничего не нашлось."))
+        self.nothing.hide()
+        box.addWidget(self.nothing)
+
+        self.inner_box = QVBoxLayout()
+        self.inner_box.setContentsMargins(0, 0, 0, 0)
+        self.inner_box.setSpacing(tokens.SPACE_XS)
+        box.addLayout(self.inner_box)
+
+        for group in servercfg.GROUPS:
+            self._add_group(group, servercfg.specs_of_group(group))
+
+    # ---------------------------------------------------------------- группы
+
+    def _add_group(self, group: str, specs: list[VarSpec]) -> None:
+        if not specs:
+            return
+        title = tr(f"cfg.group.{group}", servercfg.GROUP_NAMES.get(group, group))
+        head = subheading(title, line=bool(self.groups))
+        widgets = []
+        for spec in specs:
+            row = _Row(spec, self)
+            self.rows[spec.name] = row
+            widgets.append(row.widget)
+        cols = Columns(widgets)
+        self.inner_box.addWidget(head)
+        self.inner_box.addWidget(cols)
+        self.groups[group] = (head, cols)
+
+    def _touch(self, *_a) -> None:
+        if self._loading:
+            return
+        self.changed.emit()
+
+    def _filter(self, text: str) -> None:
+        query = (text or "").strip().lower()
+        found = 0
+        for group, (head, cols) in self.groups.items():
+            visible = [r.widget for r in self.rows.values()
+                       if r.spec.group == group and r.matches(query)]
+            cols.set_active(visible)
+            head.setVisible(bool(visible))
+            cols.setVisible(bool(visible))
+            found += len(visible)
+        self.nothing.setVisible(found == 0)
+
+    # ---------------------------------------------------------------- данные
+
+    def load(self, values: dict) -> None:
+        """Расставляет значения. Ключа нет в словаре — значит нет и в файле."""
+        self._loading = True
+        try:
+            self._drop_unknown_group()
+            for name, row in self.rows.items():
+                row.set_value(values.get(name))
+            # Ключи, которых нет в справочнике: чужой мод, опечатка, новая
+            # версия игры. Прятать их нельзя — сохранение тогда молча вынесло
+            # бы их из файла; показываем как есть, текстом.
+            unknown = [n for n in values if n not in servercfg.BY_NAME]
+            if unknown:
+                specs = [VarSpec(name=n, kind="str", group=OTHER,
+                                 default=values[n],
+                                 hint=tr("cfg.unknown_hint",
+                                         "Ключа нет в справочнике — программа "
+                                         "его не трогает."))
+                         for n in unknown]
+                self._add_group(OTHER, specs)
+                for spec in specs:
+                    self.rows[spec.name].set_value(values[spec.name])
+        finally:
+            self._loading = False
+        self._filter(self.search.text())
+
+    def _drop_unknown_group(self) -> None:
+        for name, row in list(self.rows.items()):
+            if row.spec.group == OTHER:
+                row.widget.setParent(None)
+                del self.rows[name]
+        if OTHER in self.groups:
+            head, cols = self.groups.pop(OTHER)
+            head.setParent(None)
+            cols.setParent(None)
+
+    def wanted(self) -> dict:
+        """Что должно оказаться в файле. None — ключа быть не должно."""
+        return {name: row.value() for name, row in self.rows.items()}
+
+
+class CfgEditor(QWidget):
+    """Страница редактора: файл, кодировка, сохранение — вокруг списка ключей."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cfg: ServerCfg | None = None
+        self._path: Path | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(tokens.SPACE_L, tokens.SPACE_L,
@@ -159,12 +274,6 @@ class CfgEditor(QWidget):
         top.addWidget(btn_save)
         layout.addLayout(top)
 
-        self.search = SearchLineEdit()
-        self.search.setPlaceholderText(
-            tr("cfg.search", "Найти среди {n} ключей…").format(n=len(servercfg.SPECS)))
-        self.search.textChanged.connect(self._filter)
-        layout.addWidget(self.search)
-
         # Содержимое в прокрутке: 67 строк в окно не помещаются ни при какой
         # ширине, а распирать окно до высоты содержимого нельзя.
         scroll = SmoothScrollArea(self)
@@ -178,22 +287,17 @@ class CfgEditor(QWidget):
                              " QWidget#cfgInner{background:transparent;}")
         inner = QWidget()
         inner.setObjectName("cfgInner")
-        self.inner_box = QVBoxLayout(inner)
+        inner_box = QVBoxLayout(inner)
         # справа — место под полосу прокрутки: без него контролы правой
         # колонки упираются в неё и обрезаются
-        self.inner_box.setContentsMargins(0, 0, tokens.SPACE_XL, 0)
-        self.inner_box.setSpacing(tokens.SPACE_XS)
+        inner_box.setContentsMargins(0, 0, tokens.SPACE_XL, 0)
+        inner_box.setSpacing(tokens.SPACE_XS)
+        self.keys = CfgKeys()
+        self.keys.changed.connect(self._touch)
+        inner_box.addWidget(self.keys)
+        inner_box.addStretch(1)
         scroll.setWidget(inner)
         layout.addWidget(scroll, 1)
-
-        self.nothing = CaptionLabel(tr("cfg.nothing", "Ничего не нашлось."))
-        self.nothing.hide()
-        self.inner_box.addWidget(self.nothing)
-
-        self.groups: dict[str, tuple[QWidget, Columns]] = {}
-        for group in servercfg.GROUPS:
-            self._add_group(group, servercfg.specs_of_group(group))
-        self.inner_box.addStretch(1)
 
         hint = CaptionLabel(tr(
             "cfg.hint2",
@@ -203,39 +307,8 @@ class CfgEditor(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-    # ---------------------------------------------------------------- группы
-
-    def _add_group(self, group: str, specs: list[VarSpec]) -> None:
-        if not specs:
-            return
-        title = tr(f"cfg.group.{group}", servercfg.GROUP_NAMES.get(group, group))
-        head = subheading(title, line=bool(self.groups))
-        widgets = []
-        for spec in specs:
-            row = _Row(spec, self)
-            self.rows[spec.name] = row
-            widgets.append(row.widget)
-        cols = Columns(widgets)
-        self.inner_box.addWidget(head)
-        self.inner_box.addWidget(cols)
-        self.groups[group] = (head, cols)
-
-    def _touch(self, *_a) -> None:
-        if self._loading:
-            return
+    def _touch(self) -> None:
         self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
-
-    def _filter(self, text: str) -> None:
-        query = (text or "").strip().lower()
-        found = 0
-        for group, (head, cols) in self.groups.items():
-            visible = [r.widget for r in self.rows.values()
-                       if r.spec.group == group and r.matches(query)]
-            cols.set_active(visible)
-            head.setVisible(bool(visible))
-            cols.setVisible(bool(visible))
-            found += len(visible)
-        self.nothing.setVisible(found == 0)
 
     # ---------------------------------------------------------------- данные
 
@@ -247,27 +320,9 @@ class CfgEditor(QWidget):
         self.cfg = None
         self.enc_label.setText("")
         self.unsaved.setText("")
-        for name, row in list(self.rows.items()):
-            if row.spec.group == OTHER:
-                row.widget.setParent(None)
-                del self.rows[name]
-        if OTHER in self.groups:
-            head, cols = self.groups.pop(OTHER)
-            head.setParent(None)
-            cols.setParent(None)
-
-        self._loading = True
-        try:
-            self._reload_values()
-        finally:
-            self._loading = False
-        self._filter(self.search.text())
-
-    def _reload_values(self) -> None:
         if not self._path or not self._path.is_file():
             self.path_label.setText(tr("cfg.no_file", "Конфиг не загружен"))
-            for row in self.rows.values():
-                row.set_value(None)
+            self.keys.load({})
             return
         try:
             self.cfg = ServerCfg(self._path)
@@ -279,23 +334,7 @@ class CfgEditor(QWidget):
             self.enc_label.setText(tr("cfg.bad_enc",
                                       "Кодировка {enc} — при сохранении станет UTF-8 без BOM",
                                       enc=self.cfg.encoding))
-        values = self.cfg.values()
-        for name, row in self.rows.items():
-            row.set_value(values.get(name))
-
-        # Ключи, которых нет в справочнике: чужой мод, опечатка, новая версия
-        # игры. Прятать их нельзя — сохранение тогда молча вынесло бы их из
-        # файла; показываем как есть, текстом.
-        unknown = [n for n in values if n not in servercfg.BY_NAME]
-        if unknown:
-            specs = [VarSpec(name=n, kind="str", group=OTHER, default=values[n],
-                             hint=tr("cfg.unknown_hint",
-                                     "Ключа нет в справочнике — программа его "
-                                     "не трогает."))
-                     for n in unknown]
-            self._add_group(OTHER, specs)
-            for spec in specs:
-                self.rows[spec.name].set_value(values[spec.name])
+        self.keys.load(self.cfg.values())
 
     def save(self) -> None:
         if not self.cfg:
@@ -308,9 +347,8 @@ class CfgEditor(QWidget):
                                        "подхватит на лету, а при выходе может перезаписать файл."),
                             parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
             return
-        wanted = {name: row.value() for name, row in self.rows.items()}
         try:
-            self.cfg.apply(wanted)
+            self.cfg.apply(self.keys.wanted())
             self.cfg.save()
         except OSError as e:
             InfoBar.error(title=tr("cfg.save_err_title", "Ошибка сохранения"), content=str(e),
