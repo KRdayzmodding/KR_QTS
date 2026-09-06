@@ -317,6 +317,9 @@ class MainWindow(FluentWindow):
         self.launch_status = LaunchStatus(self.launch_page.launch_log)
         # у сервера и клиента свои RPT в разных папках — свой наблюдатель на каждого
         self.launch_error = ""      # причина последнего сорванного запуска
+        self._restart_preset = None  # накладка заказанного извне перезапуска
+        self._restart_pack = None
+        self._restart_rebuild = False
         self.monitors = {side: LaunchMonitor(side, self) for side in (SERVER, CLIENT)}
         for mon in self.monitors.values():
             mon.usage.connect(self._on_usage)
@@ -1805,7 +1808,16 @@ class MainWindow(FluentWindow):
         self._restart_queued = False
         self._down_notice = None    # это не «остановлен», а перезапуск
         self._append_log(tr("main.restarting", "— Перезапуск —"))
-        self._launch()
+        # Перезапуск снаружи поднимается с той же накладкой, с какой просили:
+        # иначе «перезапусти с файлпатчингом» тихо вернуло бы пресетный.
+        preset, self._restart_preset = self._restart_preset, None
+        error = self._launch(preset=preset, quiet=preset is not None,
+                             pack=self._restart_pack, rebuild=self._restart_rebuild)
+        if error:
+            # Причина должна дойти до того, кто просил: он ждёт ответа и по
+            # молчанию решил бы, что перезапуск идёт.
+            self.launch_error = error
+            self._append_log(error, "error")
 
     def _watch_down(self) -> None:
         """Всё ли улеглось. Зовётся из общего опроса раз в секунду."""
@@ -1856,18 +1868,28 @@ class MainWindow(FluentWindow):
         else:
             self._launch()
 
-    def _stop_selected(self) -> None:
+    def _stop_selected(self, sides: set | None = None,
+                       hard: bool | None = None) -> None:
         """Гасит то, что отмечено галками: обе — и сервер, и клиент; одна —
         только его. Так при живом сервере можно перезапустить один клиент.
 
-        Способ берётся из настроек. Мягкий просит окна закрыться и отпускает
-        интерфейс: сервер завершается своим порядком за несколько секунд, и всё
-        это время он честно показан «выключается», а не мгновенно исчезает.
-        Жёсткий убивает сразу — быстро, но обрывает сохранение на полуслове.
+        sides — явный список сторон вместо галок: команда снаружи говорит, что
+        гасить, и смотреть при этом на окно неправильно — там может быть
+        отмечено совсем другое.
+
+        Способ берётся из настроек, hard его перебивает на один раз. Мягкий
+        просит окна закрыться и отпускает интерфейс: сервер завершается своим
+        порядком за несколько секунд, и всё это время он честно показан
+        «выключается», а не мгновенно исчезает. Жёсткий убивает сразу — быстро,
+        но обрывает сохранение на полуслове.
         """
         lp = self.launch_page
-        srv, cli = lp.chk_server.isChecked(), lp.chk_client.isChecked()
-        soft = getattr(self.settings, "stop_method", "soft") != "hard"
+        if sides is None:
+            srv, cli = lp.chk_server.isChecked(), lp.chk_client.isChecked()
+        else:
+            srv, cli = SERVER in sides, CLIENT in sides
+        soft = (getattr(self.settings, "stop_method", "soft") != "hard"
+                if hard is None else not hard)
         for want, side, attr in ((srv, SERVER, "server_pid"),
                                  (cli, CLIENT, "client_pid")):
             if not want:

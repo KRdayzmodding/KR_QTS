@@ -129,7 +129,8 @@ def main(argv: list[str]) -> int:
 
     # Ждём по умолчанию: скрипт почти всегда хочет знать исход, а не «команда
     # принята». Кому надо вернуться сразу — тот скажет это словом +detach.
-    if req.command == cliargs.LAUNCH and req.wait is None and not req.detach:
+    if (req.command in (cliargs.LAUNCH, cliargs.RESTART, cliargs.STOP)
+            and req.wait is None and not req.detach):
         req.wait = cliargs.WAIT_DEFAULT
 
     if req.command == cliargs.HELP:

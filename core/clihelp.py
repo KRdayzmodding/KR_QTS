@@ -39,13 +39,15 @@ _TITLES = {
 # скопировать. Подпись переводится, команда — нет.
 _EXAMPLES = [
     ("cli.help.ex_pack_server", "Собрать изменённое и поднять сервер",
-     "qtsctl -preset dev +server +pack -wait"),
+     "qtsctl -preset dev +server +pack"),
     ("cli.help.ex_filepatching", "Поднять сервер и клиент с файлпатчингом, не пересобирая",
      "qtsctl -preset dev +server +client +cFilePatching +sFilePatching -pack"),
     ("cli.help.ex_addmod", "Подключить мод сверх пресета",
-     "qtsctl -preset dev +server +mod=@KR_Test +pack -wait"),
+     "qtsctl -preset dev +server +mod=@KR_Test +pack"),
     ("cli.help.ex_newmod", "Собрать новый мод из сорсов и подключить",
      "qtsctl -preset dev +server +mod=F:\\Builds\\@KR_New +src=P:\\KR\\NewFeature"),
+    ("cli.help.ex_restart", "Перезапустить сервер с пересборкой",
+     "qtsctl restart +server +pack"),
     ("cli.help.ex_stop", "Потушить", "qtsctl stop"),
 ]
 

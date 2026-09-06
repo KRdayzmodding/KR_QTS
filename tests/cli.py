@@ -46,9 +46,14 @@ def test_basic() -> None:
     check(r.overlay.server is None and r.overlay.client is None,
           "без аргументов стороны берутся из пресета")
 
-    for name in ("stop", "status", "show", "quit"):
+    for name in ("stop", "status", "show", "quit", "restart"):
         check(parse([name]).command == name, f"команда {name}")
     check(parse(["stop", "+server"]).overlay.server is True, "stop с уточнением")
+    check(parse(["stop", "+hard"]).overlay.hard is True, "+hard принудительно")
+    check(parse(["stop", "-hard"]).overlay.hard is False, "-hard только по-хорошему")
+    check(parse(["stop"]).overlay.hard is None, "без знака — как настроено")
+    check(parse(["restart", "+server", "+pack"]).overlay.pack == cliargs.PACK_DEFAULT,
+          "перезапуск принимает те же аргументы, что и запуск")
 
 
 def test_params() -> None:

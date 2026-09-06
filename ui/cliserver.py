@@ -56,6 +56,8 @@ def _overlay_from(data: dict) -> Overlay:
             setattr(ov, name, [str(x) for x in data[name]])
     if isinstance(data.get("forget"), list):
         ov.forget = [str(x) for x in data["forget"]]
+    if isinstance(data.get("hard"), bool):
+        ov.hard = data["hard"]
     if isinstance(data.get("pack"), str):
         ov.pack = data["pack"]
     ov.rebuild = bool(data.get("rebuild"))
@@ -109,12 +111,15 @@ class CliServer(QObject):
             return None
         if cmd == "stop":
             return self._stop(conn, rid, data)
+        if cmd == "restart":
+            return self._launch(conn, rid, data, restart=True)
         if cmd in ("launch", ""):
             return self._launch(conn, rid, data)
         return self._reply(conn, cliproto.fail(
             rid, cliproto.E_UNKNOWN_CMD,
             tr("cli.unknown_cmd", "Не знаю команду «{c}».").format(c=cmd),
-            tr("cli.unknown_cmd_hint", "Известные: launch, stop, status, show, quit.")))
+            tr("cli.unknown_cmd_hint",
+               "Известные: launch, restart, stop, status, show, quit.")))
 
     def _reply(self, conn, line: str) -> None:
         if conn is None:
@@ -129,13 +134,33 @@ class CliServer(QObject):
 
     # -------------------------------------------------------------- команды
 
+    @staticmethod
+    def _sides(ov) -> set:
+        """Какие стороны просили.
+
+        Ничего не сказано — обе: «потуши» без уточнения означает «потуши всё».
+        Есть хоть один плюс — работаем ровно по плюсам. Минус исключает.
+        """
+        plus = {side for side, on in ((SERVER, ov.server), (CLIENT, ov.client))
+                if on is True}
+        if plus:
+            return plus
+        return {side for side, on in ((SERVER, ov.server), (CLIENT, ov.client))
+                if on is not False}
+
     def _stop(self, conn, rid: int, data: dict) -> None:
-        if not (self.win.server_running() or self.win.client_running()):
+        ov = _overlay_from(data.get("args") or {})
+        sides = self._sides(ov)
+        win = self.win
+        alive = ((SERVER in sides and win.server_running())
+                 or (CLIENT in sides and win.client_running()))
+        if not alive:
             return self._reply(conn, cliproto.ok(rid, self.report()))
-        self.win._stop_selected()
+        win._stop_selected(sides=sides, hard=ov.hard)
         if not data.get("wait"):
             return self._reply(conn, cliproto.ok(rid, self.report()))
-        self._wait_for(conn, rid, want={}, seconds=int(data["wait"]), until_down=True)
+        self._wait_for(conn, rid, want={}, seconds=int(data["wait"]),
+                       until_down=True, sides=sides)
         return None
 
     def _find_preset(self, name: str):
@@ -151,7 +176,7 @@ class CliServer(QObject):
                 return i, p
         return -1, None
 
-    def _launch(self, conn, rid: int, data: dict) -> None:
+    def _launch(self, conn, rid: int, data: dict, restart: bool = False) -> None:
         win = self.win
         ov = _overlay_from(data.get("args") or {})
 
@@ -190,13 +215,30 @@ class CliServer(QObject):
         win._append_log(tr("cli.launch_note", "— Запуск извне: пресет «{n}» —",
                            n=preset.name))
 
-        error = win._launch(preset=preset, quiet=True, pack=ov.pack,
-                            rebuild=ov.rebuild)
-        if error:
-            return self._reply(conn, cliproto.fail(
-                rid, cliproto.E_NOT_CONFIGURED, error, "", cliproto.EXIT_NOT_READY))
-
         want = {SERVER: preset.launch_server, CLIENT: preset.launch_client}
+        alive = ((want[SERVER] and win.server_running())
+                 or (want[CLIENT] and win.client_running()))
+        if restart and alive:
+            # Гасим и заказываем подъём: начать его прямо сейчас нельзя —
+            # старый сервер ещё держит порт и файлы профиля. Подъём случится
+            # сам, как только всё, что гасили, уйдёт (см. _watch_restart).
+            win._restart_preset = preset
+            win._restart_pack = ov.pack
+            win._restart_rebuild = ov.rebuild
+            win._stop_selected(sides={s for s, on in want.items() if on},
+                               hard=ov.hard)
+            win._restart_queued = True
+        else:
+            # Перезапуск того, что и так не работает, — это просто запуск.
+            # Отказывать здесь значило бы заставлять скрипт разбираться, что
+            # именно сейчас происходит на машине.
+            error = win._launch(preset=preset, quiet=True, pack=ov.pack,
+                                rebuild=ov.rebuild)
+            if error:
+                return self._reply(conn, cliproto.fail(
+                    rid, cliproto.E_NOT_CONFIGURED, error, "",
+                    cliproto.EXIT_NOT_READY))
+
         seconds = int(data.get("wait") or 0)
         if data.get("detach") or not seconds:
             return self._reply(conn, cliproto.ok(rid, self.report(plan)))
@@ -206,8 +248,9 @@ class CliServer(QObject):
     # -------------------------------------------------------------- ожидание
 
     def _wait_for(self, conn, rid: int, want: dict, seconds: int,
-                  plan=None, until_down: bool = False) -> None:
-        w = _Wait(self, conn, rid, want, seconds, plan, until_down)
+                  plan=None, until_down: bool = False,
+                  sides: set | None = None) -> None:
+        w = _Wait(self, conn, rid, want, seconds, plan, until_down, sides)
         self._waits.append(w)
         w.start()
 
@@ -320,7 +363,8 @@ class _Wait(QObject):
     """
 
     def __init__(self, server: CliServer, conn, rid: int, want: dict,
-                 seconds: int, plan, until_down: bool) -> None:
+                 seconds: int, plan, until_down: bool,
+                 sides: set | None = None) -> None:
         super().__init__(server)
         self.server = server
         self.conn = conn
@@ -328,6 +372,7 @@ class _Wait(QObject):
         self.want = want
         self.plan = plan
         self.until_down = until_down
+        self.sides = sides or {SERVER, CLIENT}
         self.deadline = time.monotonic() + max(1, seconds)
         self.started = time.monotonic()
         self.timer = QTimer(self)
@@ -349,7 +394,11 @@ class _Wait(QObject):
     def _tick(self) -> None:
         win = self.server.win
         if self.until_down:
-            if not (win.server_running() or win.client_running()):
+            # Только те стороны, которые просили погасить: ждать ухода живого
+            # сервера, когда гасили один клиент, значит не дождаться никогда.
+            still = ((SERVER in self.sides and win.server_running())
+                     or (CLIENT in self.sides and win.client_running()))
+            if not still:
                 return self._finish(cliproto.EXIT_OK)
         else:
             done = True

@@ -927,7 +927,7 @@
   "cli.no_answer": "KR QTS is running but does not answer: {e}",
   "cli.bad_reply": "Unreadable answer from KR QTS.",
   "cli.unknown_cmd": "Unknown command «{c}».",
-  "cli.unknown_cmd_hint": "Known ones: launch, stop, status, show, quit.",
+  "cli.unknown_cmd_hint": "Known ones: launch, restart, stop, status, show, quit.",
   "cli.busy": "The program is busy: {s}.",
   "cli.busy_hint": "Wait for it to finish, or shut down: qtsctl stop",
   "cli.no_preset": "There is no preset «{n}».",
@@ -954,5 +954,7 @@
   "cli.rep.pack_wait": "queued",
   "cli.rep.pack_secs": "   {n} s",
   "cli.rep.pack_errors": "errors {n}",
-  "cli.rep.pack_warnings": "warnings {n}"
+  "cli.rep.pack_warnings": "warnings {n}",
+  "cli.arg.hard": "Shut down forcefully, without waiting for a clean exit. Minus means the opposite, gracefully only. Without a sign — as configured in the program.",
+  "cli.help.ex_restart": "Restart the server, rebuilding what changed"
 }

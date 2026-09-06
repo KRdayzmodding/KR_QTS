@@ -927,7 +927,7 @@
   "cli.no_answer": "KR QTS läuft, antwortet aber nicht: {e}",
   "cli.bad_reply": "Unverständliche Antwort von KR QTS.",
   "cli.unknown_cmd": "Unbekannter Befehl «{c}».",
-  "cli.unknown_cmd_hint": "Bekannt sind: launch, stop, status, show, quit.",
+  "cli.unknown_cmd_hint": "Bekannt sind: launch, restart, stop, status, show, quit.",
   "cli.busy": "Das Programm ist beschäftigt: {s}.",
   "cli.busy_hint": "Warte auf das Ende oder fahre herunter: qtsctl stop",
   "cli.no_preset": "Das Preset «{n}» gibt es nicht.",
@@ -954,5 +954,7 @@
   "cli.rep.pack_wait": "in Warteschlange",
   "cli.rep.pack_secs": "   {n} s",
   "cli.rep.pack_errors": "Fehler {n}",
-  "cli.rep.pack_warnings": "Warnungen {n}"
+  "cli.rep.pack_warnings": "Warnungen {n}",
+  "cli.arg.hard": "Hart beenden, ohne auf sauberes Herunterfahren zu warten. Minus bedeutet das Gegenteil, nur sanft. Ohne Vorzeichen — wie im Programm eingestellt.",
+  "cli.help.ex_restart": "Server neu starten und Geändertes neu bauen"
 }

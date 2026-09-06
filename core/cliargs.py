@@ -29,11 +29,12 @@ from .params import BOTH, CLIENT, FLAG, INT, SERVER, SWITCH, PARAMS, ParamSpec
 # тех, кто предпочитает писать глагол явно.
 LAUNCH = "launch"
 STOP = "stop"
+RESTART = "restart"
 STATUS = "status"
 SHOW = "show"
 QUIT = "quit"
 HELP = "help"
-COMMANDS = (LAUNCH, STOP, STATUS, SHOW, QUIT, HELP)
+COMMANDS = (LAUNCH, RESTART, STOP, STATUS, SHOW, QUIT, HELP)
 
 # Группы — только для справки: плоский список из полусотни строк не читается.
 G_BASIC = "basic"
@@ -165,6 +166,11 @@ _STATIC: list[ArgSpec] = [
     ArgSpec("client", G_BASIC,
             help="Поднимать клиент. Минус — не поднимать, даже если так в пресете."),
 
+    ArgSpec("hard", G_BASIC,
+            help="Гасить принудительно, не дожидаясь корректного завершения. "
+                 "Минус — наоборот, только по-хорошему. Без знака — как "
+                 "настроено в программе."),
+
     ArgSpec("start", G_BASIC, minus=False,
             help="Поднять QTS, если он не запущен: окно не показывается, "
                  "программа уходит в трей."),
@@ -262,6 +268,7 @@ class Overlay:
 
     preset: str = ""
     start: bool = False              # поднять QTS, если он не запущен
+    hard: bool | None = None         # None — способ остановки из настроек
     server: bool | None = None
     client: bool | None = None
     params_client: dict = field(default_factory=dict)
@@ -400,6 +407,8 @@ def parse(argv: list[str]) -> Request:
             ov.preset = value
         elif key == "start":
             ov.start = True
+        elif key == "hard":
+            ov.hard = plus
         elif key == "server":
             ov.server = plus
         elif key == "client":
