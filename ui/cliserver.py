@@ -86,6 +86,16 @@ class CliServer(QObject):
         rid = int(data.get("id") or 1)
         cmd = str(data.get("cmd") or "")
 
+        if not getattr(self.win.settings, "external_control", True):
+            # Выключено человеком — отвечаем внятно, а не молчим: инструмент
+            # иначе не отличит запрет от поломки канала.
+            return self._reply(conn, cliproto.fail(
+                rid, cliproto.E_NOT_CONFIGURED,
+                tr("cli.disabled", "Внешнее управление выключено."),
+                tr("cli.disabled_hint",
+                   "Включается в настройках, раздел «Внешнее управление»."),
+                cliproto.EXIT_NOT_READY))
+
         if cmd == "status":
             return self._reply(conn, cliproto.ok(rid, self.report()))
         if cmd == "show":

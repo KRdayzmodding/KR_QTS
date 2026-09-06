@@ -165,6 +165,31 @@ def make_install_button(parent, settings_key: str):
     return None
 
 
+def _qtsctl_command() -> str:
+    """Чем звать внешнее управление на этой машине.
+
+    В собранном виде это соседний exe, из исходников — интерпретатор со
+    скриптом. Показываем ровно то, что сработает, а не общее «qtsctl»: команда
+    отсюда копируется в задачу редактора, и она должна запускаться как есть.
+    """
+    import sys
+    root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
+        else Path(__file__).resolve().parents[1]
+    exe = root / "qtsctl.exe"
+    if exe.is_file():
+        return f'"{exe}"'
+    return f'"{sys.executable}" "{root / "qtsctl.py"}"'
+
+
+def _cli_examples() -> str:
+    """Примеры из той же справки, что показывает qtsctl -help.
+
+    Один источник: расходиться подсказке в окне и справке в консоли нельзя.
+    """
+    from core import clihelp
+    return "\n".join(cmd for _key, _caption, cmd in clihelp._EXAMPLES)
+
+
 class SettingsPage(QScrollArea):
     def __init__(self, settings: Settings, on_saved=None, is_busy=None):
         super().__init__()
@@ -426,6 +451,61 @@ class SettingsPage(QScrollArea):
         self.fp_status.setWordWrap(True)
         form_fp.addRow("", self.fp_status)
         self._update_filepatch_status()
+
+        # ------------------------------------------- Внешнее управление
+        form_cli = section(tr("settings.section_cli", "Внешнее управление"))
+
+        cli_note = CaptionLabel(tr(
+            "settings.cli_note",
+            "Сторонние инструменты и задачи редактора могут запускать сервер и "
+            "клиент, паковать моды и получать отчёт — не открывая это окно. "
+            "Канал персональный: другой пользователь машины до него не "
+            "достучится."))
+        cli_note.setWordWrap(True)
+        form_cli.addRow("", cli_note)
+
+        self.external_control = CheckBox(tr("settings.cli_enabled",
+                                            "Отвечать на команды извне"))
+        self.external_control.setChecked(settings.external_control)
+        form_cli.addRow("", self.external_control)
+
+        # Только чтение, а не выключенное поле: выключенное нельзя ни прочитать,
+        # ни скопировать, а копировать это и нужно.
+        self.cli_command = LineEdit()
+        self.cli_command.setText(_qtsctl_command())
+        self.cli_command.setReadOnly(True)
+        cli_row = QHBoxLayout()
+        cli_row.addWidget(self.cli_command, 1)
+        b_copy_cmd = ToolButton(FIF.COPY)
+        b_copy_cmd.setToolTip(tr("common.copy", "Скопировать"))
+        b_copy_cmd.clicked.connect(lambda: self._copy(self.cli_command.text()))
+        cli_row.addWidget(b_copy_cmd)
+        form_cli.addRow(BodyLabel(tr("settings.cli_command", "Команда")), cli_row)
+
+        self.cli_examples = PlainTextEdit()
+        self.cli_examples.setPlainText(_cli_examples())
+        self.cli_examples.setReadOnly(True)
+        # Без переноса: команду переносить нельзя — она копируется целиком, а
+        # разорванная пополам читается как две разные. Длинные уезжают вбок.
+        self.cli_examples.setLineWrapMode(PlainTextEdit.LineWrapMode.NoWrap)
+        self.cli_examples.setFixedHeight(132)
+        form_cli.addRow(BodyLabel(tr("settings.cli_examples", "Примеры")),
+                        self.cli_examples)
+
+        cli_btns = QHBoxLayout()
+        b_copy_ex = PushButton(FIF.COPY, tr("settings.cli_copy",
+                                            "Скопировать примеры"))
+        b_copy_ex.clicked.connect(lambda: self._copy(self.cli_examples.toPlainText()))
+        cli_btns.addWidget(b_copy_ex)
+        cli_btns.addStretch(1)
+        form_cli.addRow("", cli_btns)
+
+        cli_help = CaptionLabel(tr(
+            "settings.cli_help_note",
+            "Полная справка со всеми аргументами — «qtsctl -help», "
+            "по разделам: -help mods, -help pack, -help params, -help exit."))
+        cli_help.setWordWrap(True)
+        form_cli.addRow("", cli_help)
 
         btns = QHBoxLayout()
         btn_detect = PushButton(FIF.SEARCH, tr("settings.autodetect",
@@ -692,6 +772,7 @@ class SettingsPage(QScrollArea):
         return {
             "language": self.lang.currentData(),
             "check_updates": self.check_updates.isChecked(),
+            "external_control": self.external_control.isChecked(),
             "stop_method": self.stop_method.currentData(),
             "start_with_windows": self.start_with_windows.isChecked(),
             "start_mode": self.start_mode.currentData(),
@@ -729,6 +810,18 @@ class SettingsPage(QScrollArea):
         а диалог флагов pboProject закрывается по OK и выглядит применённым —
         без этой пометки правки молча терялись при выходе."""
         self.unsaved.setVisible(self.is_dirty())
+
+    def _copy(self, text: str) -> None:
+        """Кладёт текст в буфер и говорит об этом.
+
+        Молчаливое копирование неотличимо от неработающей кнопки: человек жмёт
+        второй раз и третий, не понимая, случилось ли что-нибудь.
+        """
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
+        InfoBar.success(title=tr("settings.copied", "Скопировано"), content="",
+                        parent=self.window(), duration=2000,
+                        position=InfoBarPosition.TOP_RIGHT)
 
     def _save(self) -> None:
         s = self.settings

@@ -940,5 +940,16 @@
   "cli.launch_note": "— Start von außen: Preset «{n}» —",
   "cli.already": "Ein Start läuft bereits.",
   "cli.nothing_to_do": "Alles Angeforderte läuft bereits.",
-  "cli.preflight": "Die Prüfung vor dem Start ist fehlgeschlagen:"
+  "cli.preflight": "Die Prüfung vor dem Start ist fehlgeschlagen:",
+  "settings.section_cli": "Externe Steuerung",
+  "settings.cli_note": "Fremde Werkzeuge und Editor-Aufgaben können Server und Client starten, Mods packen und einen Bericht erhalten, ohne dieses Fenster zu öffnen. Der Kanal ist persönlich: ein anderer Benutzer des Rechners erreicht ihn nicht.",
+  "settings.cli_enabled": "Auf Befehle von außen antworten",
+  "settings.cli_command": "Befehl",
+  "settings.cli_examples": "Beispiele",
+  "settings.cli_copy": "Beispiele kopieren",
+  "settings.cli_help_note": "Die vollständige Hilfe mit allen Argumenten ist «qtsctl -help», nach Themen: -help mods, -help pack, -help params, -help exit.",
+  "settings.copied": "Kopiert",
+  "common.copy": "Kopieren",
+  "cli.disabled": "Die externe Steuerung ist aus.",
+  "cli.disabled_hint": "Einschalten in den Einstellungen, Abschnitt «Externe Steuerung»."
 }

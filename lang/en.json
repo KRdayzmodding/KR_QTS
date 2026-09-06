@@ -940,5 +940,16 @@
   "cli.launch_note": "— Launched from outside: preset «{n}» —",
   "cli.already": "A launch is already running.",
   "cli.nothing_to_do": "Everything requested is already running.",
-  "cli.preflight": "The pre-launch check did not pass:"
+  "cli.preflight": "The pre-launch check did not pass:",
+  "settings.section_cli": "External control",
+  "settings.cli_note": "Third-party tools and editor tasks can start the server and client, pack mods and get a report without opening this window. The channel is personal: another user of this machine cannot reach it.",
+  "settings.cli_enabled": "Answer commands from outside",
+  "settings.cli_command": "Command",
+  "settings.cli_examples": "Examples",
+  "settings.cli_copy": "Copy examples",
+  "settings.cli_help_note": "Full help with all arguments is «qtsctl -help», by topic: -help mods, -help pack, -help params, -help exit.",
+  "settings.copied": "Copied",
+  "common.copy": "Copy",
+  "cli.disabled": "External control is switched off.",
+  "cli.disabled_hint": "Turn it on in the settings, section «External control»."
 }
