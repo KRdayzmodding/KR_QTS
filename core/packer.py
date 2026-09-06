@@ -14,6 +14,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from . import keyguard
 from .mods import ModInfo
 from .settings import Settings
 
@@ -250,6 +251,9 @@ def _pack_locked(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[boo
     # осталось в реестре от прошлой GUI-сессии (могло быть Arma3/OFP).
     args += ["-E=dayz", f"-M={native(mod.path)}"]
 
+    # pboProject в конце сборки жмёт Enter через keybd_event, и нажатие уходит
+    # в чужое окно — недописанное сообщение отправляется само. См. keyguard.
+    keyguard.arm()
     try:
         # без capture_output/DEVNULL — см. предупреждение в докстроке
         res = subprocess.run(args, timeout=600,
@@ -259,6 +263,8 @@ def _pack_locked(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[boo
                        + _pboproject_log(source_dir))
     except OSError as e:
         return False, str(e)
+    finally:
+        keyguard.disarm()
 
     ok = res.returncode == 0 and pbo_for_source(mod, source_dir).is_file()
     return ok, "" if ok else _pboproject_log(source_dir)
