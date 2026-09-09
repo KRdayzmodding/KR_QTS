@@ -125,6 +125,25 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
                      "Моды {mods} требуют запаковки, но {tool} не найден: {p}",
                      mods=", ".join(stale_names), tool=tool, p=exe))
 
+    # Моды из мастерской: устаревший мод — это сервер, который ведёт себя не
+    # так, как написано в его скриптах, и понять это по логам невозможно.
+    from . import modupdate
+    left = modupdate.stale(selected)
+    if left:
+        names = ", ".join(s.mod.name for s in left)
+        if not getattr(settings, "mod_update_before_launch", True):
+            warn("mods_stale", tr(
+                "check.mods_stale",
+                "Моды не актуальны: {mods}. Обновление перед запуском выключено — "
+                "сервер поднимется со старыми версиями.", mods=names))
+        elif getattr(settings, "mod_update_method", "wait") == modupdate.STEAMCMD:
+            exe = getattr(settings, "steamcmd_exe", "")
+            if not exe or not Path(exe).is_file():
+                crit("steamcmd", tr(
+                    "check.steamcmd",
+                    "Моды требуют обновления ({mods}), но SteamCMD не найден: {p}",
+                    mods=names, p=exe or "—"))
+
     # Порт
     if preset.launch_server and not port_is_free(preset.port):
         warn("port", tr("check.port",

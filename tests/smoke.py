@@ -175,6 +175,17 @@ def external() -> None:
     import cli as cli_tests                       # tests/cli.py
     from core import cliargs, clihelp, i18n
     cli_tests._fails.clear()
+    import modupd as upd_tests                    # tests/modupd.py
+    upd_tests._fails.clear()
+    for fn in (upd_tests.test_which_mods, upd_tests.test_stale, upd_tests.test_wait,
+               upd_tests.test_command, upd_tests.test_no_steamcmd,
+               upd_tests.test_replace, upd_tests.test_gate):
+        fn()
+    from core import steam_state as _st
+    upd_tests.modupdate.steam_state.workshop_state = _st.workshop_state
+    check("моды: проверка актуальности перед запуском",
+          not upd_tests._fails, "; ".join(upd_tests._fails))
+
     import cfg as cfg_tests                       # tests/cfg.py
     cfg_tests._fails.clear()
     for fn in (cfg_tests.test_specs, cfg_tests.test_read, cfg_tests.test_change,

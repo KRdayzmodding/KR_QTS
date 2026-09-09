@@ -9,7 +9,7 @@ from PySide6.QtGui import QDesktopServices, QRegularExpressionValidator
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox, CheckBox,
     PushButton, PrimaryPushButton, ToolButton, BodyLabel, CaptionLabel,
-    StrongBodyLabel, SimpleCardWidget, TransparentToolButton, TeachingTip,
+    StrongBodyLabel, SimpleCardWidget, SwitchButton, TransparentToolButton, TeachingTip,
     TeachingTipTailPosition, InfoBar, InfoBarPosition,
     FluentIcon as FIF, setTheme, Theme,
 )
@@ -419,6 +419,89 @@ class SettingsPage(QScrollArea):
         self._update_pbo_button_state()
 
         # ---------------------------------------------------- Filepatching
+        # -------------------------------------------- Обновление модов
+        form_upd = section(tr("settings.section_modupd", "Обновление модов"))
+
+        upd_note = CaptionLabel(tr(
+            "settings.modupd_note",
+            "Сервер, поднятый со старым модом, ведёт себя необъяснимо: скрипты "
+            "и конфиги не те, а в логах об этом ни слова. Мод, который Steam "
+            "качает прямо сейчас, ещё хуже — в игру уезжает половина файлов. "
+            "Состояние спрашивается у самого Steam, сеть для этого не нужна."))
+        upd_note.setWordWrap(True)
+        form_upd.addRow("", upd_note)
+
+        # Тумблер, а не галка: это состояние системы, а не включение в набор.
+        self.mod_update_before_launch = SwitchButton()
+        self.mod_update_before_launch.setOnText("")
+        self.mod_update_before_launch.setOffText("")
+        self.mod_update_before_launch.setChecked(settings.mod_update_before_launch)
+        form_upd.addRow(BodyLabel(tr("settings.modupd_on",
+                                     "Проверять моды перед запуском")),
+                        self.mod_update_before_launch)
+
+        # «Включено ли» и «каким способом» — разные вопросы и разные контролы:
+        # сведённые в один список, они опять слипнутся, как это было у запаковки.
+        self.mod_update_method = ComboBox()
+        self.mod_update_method.addItem(tr("settings.modupd_wait",
+                                          "Ждать, пока Steam обновит сам"),
+                                       userData="wait")
+        self.mod_update_method.addItem(tr("settings.modupd_cmd",
+                                          "Скачать через SteamCMD"),
+                                       userData="steamcmd")
+        idx = self.mod_update_method.findData(settings.mod_update_method)
+        self.mod_update_method.setCurrentIndex(max(idx, 0))
+        self.mod_update_method.currentIndexChanged.connect(self._modupd_method_changed)
+        form_upd.addRow(BodyLabel(tr("settings.modupd_how", "Способ")),
+                        self.mod_update_method)
+
+        self.steamcmd_exe = LineEdit()
+        self.steamcmd_exe.setText(settings.steamcmd_exe)
+        self.steamcmd_exe.setPlaceholderText("steamcmd.exe")
+        b_cmd = ToolButton(FIF.FOLDER)
+
+        def pick_steamcmd():
+            p, _ = QFileDialog.getOpenFileName(
+                self, tr("settings.modupd_pick", "Где лежит steamcmd.exe"),
+                self.steamcmd_exe.text(), "steamcmd.exe;;*.exe")
+            if p:
+                self.steamcmd_exe.setText(p)
+
+        b_cmd.clicked.connect(pick_steamcmd)
+        cmd_row = QHBoxLayout()
+        cmd_row.addWidget(self.steamcmd_exe, 1)
+        cmd_row.addWidget(b_cmd)
+        self.row_steamcmd = BodyLabel(tr("settings.modupd_exe", "SteamCMD"))
+        form_upd.addRow(self.row_steamcmd, cmd_row)
+
+        self.steam_login = LineEdit()
+        self.steam_login.setText(settings.steam_login)
+        self.steam_login.setPlaceholderText(tr("settings.modupd_login_ph",
+                                               "Имя учётной записи Steam"))
+        self.row_login = BodyLabel(tr("settings.modupd_login", "Учётная запись"))
+        form_upd.addRow(self.row_login, self.steam_login)
+
+        self.login_note = CaptionLabel(tr(
+            "settings.modupd_login_note",
+            "Только имя. Пароль SteamCMD запоминает сам после первого ручного "
+            "запуска — запустите его один раз и войдите. Анонимный вход к "
+            "мастерской DayZ доступа не даёт: нужен аккаунт, владеющий игрой."))
+        self.login_note.setWordWrap(True)
+        form_upd.addRow("", self.login_note)
+
+        self.mod_update_timeout_min = ComboBox()
+        for minutes in (5, 10, 15, 30, 60):
+            self.mod_update_timeout_min.addItem(
+                tr("settings.modupd_min", "{n} мин", n=minutes), userData=minutes)
+        idx = self.mod_update_timeout_min.findData(settings.mod_update_timeout_min)
+        self.mod_update_timeout_min.setCurrentIndex(max(idx, 0))
+        self.mod_update_timeout_min.setToolTip(tr(
+            "settings.modupd_wait_tip",
+            "Сколько ждать, прежде чем отменить запуск и сказать об этом."))
+        form_upd.addRow(BodyLabel(tr("settings.modupd_wait_for", "Ждать не дольше")),
+                        self.mod_update_timeout_min)
+        self._modupd_method_changed()
+
         form_fp = section(tr("settings.section_filepatch", "Filepatching"))
         fp_row = QHBoxLayout()
         self.b_fp_add = PushButton(FIF.LINK, tr("filepatch.add", "Создать симлинк"))
@@ -772,6 +855,11 @@ class SettingsPage(QScrollArea):
         return {
             "language": self.lang.currentData(),
             "check_updates": self.check_updates.isChecked(),
+            "mod_update_before_launch": self.mod_update_before_launch.isChecked(),
+            "mod_update_method": self.mod_update_method.currentData(),
+            "mod_update_timeout_min": self.mod_update_timeout_min.currentData(),
+            "steamcmd_exe": self.steamcmd_exe.text().strip(),
+            "steam_login": self.steam_login.text().strip(),
             "external_control": self.external_control.isChecked(),
             "stop_method": self.stop_method.currentData(),
             "start_with_windows": self.start_with_windows.isChecked(),
@@ -810,6 +898,17 @@ class SettingsPage(QScrollArea):
         а диалог флагов pboProject закрывается по OK и выглядит применённым —
         без этой пометки правки молча терялись при выходе."""
         self.unsaved.setVisible(self.is_dirty())
+
+    def _modupd_method_changed(self, *_a) -> None:
+        """Поля SteamCMD видны только когда он и выбран.
+
+        Прячем, а не гасим: выключенное поле нельзя ни прочитать, ни
+        скопировать, а объяснять, почему оно серое, было бы нечем.
+        """
+        cmd = self.mod_update_method.currentData() == "steamcmd"
+        for w in (self.row_steamcmd, self.steamcmd_exe, self.row_login,
+                  self.steam_login, self.login_note):
+            w.setVisible(cmd)
 
     def _copy(self, text: str) -> None:
         """Кладёт текст в буфер и говорит об этом.

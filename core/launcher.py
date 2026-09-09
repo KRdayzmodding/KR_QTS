@@ -382,6 +382,31 @@ class LaunchWorker(QThread):
         if self._stop_asked():
             return
 
+        # 1.5. Моды из мастерской — до запаковки и до запуска. Сервер, поднятый
+        #      со старым модом, ведёт себя необъяснимо: скрипты не те, конфиги
+        #      не те, и в логах об этом ни слова. Недокачанный Steam'ом мод ещё
+        #      хуже — файлы выкладываются по мере загрузки, и в игру уезжает
+        #      половина.
+        if getattr(s, "mod_update_before_launch", True):
+            from . import modupdate
+            ok, err = modupdate.bring_up_to_date(
+                selected, s,
+                on_wait=lambda left: self.log.emit(
+                    tr("launch.mods_stale", "Моды не актуальны: {list}",
+                       list="; ".join(x.text() for x in left)), "warning"),
+                on_line=lambda line: self.log.emit(line, "info"),
+                stop=self._stop_asked)
+            if not ok:
+                self.failed.emit(tr("launch.mods_failed",
+                                    "Моды не удалось обновить. Запуск отменён.\n{e}",
+                                    e=err))
+                return
+            self.log.emit(tr("launch.mods_ready",
+                             "Моды мастерской актуальны."), "info")
+
+        if self._stop_asked():
+            return
+
         # 2. Перепаковка устаревших локальных модов (только если включено в настройках)
         if s.repack_before_launch and dayz_running():
             # Осталась живая сторона — например, перезапускаем один клиент при
