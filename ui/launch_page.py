@@ -228,17 +228,16 @@ class LaunchInterface(QWidget):
     # -------------------------------------------------------------- карточки
 
     def _mods_card(self):
-        # Кнопка называет действие коротко: название строки уже сказало, о чём
-        # речь, и повторять его на кнопке — признак того, что в список настроек
-        # попало действие.
-        self.b_connect_mods = PushButton(FIF.EDIT, tr("common.change", "Изменить"))
-        mods_row = setting_row(tr("main.mods_row", "Подключённые моды"), " ",
-                               self.b_connect_mods)
-        # Список модов — подпись своей строки, а не отдельная строка ниже:
-        # оторванный от названия, он читается как примечание ко всей карточке.
-        self.mods_list = mods_row.desc_label
+        """Моды целиком: и состав запуска, и настройки самих модов.
+
+        Панель одна и та же, что была отдельной вкладкой. Раньше работа над
+        модом делилась между вкладкой и модальным окном: тип «серверный»
+        задавался в одном месте, подключался мод в другом, и подсказка честно
+        отправляла человека на другой экран. Теперь одна таблица.
+        """
+        self.mods_inline = self.win.mods_panel
         self.mods_card = rows_card(FIF.APPLICATION, tr("main.frame_mods", "Моды"), "",
-                                   [mods_row])
+                                   [self.mods_inline])
         return self.mods_card
 
     def _pack_card(self):
@@ -288,25 +287,35 @@ class LaunchInterface(QWidget):
         return self.pack_card
 
     def _setup_card(self):
+        """Всё, что описывает сервер: параметры запуска и его конфиг.
+
+        Раньше и то и другое жило в отдельных окнах, и чтобы поменять одну
+        строчку, приходилось открыть, поправить, закрыть. Теперь это одна
+        плашка, свёрнутая по умолчанию: настраивают её редко, но когда
+        настраивают — возятся долго, и место для этого нужно на странице.
+        """
+        from ui.cfg_editor import CfgCard
+        from ui.params_panel import ParamsPanel
+
         # Тумблер, а не галка: это состояние системы, а не включение в набор.
         self.chk_hide_window = SwitchButton()
         self.chk_hide_window.setOnText("")
         self.chk_hide_window.setOffText("")
-        self.chk_hide_window.setToolTip(tr(
-            "main.hide_server_window_tip",
-            "Сервер запустится без своего окна. Всё, что оно показывает, будет "
-            "выводиться сюда, в журнал запуска."))
+        self.params_panel = ParamsPanel()
+        self.cfg_card = CfgCard()
         # Второй кнопки «Изменить пресет» здесь нет намеренно: она уже есть
         # карандашом в строке пресета, а два входа в одно действие расходятся
         # по поведению при первой же правке.
-        self.setup_card = rows_card(FIF.SETTING,
-                                    tr("main.frame_setup", "Настройки запуска"), "",
-                                    [Columns([
-            setting_row(tr("main.hide_server_window", "Скрыть окно сервера"),
-                        tr("main.hide_server_window_desc",
-                           "Всё, что писало окно сервера, пойдёт в журнал ниже."),
-                        self.chk_hide_window),
-        ])])
+        self.setup_card = rows_card(
+            FIF.SETTING, tr("main.frame_server", "Настройки сервера"),
+            tr("main.frame_server_sum", "параметры запуска и serverDZ.cfg"), [
+                setting_row(tr("main.hide_server_window", "Скрыть окно сервера"),
+                            tr("main.hide_server_window_desc",
+                               "Всё, что писало окно сервера, пойдёт в журнал ниже."),
+                            self.chk_hide_window),
+                self.params_panel,
+                self.cfg_card,
+            ])
         return self.setup_card
 
     # ---------------------------------------------------------------- журнал
@@ -412,16 +421,14 @@ class LaunchInterface(QWidget):
         self.mods_card.set_summary(
             tr("main.sum_mods", "подключено модов: {n}", n=mods) if mods
             else tr("main.sum_no_mods", "моды не подключены"))
-        names = (preset.mods + preset.server_mods) if preset else []
-        self.mods_list.setText(", ".join(names) if names else
-                               tr("main.mods_none",
-                                  "Ни одного мода не подключено — сервер "
-                                  "поднимется ванильным."))
+
         engine = self.pack_engine.currentText()
         self.pack_card.set_summary(engine)
         branch = self.branch_combo.currentText()
         mode = preset.mode if preset else ""
-        self.setup_card.set_summary(f"{branch} · {mode}" if mode else branch)
+        self.setup_card.set_summary(
+            tr("main.sum_setup", "{b} · {m} · параметры и конфиг", b=branch, m=mode)
+            if mode else branch)
 
     def set_running(self, running: bool) -> None:
         """Пока работа не идёт — нужны настройки; пока идёт — нужен журнал.

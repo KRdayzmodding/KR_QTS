@@ -149,8 +149,8 @@ class MainWindow(FluentWindow):
             win.set_on_top(getattr(settings, f"log_on_top_{win.key}", False))
             win.on_top_changed = self._log_on_top_changed
 
-        # Страницы
-        self.launch_page = LaunchInterface(self)
+        # Страницы. Панель модов — раньше страницы запуска: страница кладёт её
+        # к себе в карточку, а не создаёт свою.
         self.mods_panel = ModsPanel()
         self.mods_panel.setObjectName("modsInterface")
         self.mods_panel.log_cb = self._append_log
@@ -165,6 +165,8 @@ class MainWindow(FluentWindow):
         # файлах пресетов — тот, что открыт у нас, надо перечитать, иначе
         # запустимся по устаревшему списку из памяти
         self.mods_panel.presets_changed.connect(self._presets_changed_outside)
+
+        self.launch_page = LaunchInterface(self)
         self.pack_table = PackingLog(self.launch_page.launch_log)
         self.launch_status = LaunchStatus(self.launch_page.launch_log)
         # у сервера и клиента свои RPT в разных папках — свой наблюдатель на каждого
@@ -192,7 +194,6 @@ class MainWindow(FluentWindow):
         self.settings_page.setObjectName("settingsInterface")
 
         self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
-        self.addSubInterface(self.mods_panel, FIF.APPLICATION, tr("main.tab_mods", "Моды"))
         self.addSubInterface(self.cfg_editor, FIF.DOCUMENT, tr("main.tab_cfg", "Конфиг сервера"))
         self.addSubInterface(self.settings_page, FIF.SETTING,
                              tr("menu.settings_nav", "Настройки"),
@@ -209,7 +210,6 @@ class MainWindow(FluentWindow):
         lp.b_new.clicked.connect(self._new_preset)
         lp.b_edit.clicked.connect(self._edit_preset)
         lp.b_del.clicked.connect(self._delete_preset)
-        lp.b_connect_mods.clicked.connect(self._open_connect_mods)
         lp.chk_server.toggled.connect(self._launch_flags_changed)
         lp.chk_hide_window.setChecked(settings.hide_server_window)
         lp.chk_hide_window.checkedChanged.connect(self._hide_window_changed)
@@ -356,7 +356,10 @@ class MainWindow(FluentWindow):
         lp = self.launch_page
         lp.b_edit.setEnabled(p is not None)
         lp.b_del.setEnabled(p is not None)
-        lp.b_connect_mods.setEnabled(p is not None)
+        # Панель модов живёт прямо в карточке и следует за выбранным пресетом.
+        # Панель модов живёт в карточке на «Запуске» и следует за пресетом.
+        self.mods_panel.set_preset(p)
+        lp.params_panel.set_preset(p)
         for chk, val in ((lp.chk_server, p.launch_server if p else True),
                          (lp.chk_client, p.launch_client if p else True)):
             chk.blockSignals(True)
@@ -376,8 +379,10 @@ class MainWindow(FluentWindow):
             from core.layout import resolve_config
             path = resolve_config(p.server_config, self.settings, self._branch(), p.mode)
             self.cfg_editor.set_path(Path(path))
+            self.launch_page.cfg_card.set_path(Path(path))
         else:
             self.cfg_editor.set_path(None)
+            self.launch_page.cfg_card.set_path(None)
 
     def _registry_rescanned(self, registry: ModRegistry) -> None:
         self.registry = registry
@@ -565,13 +570,6 @@ class MainWindow(FluentWindow):
         dlg = AdvancedPresetDialog(self.current, self.settings, self)
         if dlg.exec():
             self._reload_presets(select=self.current.file_stem())
-
-    def _open_connect_mods(self) -> None:
-        if not self.current:
-            return
-        from ui.connect_mods_dialog import ConnectModsDialog
-        dlg = ConnectModsDialog(self.registry, self.current, self.settings, self)
-        dlg.exec()
 
     def _delete_preset(self) -> None:
         p = self.current

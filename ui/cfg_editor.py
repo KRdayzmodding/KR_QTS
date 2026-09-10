@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, CheckBox, ComboBox, InfoBar, InfoBarPosition,
     LineEdit, PrimaryPushButton, PushButton, SearchLineEdit, SmoothScrollArea,
+    StrongBodyLabel,
     SwitchButton, FluentIcon as FIF,
 )
 
@@ -29,7 +30,7 @@ from core import servercfg
 from core.i18n import tr
 from core.servercfg import BOOL, BOOLSTR, CHOICE, ServerCfg, VarSpec
 from ui import tokens
-from ui.rows import Columns, setting_row, shrink, subheading
+from ui.rows import Columns, Rule, setting_row, shrink, subheading
 
 OTHER = "other"          # группа для ключей, которых нет в справочнике
 
@@ -358,3 +359,84 @@ class CfgEditor(QWidget):
         self.unsaved.setText("")
         InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
                         parent=self, duration=3000, position=InfoBarPosition.TOP_RIGHT)
+
+
+class CfgCard(QWidget):
+    """Конфиг сервера внутри карточки на «Запуске».
+
+    Тот же список ключей, что на отдельной странице, но без пути и кодировки:
+    файл здесь и так известен — он принадлежит выбранному пресету. Кнопка
+    сохранения своя: конфиг это файл, и писать его на каждое нажатие тумблера
+    нельзя.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cfg: ServerCfg | None = None
+        self._path: Path | None = None
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(tokens.SPACE_XS)
+
+        head = QHBoxLayout()
+        head.setSpacing(tokens.SPACE_XS)
+        head.addWidget(StrongBodyLabel(tr("cfg.card_title",
+                                          "Конфиг сервера (serverDZ.cfg)")))
+        self.unsaved = CaptionLabel("")
+        self.unsaved.setStyleSheet(f"color:{tokens.color('warning')};")
+        head.addWidget(self.unsaved)
+        head.addStretch(1)
+        self.btn_save = PushButton(FIF.SAVE, tr("common.save", "Сохранить"))
+        self.btn_save.clicked.connect(self.save)
+        head.addWidget(self.btn_save)
+        box.addWidget(Rule())
+        box.addLayout(head)
+
+        self.keys = CfgKeys()
+        self.keys.changed.connect(self._touch)
+        box.addWidget(self.keys)
+
+    def _touch(self) -> None:
+        self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
+
+    def set_path(self, path: Path | None) -> None:
+        self._path = path
+        self.unsaved.setText("")
+        self.cfg = None
+        if not path or not Path(path).is_file():
+            self.keys.load({})
+            self.setEnabled(False)
+            return
+        self.setEnabled(True)
+        try:
+            self.cfg = ServerCfg(Path(path))
+        except OSError:
+            self.keys.load({})
+            return
+        self.keys.load(self.cfg.values())
+
+    def save(self) -> None:
+        if not self.cfg:
+            return
+        from core.launcher import dayz_running
+        if dayz_running():
+            InfoBar.warning(title=tr("cfg.save_busy", "Сервер запущен — сохранение отменено"),
+                            content=tr("cfg.save_busy_body",
+                                       "Остановите сервер: изменения cfg он всё равно не "
+                                       "подхватит на лету, а при выходе может перезаписать файл."),
+                            parent=self.window(), duration=6000,
+                            position=InfoBarPosition.TOP_RIGHT)
+            return
+        try:
+            self.cfg.apply(self.keys.wanted())
+            self.cfg.save()
+        except OSError as e:
+            InfoBar.error(title=tr("cfg.save_err_title", "Ошибка сохранения"), content=str(e),
+                          parent=self.window(), duration=5000,
+                          position=InfoBarPosition.TOP_RIGHT)
+            return
+        self.unsaved.setText("")
+        InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
+                        parent=self.window(), duration=3000,
+                        position=InfoBarPosition.TOP_RIGHT)
