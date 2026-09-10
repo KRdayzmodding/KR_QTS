@@ -125,6 +125,32 @@ def test_replace() -> None:
     check(dst.is_dir(), "саму папку не сносим — на неё может стоять ссылка")
 
 
+def test_unverified() -> None:
+    """Мод, о котором мастерская молчит, не должен считаться свежим."""
+    fake_state()
+    calls = {}
+
+    def fake_times(ids):
+        # мастерская описала только один из двух — второй скрытый
+        calls["asked"] = list(ids)
+        return {"111": 1}
+
+    keep = modupdate.__dict__.get("steam_api")
+    import core.steam_api as api
+    real = api.times_updated
+    api.times_updated = fake_times
+    try:
+        res = modupdate.inspect(mods(), with_network=True)
+    finally:
+        api.times_updated = real
+        if keep is not None:
+            modupdate.steam_api = keep
+
+    check(res.unverified == ["VPP"], "молчание мастерской названо, а не проглочено")
+    check(not res.stale, "скрытый мод не задерживает запуск")
+    check(calls.get("asked") == ["111", "222"], "спросили про оба воркшопных")
+
+
 def test_gate() -> None:
     """Общий вход: пока моды не в порядке, запуск не разрешается."""
     fake_state()
@@ -142,7 +168,8 @@ def main() -> int:
     keep = steam_state.workshop_state
     try:
         for fn in (test_which_mods, test_stale, test_wait, test_command,
-                   test_no_steamcmd, test_replace, test_gate):
+                   test_no_steamcmd, test_replace, test_unverified,
+                   test_gate):
             fn()
     finally:
         modupdate.steam_state.workshop_state = keep

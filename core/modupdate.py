@@ -61,7 +61,34 @@ def steam_mods(mods: list[ModInfo]) -> list[ModInfo]:
     return [m for m in mods if m.source == SOURCE_STEAM and m.workshop_id]
 
 
-def stale(mods: list[ModInfo], appid: str = APP_DAYZ) -> list[Stale]:
+@dataclass
+class Check:
+    """Итог проверки: что обновлять и о чём сказать нечего."""
+
+    stale: list = None          # type: ignore[assignment]
+    unverified: list = None     # type: ignore[assignment]
+
+    def __post_init__(self):
+        self.stale = self.stale or []
+        self.unverified = self.unverified or []
+
+
+def inspect(mods: list[ModInfo], appid: str = APP_DAYZ,
+            with_network: bool = False) -> Check:
+    """Полный итог проверки: устаревшие и те, про которые сказать нечего.
+
+    Непроверяемые — это скрытые, «только для друзей» и неопубликованные
+    предметы: мастерская отвечает на них «файл не найден». Свой мод в
+    разработке скрыт всегда, и задерживать из-за него запуск нельзя. Но и
+    молчать нельзя — человек должен знать, что этот мод никто не проверял.
+    """
+    res = Check()
+    res.stale = stale(mods, appid, with_network, res.unverified)
+    return res
+
+
+def stale(mods: list[ModInfo], appid: str = APP_DAYZ,
+          with_network: bool = False, unverified: list | None = None) -> list[Stale]:
     """Какие моды Steam считает устаревшими или недокачанными.
 
     Спрашиваем состояние самого Steam, а не мастерскую по сети: он знает
@@ -74,11 +101,35 @@ def stale(mods: list[ModInfo], appid: str = APP_DAYZ) -> list[Stale]:
         return []
     ws = steam_state.workshop_state(appid)
     out: list[Stale] = []
+    rest: list[ModInfo] = []
     for mod in wanted:
         if mod.workshop_id in ws.downloading:
             out.append(Stale(mod, DOWNLOADING))
         elif mod.workshop_id in ws.outdated:
             out.append(Stale(mod, OUTDATED))
+        else:
+            rest.append(mod)
+
+    # Учёт Steam обновляется, только когда Steam сам сходит проверить. До этого
+    # он честно считает мод свежим, хотя в мастерской уже лежит новая версия —
+    # именно так обновление и уезжало мимо. Перед запуском спрашиваем ещё и
+    # мастерскую: полсекунды на пачку, зато сервер встаёт с тем, что есть.
+    if with_network and rest:
+        from . import steam_api
+        try:
+            times = steam_api.times_updated([m.workshop_id for m in rest])
+        except Exception:      # noqa: BLE001 — без сети работаем по учёту Steam
+            return out
+        for mod in rest:
+            remote = times.get(mod.workshop_id, 0)
+            # Промолчала — значит предмет скрытый или неопубликованный, и
+            # сказать про него нечего. Задерживать из-за этого запуск нельзя:
+            # свой мод в разработке скрыт всегда.
+            if not remote:
+                if unverified is not None:
+                    unverified.append(mod.name)
+            elif remote > mod.mtime + 60:
+                out.append(Stale(mod, OUTDATED))
     return out
 
 
@@ -231,14 +282,22 @@ def replace_contents(src: Path, dst: Path) -> tuple[bool, str]:
 # ------------------------------------------------------------------- общий вход
 
 
-def bring_up_to_date(mods: list[ModInfo], settings, on_wait=None, on_line=None,
-                     stop=None, appid: str = APP_DAYZ) -> tuple[bool, str]:
+def bring_up_to_date(mods: list[ModInfo], settings, on_checked=None, on_wait=None,
+                     on_line=None, stop=None, appid: str = APP_DAYZ) -> tuple[bool, str]:
     """Приводит моды запуска в актуальное состояние выбранным способом.
+
+    on_checked зовётся один раз сразу после проверки — со списком того, что
+    придётся обновлять, пустым или нет. Это единственный момент, когда точно
+    известно, чем кончилась проверка, и о нём нужно сказать человеку: молчание
+    в ответ на «проверь моды» неотличимо от того, что проверка не работает.
 
     Возвращает (можно запускать, причина отказа). Пустой список устаревших —
     сразу «да»: ни ожидания, ни SteamCMD в обычном запуске не будет.
     """
-    left = stale(mods, appid)
+    res = inspect(mods, appid, with_network=True)
+    left = res.stale
+    if on_checked is not None:
+        on_checked(left, res.unverified)
     if not left:
         return True, ""
 

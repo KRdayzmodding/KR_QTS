@@ -179,7 +179,8 @@ def external() -> None:
     upd_tests._fails.clear()
     for fn in (upd_tests.test_which_mods, upd_tests.test_stale, upd_tests.test_wait,
                upd_tests.test_command, upd_tests.test_no_steamcmd,
-               upd_tests.test_replace, upd_tests.test_gate):
+               upd_tests.test_replace, upd_tests.test_unverified,
+               upd_tests.test_gate):
         fn()
     from core import steam_state as _st
     upd_tests.modupdate.steam_state.workshop_state = _st.workshop_state

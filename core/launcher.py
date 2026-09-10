@@ -298,6 +298,9 @@ class LaunchWorker(QThread):
     сервер -> ожидание готовности -> клиент.
     """
     log = Signal(str, str)          # message, level: info|warning|error
+    mods_checked = Signal(list, list)   # что обновляем и что проверить не вышло
+    mods_updated = Signal()         # обновление закончилось успехом
+    mods_failed = Signal(str)       # обновление сорвалось, причина
     pack_plan = Signal(list)        # имена pbo, которые предстоит собрать
     pack_status = Signal(str, str, int, int, int)  # pbo, состояние, мс, warnings, errors
     server_started = Signal(int)    # pid
@@ -389,18 +392,34 @@ class LaunchWorker(QThread):
         #      половина.
         if getattr(s, "mod_update_before_launch", True):
             from . import modupdate
+            stale_names: list[str] = []
+
+            def checked(left, unverified):
+                stale_names.extend(x.mod.name for x in left)
+                self.mods_checked.emit(list(stale_names), list(unverified))
+                if unverified:
+                    self.log.emit(tr(
+                        "launch.mods_unverified",
+                        "Проверить не удалось: {list}. Мастерская не описывает "
+                        "скрытые и неопубликованные моды — обновление такого "
+                        "мода видит только сам Steam.",
+                        list=", ".join(unverified)), "warning")
+
             ok, err = modupdate.bring_up_to_date(
-                selected, s,
+                selected, s, on_checked=checked,
                 on_wait=lambda left: self.log.emit(
                     tr("launch.mods_stale", "Моды не актуальны: {list}",
                        list="; ".join(x.text() for x in left)), "warning"),
                 on_line=lambda line: self.log.emit(line, "info"),
                 stop=self._stop_asked)
             if not ok:
+                self.mods_failed.emit(err)
                 self.failed.emit(tr("launch.mods_failed",
                                     "Моды не удалось обновить. Запуск отменён.\n{e}",
                                     e=err))
                 return
+            if stale_names:
+                self.mods_updated.emit()
             self.log.emit(tr("launch.mods_ready",
                              "Моды мастерской актуальны."), "info")
 

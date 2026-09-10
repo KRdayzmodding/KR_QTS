@@ -135,8 +135,13 @@ def times_updated(workshop_ids: list[str]) -> dict[str, int]:
             body = json.loads(r.read().decode("utf-8", errors="replace"))
         for d in body.get("response", {}).get("publishedfiledetails", []):
             wid = str(d.get("publishedfileid") or "")
-            if wid:
-                out[wid] = int(d.get("time_updated", 0))
+            # result != 1 — мастерская отказалась описывать предмет: скрытый,
+            # только для друзей, неопубликованный или удалённый. Своих модов в
+            # разработке это касается всегда. Такие в ответ не кладём вовсе:
+            # ноль в словаре был неотличим от «обновлений нет», и проверка
+            # молча объявляла свежим то, чего не видела.
+            if wid and int(d.get("result") or 0) == 1:
+                out[wid] = int(d.get("time_updated") or 0)
     return out
 
 

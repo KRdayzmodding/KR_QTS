@@ -167,6 +167,12 @@ def as_folder(name: str) -> str:
     return _BAD_IN_FOLDER.sub("_", n)
 
 
+# Состояния проверки обновления.
+UPD_OK = "ok"              # мастерская ответила: у нас свежее
+UPD_OUTDATED = "outdated"  # там версия новее
+UPD_FAILED = "failed"      # ответа нет — скрытый предмет, нет сети, ошибка
+
+
 @dataclass
 class ModInfo:
     name: str                 # отображаемое имя, оно же имя @папки при подключении
@@ -186,7 +192,22 @@ class ModInfo:
     size_bytes: int = 0        # суммарный размер папки мода на диске
     pbo_names: list[str] = field(default_factory=list)  # имена .pbo в addons
     mtime: float = 0.0         # дата последнего изменения файлов мода (эпоха, локально на диске)
-    outdated: bool = False     # для Steam: в Workshop есть более новая версия (см. steam_api)
+    # Состояние проверки обновления, три значения вместо двух. Двух не хватало:
+    # мастерская не описывает скрытые и неопубликованные предметы публично и
+    # отвечает на них «файл не найден», а прежняя проверка молча считала это
+    # за «обновлений нет». Свой собственный мод, только что залитый в Steam,
+    # при этом показывался актуальным.
+    update_state: str = ""     # "" | UPD_OK | UPD_OUTDATED | UPD_FAILED
+
+    @property
+    def outdated(self) -> bool:
+        """Точно ли известно, что в мастерской версия новее."""
+        return self.update_state == UPD_OUTDATED
+
+    @property
+    def check_failed(self) -> bool:
+        """Проверить не вышло — это не то же самое, что «актуален»."""
+        return self.update_state == UPD_FAILED
 
     @property
     def valid(self) -> bool:

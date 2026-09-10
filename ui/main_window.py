@@ -158,6 +158,9 @@ class MainWindow(FluentWindow):
         # главное окно и мини-окно должны перейти на него, иначе останутся
         # с прежним списком модов
         self.mods_panel.registry_changed = self._registry_rescanned
+        # Фоновая проверка обновлений живёт на экране модов, а сказать о находке
+        # надо тому, кто на него, возможно, и не смотрит.
+        self.mods_panel.update_check_done.connect(self._mods_found_updates)
         # смена метки «серверный» перекладывает мод по строкам запуска прямо в
         # файлах пресетов — тот, что открыт у нас, надо перечитать, иначе
         # запустимся по устаревшему списку из памяти
@@ -815,6 +818,60 @@ class MainWindow(FluentWindow):
             # даже если окно бросит исключение, очередь не должна встать навсегда
             self._alert_busy = False
 
+    def _say(self, kind: str, title: str, text: str = "") -> None:
+        """Сообщение и в окне, и в трее — но в трей только когда окно не видно.
+
+        Плашка в окне отвечает на вопрос «что сейчас произошло» тому, кто
+        смотрит; всплывающее сообщение системы — тому, кто ушёл. Показывать оба
+        сразу тому, кто и так смотрит, — навязчиво.
+        """
+        self._notify(kind, title, text)
+        if not self.isVisible() or not self.isActiveWindow():
+            self._say_tray(kind, title, text)
+
+    def _mods_checked(self, stale_names: list, unverified: list) -> None:
+        """Проверка модов закончилась — говорим, чем именно.
+
+        Молчание в ответ на проверку неотличимо от неработающей проверки:
+        человек не знает, посмотрели вообще или нет.
+        """
+        if stale_names:
+            self._say("warning",
+                      tr("upd.say_found", "Моды не актуальны — обновляем"),
+                      ", ".join(stale_names))
+        elif unverified:
+            # «Всё актуально» здесь было бы неправдой: часть модов никто не
+            # проверял и проверить не может.
+            self._say("warning",
+                      tr("upd.say_partly", "Проверены не все моды"),
+                      tr("upd.say_partly_body",
+                         "Остальные актуальны. Не удалось проверить: {list}",
+                         list=", ".join(unverified)))
+        else:
+            self._say("success", tr("upd.say_ok", "Моды актуальны"))
+
+    def _mods_updated(self) -> None:
+        self._say("success", tr("upd.say_done", "Моды обновлены"))
+
+    def _mods_failed(self, why: str) -> None:
+        self._say("error", tr("upd.say_failed", "Моды обновить не удалось"), why)
+
+    def _mods_found_updates(self, old: list, unknown: list) -> None:
+        """Фоновая проверка на экране модов нашла обновления.
+
+        Про непроверенные молчим: скрытый или неопубликованный мод не
+        описывается мастерской всегда, и напоминать об этом при каждом
+        обновлении списка — превратить уведомления в шум. В самом списке они
+        помечены.
+        """
+        if not old:
+            return
+        self._say("warning",
+                  tr("upd.say_bg_found", "Найдены обновления модов"),
+                  tr("upd.say_bg_body",
+                     "{list} — обновятся перед следующим запуском.",
+                     list=", ".join(old)))
+
     def _notify(self, kind: str, title: str, text: str = "", duration: int = 4000) -> None:
         fn = {"success": InfoBar.success, "warning": InfoBar.warning,
               "error": InfoBar.error}.get(kind, InfoBar.info)
@@ -938,6 +995,9 @@ class MainWindow(FluentWindow):
         self.worker = LaunchWorker(p, settings, branch, self.registry,
                                    rebuild=rebuild)
         self.worker.log.connect(self._append_log)
+        self.worker.mods_checked.connect(self._mods_checked)
+        self.worker.mods_updated.connect(self._mods_updated)
+        self.worker.mods_failed.connect(self._mods_failed)
         self.worker.pack_plan.connect(self.pack_table.start)
         self.worker.pack_plan.connect(self.remember_packed)
         self.worker.pack_status.connect(self.pack_table.set_status)

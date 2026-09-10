@@ -1029,5 +1029,16 @@
   "settings.modupd_login_note": "The name only. SteamCMD remembers the password itself after the first manual run — start it once and log in. Anonymous login gives no access to the DayZ Workshop: an account that owns the game is required.",
   "settings.modupd_wait_for": "Wait no longer than",
   "settings.modupd_wait_tip": "How long to wait before cancelling the launch and saying so.",
-  "settings.modupd_min": "{n} min"
+  "settings.modupd_min": "{n} min",
+  "mods.unchecked": "(not checked)",
+  "mods.unchecked_tip": "Could not check: the Workshop does not describe hidden, friends-only and unpublished items, and without a network it answers nothing at all. For your own mod in development this is normal — only Steam itself sees updates to such a mod.",
+  "upd.say_ok": "Mods are up to date",
+  "upd.say_found": "Mods are out of date — updating",
+  "upd.say_done": "Mods updated",
+  "upd.say_failed": "The mods could not be updated",
+  "upd.say_bg_found": "Mod updates found",
+  "upd.say_bg_body": "{list} — will be updated before the next launch.",
+  "upd.say_partly": "Not all mods were checked",
+  "upd.say_partly_body": "The rest are up to date. Could not check: {list}",
+  "launch.mods_unverified": "Could not check: {list}. The Workshop does not describe hidden and unpublished mods — only Steam itself sees updates to such a mod."
 }

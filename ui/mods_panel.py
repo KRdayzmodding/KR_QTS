@@ -36,6 +36,7 @@ from core.launcher import dayz_running
 from core import i18n
 from core.i18n import tr
 from core.mods import (
+    UPD_FAILED, UPD_OK, UPD_OUTDATED,
     ModRegistry, ModInfo, SOURCE_STEAM, SOURCE_LOCAL, SOURCE_GITHUB,
     sort_key as mods_sort_key,
     validate_mod_dir, format_size, load_flag_defs,
@@ -53,6 +54,29 @@ from core.settings import Settings
  COL_SOURCES, COL_MODIFIED, COL_REBUILD) = range(8)
 _GREY = QColor("#888888")
 _ORANGE = QColor("#e08f00")
+
+
+def _update_mark(mod: ModInfo) -> str:
+    """Приписка к имени по итогу проверки обновления."""
+    if mod.outdated:
+        return "  " + tr("mods.outdated", "(устарел)")
+    if mod.check_failed:
+        return "  " + tr("mods.unchecked", "(не проверен)")
+    return ""
+
+
+def _update_tip(mod: ModInfo) -> str:
+    if mod.outdated:
+        return "\n" + tr("mods.outdated_tip",
+                         "В Steam Workshop есть более новая версия мода.")
+    if mod.check_failed:
+        return "\n" + tr(
+            "mods.unchecked_tip",
+            "Проверить не удалось: мастерская не описывает скрытые, «только для "
+            "друзей» и неопубликованные предметы, а без сети не отвечает вовсе. "
+            "Для своего мода в разработке это обычное дело — обновление такого "
+            "мода видит только сам Steam.")
+    return ""
 _GREEN = QColor("#2e7d32")
 # колонки, у которых сортировка идёт не по тексту ячейки, а по значению,
 # сохранённому в UserRole+1 (числа для Размер/PBO/Дата изменения, bool-int
@@ -136,27 +160,75 @@ class ScanWorker(QThread):
 
 
 class StaleCheckWorker(QThread):
-    """Проверка актуальности Steam-модов: сравнивает time_updated в Workshop
-    с локальной датой изменения файлов мода. Публичный эндпоинт, ключ не нужен."""
-    checked = Signal(object, bool)  # mod, outdated
+    """Проверка актуальности Steam-модов.
+
+    Два источника, и порядок важен.
+
+    Сначала учёт самого Steam: он знает про скрытые и неопубликованные
+    предметы, отвечает мгновенно и без сети, и говорит ровно то, что скачает
+    лаунчер игры.
+
+    Потом мастерская по сети — она замечает обновление раньше, чем Steam
+    соберётся проверить. Но публично она описывает не всё: на скрытый,
+    «только для друзей» и неопубликованный предмет отвечает «файл не найден».
+    Раньше этот отказ молча считался за «обновлений нет», и свой собственный
+    мод, только что залитый в Steam, показывался актуальным.
+    """
+    checked = Signal(object, str)  # mod, состояние из core.mods
+    done = Signal(list, list)      # имена устаревших и непроверенных
 
     def __init__(self, mods: list[ModInfo], parent=None):
         super().__init__(parent)
         self.mods = mods
 
     def run(self) -> None:
+        self._old: list[str] = []
+        self._unknown: list[str] = []
+        try:
+            self._run()
+        finally:
+            self.done.emit(self._old, self._unknown)
+
+    def _say(self, mod, state: str) -> None:
+        """Один проход учёта: и в строку мода, и в итог проверки."""
+        if state == UPD_OUTDATED:
+            self._old.append(mod.name)
+        elif state == UPD_FAILED:
+            self._unknown.append(mod.name)
+        self.checked.emit(mod, state)
+
+    def _run(self) -> None:
+        from core import steam_state
+        from core.steam_urls import APP_DAYZ
+        try:
+            ws = steam_state.workshop_state(APP_DAYZ)
+        except OSError:
+            ws = None
+
+        rest = []
+        for mod in self.mods:
+            if ws is not None and mod.workshop_id in ws.outdated:
+                self._say(mod, UPD_OUTDATED)
+            else:
+                rest.append(mod)
+        if not rest:
+            return
+
         # один запрос на всю пачку, а не по запросу на мод: при недоступной
         # сети иначе выходит N таймаутов подряд, и воркер живёт минутами
         try:
-            times = steam_api.times_updated([m.workshop_id for m in self.mods])
+            times = steam_api.times_updated([m.workshop_id for m in rest])
         except Exception:  # noqa: BLE001 — сеть/парсинг не должны ронять UI
+            for mod in rest:
+                self._say(mod, UPD_FAILED)
             return
-        for mod in self.mods:
+        for mod in rest:
             remote = times.get(mod.workshop_id, 0)
             if not remote:
+                self._say(mod, UPD_FAILED)
                 continue
             # запас 60с на расхождение часов/времени записи на диск
-            self.checked.emit(mod, remote > mod.mtime + 60)
+            self._say(mod, UPD_OUTDATED if remote > mod.mtime + 60 else UPD_OK)
 
 
 class DependencyResolveWorker(QThread):
@@ -581,6 +653,10 @@ class SetsDialog(ThemedDialog):
 
 
 class ModsPanel(QWidget):
+    # Итог фоновой проверки обновлений: устаревшие и непроверенные. Панель не
+    # уведомляет сама — она не знает, видно ли окно; это решает главное окно.
+    update_check_done = Signal(list, list)
+
     presets_changed = Signal()   # пресеты правились на диске — окну пора перечитать
 
     def __init__(self, parent=None):
@@ -750,12 +826,13 @@ class ModsPanel(QWidget):
             return
         self._stale_worker = StaleCheckWorker(steam_mods, self)
         self._stale_worker.checked.connect(self._on_stale_checked)
+        self._stale_worker.done.connect(self.update_check_done)
         self._stale_worker.start()
 
-    def _on_stale_checked(self, mod: ModInfo, outdated: bool) -> None:
-        if mod.outdated == outdated:
+    def _on_stale_checked(self, mod: ModInfo, state: str) -> None:
+        if mod.update_state == state:
             return
-        mod.outdated = outdated
+        mod.update_state = state
         for item in self._iter_mod_items():
             if self._item_mod(item) is mod:
                 self._apply_outdated_mark(item, mod)
@@ -767,8 +844,7 @@ class ModsPanel(QWidget):
         name = mod.name
         if mod.duplicate_of_steam:
             name += "  " + tr("mods.dup", "(есть дубль в Workshop)")
-        if mod.outdated:
-            name += "  " + tr("mods.outdated", "(устарел)")
+        name += _update_mark(mod)
         if not mod.valid:
             name = "⚠ " + name
         item.setText(COL_NAME, name)
@@ -776,12 +852,12 @@ class ModsPanel(QWidget):
             item.setForeground(COL_NAME, QColor("#d32f2f"))
         elif mod.outdated:
             item.setForeground(COL_NAME, _ORANGE)
+        elif mod.check_failed:
+            item.setForeground(COL_NAME, _GREY)
         else:
             item.setData(COL_NAME, Qt.ItemDataRole.ForegroundRole, None)
         tip = mod.problem or mod.name
-        if mod.outdated:
-            tip += "\n" + tr("mods.outdated_tip",
-                             "В Steam Workshop есть более новая версия мода.")
+        tip += _update_tip(mod)
         item.setToolTip(COL_NAME, tip)
 
     # ---------------------------------------------------------------- дерево
@@ -885,8 +961,7 @@ class ModsPanel(QWidget):
         name = mod.name
         if mod.duplicate_of_steam:
             name += "  " + tr("mods.dup", "(есть дубль в Workshop)")
-        if mod.outdated:
-            name += "  " + tr("mods.outdated", "(устарел)")
+        name += _update_mark(mod)
         if not mod.valid:
             name = "⚠ " + name
         item = ModTreeItem([name, mod.folder_name, format_size(mod.size_bytes),
@@ -934,9 +1009,7 @@ class ModsPanel(QWidget):
         # полное название мода вместо пути — путь и так есть в колонке «Папка»
         # и в подсказках у других колонок; для невалидных — причина проблемы
         tip = mod.problem or mod.name
-        if mod.outdated:
-            tip += "\n" + tr("mods.outdated_tip",
-                             "В Steam Workshop есть более новая версия мода.")
+        tip += _update_tip(mod)
         if flag_names:
             tip += "\n" + tr("mods.flags_tip", "Флаги: {f}", f=", ".join(flag_names))
         item.setToolTip(COL_NAME, tip)
