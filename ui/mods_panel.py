@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem, QHeaderView, QMenu,
     QFileDialog, QListView, QTreeView, QAbstractItemView, QScrollArea,
     QListWidgetItem,
+    QInputDialog,
 )
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, TransparentToolButton, TreeWidget, ListWidget, ComboBox,
@@ -653,6 +654,15 @@ class SetsDialog(ThemedDialog):
 
 
 class ModsPanel(QWidget):
+    """Моды целиком: и состав запуска, и настройки самих модов.
+
+    Раньше это были два места — вкладка «Моды» и модальное окно «Подключить
+    моды». Половина работы над модом требовала перехода: тип «серверный»
+    задавался здесь, а подключался мод там, и подсказка в окне честно
+    отправляла человека на другой экран. Теперь одна таблица: галка слева
+    подключает мод к пресету, остальные колонки — свойства самого мода.
+    """
+
     # Итог фоновой проверки обновлений: устаревшие и непроверенные. Панель не
     # уведомляет сама — она не знает, видно ли окно; это решает главное окно.
     update_check_done = Signal(list, list)
@@ -679,6 +689,10 @@ class ModsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         top = QHBoxLayout()
+        self.preset = None          # пресет, к которому подключаются моды
+        self._dep_workers: list = []
+        self._collection_worker = None
+
         self.b_refresh = PushButton(FIF.SYNC, tr("mods.refresh", "Обновить"))
         self.b_refresh.clicked.connect(self._refresh_clicked)
         b_refresh = self.b_refresh
@@ -711,6 +725,29 @@ class ModsPanel(QWidget):
         self.search = SearchLineEdit()
         self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
         self.search.textChanged.connect(self._apply_filter)
+        # Состав запуска — отдельным рядом от библиотечных кнопок: это разные
+        # задачи, и смешанные в одну строку они читались бы как одна.
+        set_row = QHBoxLayout()
+        self.b_all = PushButton(tr("mods.enable_all", "Включить все"))
+        self.b_all.clicked.connect(lambda: self._set_all(True))
+        self.b_none = PushButton(tr("mods.disable_all", "Выключить все"))
+        self.b_none.clicked.connect(lambda: self._set_all(False))
+        self.b_save_set = PushButton(FIF.SAVE_AS, tr("mods.save_set", "Сохранить как набор…"))
+        self.b_save_set.clicked.connect(self._save_set)
+        # шеврон вместо галки — намекает, что кнопка открывает выбор из списка,
+        # а не сразу «подтверждает» что-то
+        self.b_apply_set = PushButton(FIF.CHEVRON_DOWN_MED, tr("mods.apply_set", "Выбрать набор"))
+        self.b_apply_set.clicked.connect(self._apply_set_menu)
+        self.b_collection = PushButton(FIF.CLOUD_DOWNLOAD,
+                                       tr("collection.connect_btn", "Подключить коллекцию…"))
+        self.b_collection.clicked.connect(self._connect_collection)
+        for b in (self.b_all, self.b_none, self.b_save_set, self.b_apply_set,
+                  self.b_collection):
+            b.setEnabled(False)         # пока пресет не задан, подключать некуда
+            set_row.addWidget(b)
+        set_row.addStretch(1)
+        layout.addLayout(set_row)
+
         self.b_view = PushButton(FIF.VIEW, tr("mods.view_list", "Вид: Список"))
         self.b_view.setToolTip(tr("mods.view_tip",
                                   "Переключить между деревом по источникам и плоским списком "
@@ -754,13 +791,11 @@ class ModsPanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._tree_context_menu)
         layout.addWidget(self.tree, 1)
 
-        hint = CaptionLabel(tr("mods.hint",
-                               "Здесь — общие настройки модов, не привязанные к конкретному пресету. "
-                               "«Серверный» — мод подключается в -serverMod, а не в -mod, в окне "
-                               "«Подключить моды». Свои флаги (название + цвет имени) — кнопка «Флаги…», "
-                               "назначение — правый клик по моду. Двойной клик по «Сорсы» — привязать "
-                               "сорсы локального мода для запаковки. В режиме списка клик по заголовку "
-                               "колонки сортирует по ней."))
+        hint = CaptionLabel(tr(
+            "mods.hint2",
+            "Галка слева подключает мод к выбранному пресету, «Серверный» — "
+            "уводит его в -serverMod вместо -mod. Правый клик по моду: сорсы, "
+            "запаковка, флаги, зависимости и папка."))
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -839,6 +874,14 @@ class ModsPanel(QWidget):
                 break
 
     def _apply_outdated_mark(self, item: QTreeWidgetItem, mod: ModInfo) -> None:
+        try:
+            self._paint_update_mark(item, mod)
+        except RuntimeError:
+            # строку успели пересобрать, пока проверка шла в фоне — пометка
+            # появится сама при следующей отрисовке дерева
+            pass
+
+    def _paint_update_mark(self, item: QTreeWidgetItem, mod: ModInfo) -> None:
         """Точечно обновляет строку мода после фоновой проверки актуальности —
         без полной пересборки дерева (не сбивает сортировку/скролл)."""
         name = mod.name
@@ -971,6 +1014,13 @@ class ModsPanel(QWidget):
                       | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(COL_SERVER, Qt.CheckState.Checked if mod.is_server
                            else Qt.CheckState.Unchecked)
+        # Галка подключения — на колонке имени, там же, где раньше была в окне
+        # «Подключить моды». Без пресета её нет вовсе: подключать некуда.
+        if self.preset is not None and self.registry is not None:
+            on = (self.registry.index_of(mod, self.preset.mods) is not None
+                  or self.registry.index_of(mod, self.preset.server_mods) is not None)
+            item.setCheckState(COL_NAME, Qt.CheckState.Checked if on
+                               else Qt.CheckState.Unchecked)
         # ключ сортировки: Серверный — по чекбоксу
         # ключ по имени с рангом флага впереди: сортировка по «Мод» —
         # она же сортировка по умолчанию — держит помеченные сверху
@@ -1075,7 +1125,12 @@ class ModsPanel(QWidget):
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         """«Серверный» — глобальный признак мода (не пресета), сохраняется
         сразу в registry.save_flags()."""
-        if self._building or not self.registry or column != COL_SERVER:
+        if self._building or not self.registry:
+            return
+        if column == COL_NAME:
+            self._connection_changed(item)
+            return
+        if column != COL_SERVER:
             return
         mod = self._item_mod(item)
         if not mod:
@@ -1100,6 +1155,224 @@ class ModsPanel(QWidget):
                 position=InfoBarPosition.TOP_RIGHT)
             self.presets_changed.emit()
 
+    def set_preset(self, preset) -> None:
+        """Пресет, к которому подключаются моды. None — подключать некуда."""
+        self.preset = preset
+        for w in (self.b_all, self.b_none, self.b_save_set, self.b_apply_set,
+                  self.b_collection):
+            w.setEnabled(preset is not None)
+        self._rebuild()
+
+    def _connection_changed(self, item: QTreeWidgetItem) -> None:
+        """Галка на имени подключает мод к пресету и убирает из него.
+
+        Куда именно — в -mod или -serverMod — решает признак «Серверный» из
+        соседней колонки: это свойство мода, а не пресета.
+        """
+        mod = self._item_mod(item)
+        if not mod or self.preset is None:
+            return
+        p = self.preset
+        was = (self.registry.index_of(mod, p.mods) is not None
+               or self.registry.index_of(mod, p.server_mods) is not None)
+        enabled = item.checkState(COL_NAME) == Qt.CheckState.Checked
+        if enabled == was:
+            # Qt шлёт itemChanged на любую правку строки, включая смену текста
+            # и подсказки. Принимать это за переключение галки нельзя: пресет
+            # сохранялся заново, дерево пересобиралось — и фоновая проверка
+            # обновлений дописывала пометку в строку, которую только что снесли.
+            return
+
+        def drop(name_list):
+            i = self.registry.index_of(mod, name_list)
+            if i is not None:
+                name_list.pop(i)
+
+        drop(p.mods)
+        drop(p.server_mods)
+        if enabled:
+            (p.server_mods if mod.is_server else p.mods).append(mod.name)
+        p.save()
+        self.presets_changed.emit()
+        if enabled and not was:
+            self._check_dependencies([mod])
+
+    def _set_all(self, state: bool) -> None:
+        p = self.preset
+        if not state:
+            p.mods, p.server_mods = [], []
+        else:
+            for item in self._iter_items():
+                mod = self._item_mod(item)
+                if mod and self.registry.index_of(mod, p.mods) is None \
+                        and self.registry.index_of(mod, p.server_mods) is None:
+                    (p.server_mods if mod.is_server else p.mods).append(mod.name)
+        p.save()
+        self._rebuild()
+
+    # ---------------------------------------------------------------- зависимости
+
+    def _check_dependencies(self, mods: list[ModInfo]) -> None:
+        """Запускает обход графа зависимостей для только что подключённых модов.
+
+        Обход общий для Steam и локальных модов и идёт вглубь: подключение мода
+        В, который зависит от А, а тот от Б, покажет и А, и Б сразу.
+        """
+        if not self.settings or not mods:
+            return
+        worker = DependencyResolveWorker(mods, self.registry,
+                                         self.settings.steam_api_key, self)
+        worker.done.connect(lambda res, roots=mods: self._on_dependencies_resolved(roots, res))
+        self._dep_workers.append(worker)
+        worker.start()
+
+    def _on_dependencies_resolved(self, roots: list[ModInfo], res) -> None:
+        self._dep_workers = [w for w in self._dep_workers if w.isRunning()]
+        res = deps.filter_connected(res, self.registry,
+                                    self.preset.mods, self.preset.server_mods)
+        if res.empty:
+            return      # всё нужное уже подключено — беспокоить незачем
+        dlg = DependencyDialog(roots, res, self)
+        if not dlg.exec():
+            return
+        self._connect_selected(dlg.selected_mods())
+
+    def _connect_selected(self, dep_mods: list[ModInfo]) -> None:
+        """Подключает выбранные зависимости.
+
+        Повторный обход не запускаем: resolve() уже вернул всю цепочку целиком,
+        так что новых зависимостей у них быть не может.
+        """
+        added = 0
+        for dep_mod in dep_mods:
+            if self.registry.index_of(dep_mod, self.preset.mods) is None \
+                    and self.registry.index_of(dep_mod, self.preset.server_mods) is None:
+                (self.preset.server_mods if dep_mod.is_server
+                 else self.preset.mods).append(dep_mod.name)
+                added += 1
+        if added:
+            self.preset.save()
+            self._rebuild()
+            InfoBar.success(title=tr("mods.deps_added", "Подключено зависимостей: {n}", n=added),
+                            content="", parent=self, duration=4000,
+                            position=InfoBarPosition.TOP_RIGHT)
+
+    # ---------------------------------------------------------------- наборы
+
+    def _save_set(self) -> None:
+        name, ok = QInputDialog.getText(self, tr("mods.set_title", "Набор модов"),
+                                        tr("mods.set_name", "Название набора:"))
+        if not ok or not name.strip():
+            return
+        ModPreset(name=name.strip(), mods=list(self.preset.mods),
+                  server_mods=list(self.preset.server_mods)).save()
+        InfoBar.success(title=tr("mods.set_saved", "Набор «{n}» сохранён.", n=name.strip()),
+                        content="", parent=self, duration=3000,
+                        position=InfoBarPosition.TOP_RIGHT)
+
+    def _apply_set_menu(self) -> None:
+        sets = ModPreset.load_all()
+        if not sets:
+            InfoBar.info(title=tr("mods.no_sets", "Сохранённых наборов пока нет."),
+                         content="", parent=self, duration=3000,
+                         position=InfoBarPosition.TOP_RIGHT)
+            return
+        dlg = SetsDialog(sets, self)
+        if not dlg.exec():
+            return
+        chosen = dlg.selected()
+        if not chosen:
+            return
+        self._apply_sets(chosen)
+
+    def _apply_sets(self, chosen: list[ModPreset]) -> None:
+        """Объединяет моды выбранных наборов (без дублей, первое вхождение решает
+        серверный/обычный) и заменяет ими текущий список подключённых модов."""
+        mods: list[str] = []
+        server_mods: list[str] = []
+        seen: set[str] = set()
+        for mp in chosen:
+            for n in mp.mods:
+                if n.lower() not in seen:
+                    seen.add(n.lower())
+                    mods.append(n)
+            for n in mp.server_mods:
+                if n.lower() not in seen:
+                    seen.add(n.lower())
+                    server_mods.append(n)
+        self.preset.mods = mods
+        self.preset.server_mods = server_mods
+        self.preset.save()
+        self._rebuild()
+        # набор мог быть сохранён без зависимостей — проверяем то, что подключилось
+        self._check_dependencies([m for m in (self.registry.get(n) for n in mods + server_mods)
+                                  if m])
+
+    # ---------------------------------------------------------------- коллекция
+
+    def _connect_collection(self) -> None:
+        text, ok = QInputDialog.getText(self, tr("collection.connect_btn", "Подключить коллекцию…"),
+                                        tr("collection.url_prompt",
+                                          "Ссылка на коллекцию Steam Workshop (или её id):"))
+        if not ok or not text.strip():
+            return
+        collection_id = steam_api.parse_collection_id(text)
+        if not collection_id:
+            InfoBar.error(title=tr("collection.bad_url", "Не удалось распознать ссылку на коллекцию."),
+                         content="", parent=self, duration=4000,
+                         position=InfoBarPosition.TOP_RIGHT)
+            return
+        if self._collection_worker and self._collection_worker.isRunning():
+            return
+        InfoBar.info(title=tr("collection.fetching", "Загружаю список модов коллекции…"),
+                    content="", parent=self, duration=3000,
+                    position=InfoBarPosition.TOP_RIGHT)
+        # Коллекция осталась в прежнем модуле: тянем лениво, иначе импорт
+        # закольцуется — тот модуль и сам берёт кое-что отсюда.
+        from ui.connect_mods_dialog import CollectionFetchWorker
+        self._collection_worker = CollectionFetchWorker(collection_id, self)
+        self._collection_worker.done.connect(self._on_collection_fetched)
+        self._collection_worker.start()
+
+    def _on_collection_fetched(self, child_ids: list[str], names: dict[str, str], error: str) -> None:
+        if error:
+            InfoBar.error(title=tr("collection.error", "Не удалось загрузить коллекцию"),
+                         content=error, parent=self, duration=6000,
+                         position=InfoBarPosition.TOP_RIGHT)
+            return
+
+        missing = [wid for wid in child_ids
+                  if not any(m.source == SOURCE_STEAM and m.workshop_id == wid
+                            for m in self.registry.all())]
+        if not missing:
+            found = [m for m in self.registry.all()
+                    if m.source == SOURCE_STEAM and m.workshop_id in child_ids]
+            self._connect_mods(found)
+            InfoBar.success(title=tr("collection.connected", "Коллекция подключена: {n} модов",
+                                     n=len(found)),
+                            content="", parent=self, duration=4000,
+                            position=InfoBarPosition.TOP_RIGHT)
+            return
+
+        from ui.connect_mods_dialog import CollectionDialog
+        dlg = CollectionDialog(child_ids, names, self.registry, self)
+        if dlg.exec():
+            self._connect_mods(dlg.found_mods)
+
+    def _connect_mods(self, mods: list[ModInfo]) -> None:
+        """Подключает моды в конец списка (клиент/сервер — по mod.is_server),
+        пропуская уже подключённые."""
+        added = 0
+        for mod in mods:
+            if self.registry.index_of(mod, self.preset.mods) is None \
+                    and self.registry.index_of(mod, self.preset.server_mods) is None:
+                (self.preset.server_mods if mod.is_server else self.preset.mods).append(mod.name)
+                added += 1
+        if added:
+            self.preset.save()
+            self._rebuild()
+            # у модов коллекции могут быть зависимости вне её состава
+            self._check_dependencies(mods)
     def _item_dbl(self, item: QTreeWidgetItem, column: int) -> None:
         if column == COL_NAME:
             mod = self._item_mod(item)
