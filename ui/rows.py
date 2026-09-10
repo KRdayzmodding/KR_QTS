@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QGridLayout, QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget,
@@ -180,6 +180,19 @@ class Columns(QWidget):
         self.active = [r for r in self.rows if r in rows]
         cols, self._cols = self._cols, 0
         self._relayout(cols or 1)
+
+    def minimumSizeHint(self):      # имя метода задаёт Qt
+        """Минимум — одна колонка, а не столько, сколько показано сейчас.
+
+        Иначе получается храповик: сетка из трёх колонок требует ширину трёх
+        колонок, страница перестаёт сужаться, событие сужения до сетки не
+        доходит — и она навсегда остаётся трёхколоночной. Окно при этом
+        сужается, а содержимое уезжает за рамку.
+        """
+        base = super().minimumSizeHint()
+        one = max((row.minimumSizeHint().width() for row in self.rows),
+                  default=base.width())
+        return QSize(min(one, base.width()), base.height())
 
     def resizeEvent(self, e):       # имя метода задаёт Qt
         super().resizeEvent(e)

@@ -139,7 +139,8 @@ class MainWindow(FluentWindow):
         # включая случай «следовать теме Windows».
         self._apply_icon()
         qconfig.themeChanged.connect(self._apply_icon)
-        self.resize(1060, 720)
+        self.resize(*tokens.WIN_MAIN)
+        self.setMinimumSize(*tokens.WIN_MAIN_MIN)
 
         self.log_server = LogWindow(tr("main.server_log", "Логи сервера"),
                                     accent="#2e7d32", banner_text="SERVER", key=SERVER)
