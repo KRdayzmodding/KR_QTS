@@ -1056,5 +1056,9 @@
   "params.extra": "Additionally",
   "params.extra_desc": "Arguments that are not in the list above.",
   "params.extra_ph": "For example: -cpuCount=4",
-  "mods.hint2": "The box on the left attaches the mod to the selected preset; «Server» sends it to -serverMod instead of -mod. Right-click a mod for sources, packing, flags, dependencies and its folder."
+  "mods.hint2": "The box on the left attaches the mod to the selected preset; «Server» sends it to -serverMod instead of -mod. Right-click a mod for sources, packing, flags, dependencies and its folder.",
+  "mods.library": "Library",
+  "mods.sets": "Sets",
+  "mods.details_on": "Show sizes and dates",
+  "mods.details_off": "Hide sizes and dates"
 }

@@ -1056,5 +1056,9 @@
   "params.extra": "Zusätzlich",
   "params.extra_desc": "Argumente, die oben nicht aufgeführt sind.",
   "params.extra_ph": "Zum Beispiel: -cpuCount=4",
-  "mods.hint2": "Das Kästchen links hängt den Mod an das gewählte Preset; «Server» schickt ihn nach -serverMod statt -mod. Rechtsklick auf einen Mod: Quellen, Packen, Flags, Abhängigkeiten und Ordner."
+  "mods.hint2": "Das Kästchen links hängt den Mod an das gewählte Preset; «Server» schickt ihn nach -serverMod statt -mod. Rechtsklick auf einen Mod: Quellen, Packen, Flags, Abhängigkeiten und Ordner.",
+  "mods.library": "Bibliothek",
+  "mods.sets": "Sätze",
+  "mods.details_on": "Größen und Daten zeigen",
+  "mods.details_off": "Größen und Daten verbergen"
 }

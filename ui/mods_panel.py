@@ -30,6 +30,7 @@ from qfluentwidgets import (
     PushButton, PrimaryPushButton, TransparentToolButton, TreeWidget, ListWidget, ComboBox,
     SearchLineEdit, BodyLabel, CaptionLabel, CheckBox, HyperlinkLabel,
     InfoBar, InfoBarPosition, IndeterminateProgressRing, FluentIcon as FIF, qconfig,
+    RoundMenu, Action,
 )
 
 from core import deps, packer, packlog, steam_api, steam_urls
@@ -688,35 +689,21 @@ class ModsPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
-        top = QHBoxLayout()
         self.preset = None          # пресет, к которому подключаются моды
+        self._details = False       # размеры и даты по умолчанию скрыты
         self._dep_workers: list = []
         self._collection_worker = None
 
+        # Библиотечные команды — в меню: добавить папки, назначить флаги и
+        # посмотреть скрытые нужно раз в месяц, а место они занимали рядом с
+        # тем, чем пользуются каждый запуск.
         self.b_refresh = PushButton(FIF.SYNC, tr("mods.refresh", "Обновить"))
         self.b_refresh.clicked.connect(self._refresh_clicked)
-        b_refresh = self.b_refresh
-        b_add_dir = PushButton(FIF.FOLDER_ADD, tr("mods.add_local", "Добавить локальные моды"))
-        b_add_dir.setToolTip(tr("mods.add_dir_tip",
-                                "Папка с @модами или одиночная @папка мода."))
-        b_add_dir.clicked.connect(self._add_folder)
-        b_hidden = PushButton(FIF.VIEW, tr("mods.hidden_btn", "Скрытые моды…"))
-        b_hidden.setToolTip(tr("mods.hidden_btn_tip",
-                               "Моды, убранные из списка через контекстное меню «Убрать из списка»."))
-        b_hidden.clicked.connect(self._open_hidden_mods)
-        b_flags = PushButton(FIF.PALETTE, tr("mods.flags_btn", "Флаги…"))
-        b_flags.setToolTip(tr("mods.flags_btn_tip",
-                              "Свои метки модов (название + цвет) — назначаются через ПКМ по моду."))
-        b_flags.clicked.connect(self._open_flags)
-        for b in (b_refresh, b_add_dir, b_hidden, b_flags):
-            top.addWidget(b)
-        top.addStretch(1)
-        # что именно читается прямо сейчас — иначе кнопка «Отменить» без
-        # признаков жизни выглядит как зависание
+        self.b_library = PushButton(FIF.MORE, tr("mods.library", "Библиотека"))
+        self.b_library.clicked.connect(self._library_menu)
+
         self.status = CaptionLabel("")
-        self.status.setStyleSheet("color:#888888;")
-        top.addWidget(self.status)
-        layout.addLayout(top)
+        self.status.setWordWrap(True)
 
         # Поиск и переключатель вида — в одной строке, прямо над заголовками
         # колонок: кнопка «Вид» физически рядом с тем, чем она управляет
@@ -732,29 +719,31 @@ class ModsPanel(QWidget):
         self.b_all.clicked.connect(lambda: self._set_all(True))
         self.b_none = PushButton(tr("mods.disable_all", "Выключить все"))
         self.b_none.clicked.connect(lambda: self._set_all(False))
-        self.b_save_set = PushButton(FIF.SAVE_AS, tr("mods.save_set", "Сохранить как набор…"))
-        self.b_save_set.clicked.connect(self._save_set)
-        # шеврон вместо галки — намекает, что кнопка открывает выбор из списка,
-        # а не сразу «подтверждает» что-то
-        self.b_apply_set = PushButton(FIF.CHEVRON_DOWN_MED, tr("mods.apply_set", "Выбрать набор"))
-        self.b_apply_set.clicked.connect(self._apply_set_menu)
-        self.b_collection = PushButton(FIF.CLOUD_DOWNLOAD,
-                                       tr("collection.connect_btn", "Подключить коллекцию…"))
-        self.b_collection.clicked.connect(self._connect_collection)
-        for b in (self.b_all, self.b_none, self.b_save_set, self.b_apply_set,
-                  self.b_collection):
+        # Три кнопки про наборы — одно меню: они об одном и том же, а рядом с
+        # ними стоит то, чем пользуются каждый запуск.
+        self.b_sets = PushButton(FIF.CHEVRON_DOWN_MED, tr("mods.sets", "Наборы"))
+        self.b_sets.clicked.connect(self._sets_menu)
+        self.b_save_set = self.b_sets
+        self.b_apply_set = self.b_sets
+        self.b_collection = self.b_sets
+        for b in (self.b_all, self.b_none, self.b_sets):
             b.setEnabled(False)         # пока пресет не задан, подключать некуда
             set_row.addWidget(b)
         set_row.addStretch(1)
+        set_row.addWidget(self.status)
         layout.addLayout(set_row)
 
-        self.b_view = PushButton(FIF.VIEW, tr("mods.view_list", "Вид: Список"))
-        self.b_view.setToolTip(tr("mods.view_tip",
-                                  "Переключить между деревом по источникам и плоским списком "
-                                  "с сортировкой по клику на заголовок колонки."))
-        self.b_view.clicked.connect(self._toggle_view)
-        search_row.addWidget(self.b_view)
+        # Фильтр и редкие команды — одним рядом: «Обновить» и «Библиотека»
+        # стояли отдельной строкой и съедали высоту ради двух кнопок. Вид
+        # списка переехал в меню «Библиотека», и второй кнопки для него нет:
+        # две двери в одно действие расходятся при первой же правке.
+        search_row = QHBoxLayout()
+        self.search = SearchLineEdit()
+        self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
+        self.search.textChanged.connect(lambda _t: self._apply_filter())
         search_row.addWidget(self.search, 1)
+        search_row.addWidget(self.b_refresh)
+        search_row.addWidget(self.b_library)
         layout.addLayout(search_row)
 
         self.tree = TreeWidget(self)
@@ -785,6 +774,7 @@ class ModsPanel(QWidget):
         # ещё до первого клика по заголовку — это переворачивало сортировку
         # по умолчанию (подключённые моды оказывались в конце, а не в начале)
         hdr.setSortIndicator(COL_NAME, Qt.SortOrder.AscendingOrder)
+        self._apply_details()
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemDoubleClicked.connect(self._item_dbl)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -914,9 +904,9 @@ class ModsPanel(QWidget):
         return out
 
     def _toggle_view(self) -> None:
+        # Подпись живёт в меню «Библиотека» и собирается при его открытии —
+        # отдельной кнопки, которую надо переименовывать, больше нет.
         self._flat_view = not self._flat_view
-        self.b_view.setText(tr("mods.view_list", "Вид: Список") if self._flat_view
-                            else tr("mods.view_tree", "Вид: Дерево"))
         self._rebuild(reset_expand=True)
 
     def _rebuild(self, reset_expand: bool = False) -> None:
@@ -1154,6 +1144,46 @@ class ModsPanel(QWidget):
                 content="", parent=self, duration=6000,
                 position=InfoBarPosition.TOP_RIGHT)
             self.presets_changed.emit()
+
+    def _library_menu(self) -> None:
+        """Редкие команды над библиотекой модов, а не над составом запуска."""
+        menu = RoundMenu(parent=self)
+        menu.addAction(Action(FIF.FOLDER_ADD, tr("mods.add_local", "Добавить локальные моды"),
+                              triggered=self._add_folder))
+        menu.addAction(Action(FIF.VIEW, tr("mods.hidden_btn", "Скрытые моды…"),
+                              triggered=self._open_hidden_mods))
+        menu.addAction(Action(FIF.PALETTE, tr("mods.flags_btn", "Флаги…"),
+                              triggered=self._open_flags))
+        menu.addSeparator()
+        menu.addAction(Action(
+            FIF.VIEW, tr("mods.view_list", "Вид: Список") if not self._flat_view
+            else tr("mods.view_tree", "Вид: Дерево"), triggered=self._toggle_view))
+        menu.addAction(Action(
+            FIF.TILES, tr("mods.details_off", "Скрыть размеры и даты") if self._details
+            else tr("mods.details_on", "Показать размеры и даты"),
+            triggered=self._toggle_details))
+        menu.exec(self.b_library.mapToGlobal(self.b_library.rect().bottomLeft()))
+
+    def _sets_menu(self) -> None:
+        menu = RoundMenu(parent=self)
+        menu.addAction(Action(FIF.SAVE_AS, tr("mods.save_set", "Сохранить как набор…"),
+                              triggered=self._save_set))
+        menu.addAction(Action(FIF.CHEVRON_DOWN_MED, tr("mods.apply_set", "Выбрать набор"),
+                              triggered=self._apply_set_menu))
+        menu.addSeparator()
+        menu.addAction(Action(FIF.CLOUD_DOWNLOAD,
+                              tr("collection.connect_btn", "Подключить коллекцию…"),
+                              triggered=self._connect_collection))
+        menu.exec(self.b_sets.mapToGlobal(self.b_sets.rect().bottomLeft()))
+
+    def _toggle_details(self) -> None:
+        """Размер, число PBO и дата — не то, по чему выбирают состав запуска."""
+        self._details = not self._details
+        self._apply_details()
+
+    def _apply_details(self) -> None:
+        for col in (COL_FOLDER, COL_SIZE, COL_PBO, COL_MODIFIED):
+            self.tree.setColumnHidden(col, not self._details)
 
     def set_preset(self, preset) -> None:
         """Пресет, к которому подключаются моды. None — подключать некуда."""
