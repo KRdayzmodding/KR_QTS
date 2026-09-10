@@ -1060,5 +1060,8 @@
   "mods.library": "Library",
   "mods.sets": "Sets",
   "mods.details_on": "Show sizes and dates",
-  "mods.details_off": "Hide sizes and dates"
+  "mods.details_off": "Hide sizes and dates",
+  "mods.rescan": "Rescan folders",
+  "mods.rescan_stop": "Cancel",
+  "mods.rescanning": "Reading folders: {n}…"
 }

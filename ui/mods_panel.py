@@ -697,8 +697,10 @@ class ModsPanel(QWidget):
         # Библиотечные команды — в меню: добавить папки, назначить флаги и
         # посмотреть скрытые нужно раз в месяц, а место они занимали рядом с
         # тем, чем пользуются каждый запуск.
-        self.b_refresh = PushButton(FIF.SYNC, tr("mods.refresh", "Обновить"))
-        self.b_refresh.clicked.connect(self._refresh_clicked)
+        # Отмена обхода: появляется рядом с прогрессом и только на время обхода.
+        self.b_cancel_scan = PushButton(FIF.CLOSE, tr("mods.rescan_stop", "Отменить"))
+        self.b_cancel_scan.clicked.connect(self._refresh_clicked)
+        self.b_cancel_scan.hide()
         self.b_library = PushButton(FIF.MORE, tr("mods.library", "Библиотека"))
         self.b_library.clicked.connect(self._library_menu)
 
@@ -731,6 +733,7 @@ class ModsPanel(QWidget):
             set_row.addWidget(b)
         set_row.addStretch(1)
         set_row.addWidget(self.status)
+        set_row.addWidget(self.b_cancel_scan)
         layout.addLayout(set_row)
 
         # Фильтр и редкие команды — одним рядом: «Обновить» и «Библиотека»
@@ -742,7 +745,6 @@ class ModsPanel(QWidget):
         self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
         self.search.textChanged.connect(lambda _t: self._apply_filter())
         search_row.addWidget(self.search, 1)
-        search_row.addWidget(self.b_refresh)
         search_row.addWidget(self.b_library)
         layout.addLayout(search_row)
 
@@ -816,16 +818,14 @@ class ModsPanel(QWidget):
         self._scan_worker = ScanWorker(self.settings, self)
         self._scan_worker.progress.connect(self._scan_progress)
         self._scan_worker.done.connect(self._scan_done)
-        self.b_refresh.setText(tr("mods.refresh_busy", "Отменить"))
-        self.b_refresh.setIcon(FIF.CLOSE)
+        self.b_cancel_scan.show()
         self._scan_worker.start()
 
     def _scan_progress(self, name: str) -> None:
-        self.status.setText(tr("mods.scanning", "Обновление: {n}…", n=name))
+        self.status.setText(tr("mods.rescanning", "Читаю папки: {n}…", n=name))
 
     def _scan_done(self, registry: ModRegistry | None) -> None:
-        self.b_refresh.setText(tr("mods.refresh", "Обновить"))
-        self.b_refresh.setIcon(FIF.SYNC)
+        self.b_cancel_scan.hide()
         self.status.setText("")
         if registry is None:        # отменено или диск отвалился
             return
@@ -1148,6 +1148,8 @@ class ModsPanel(QWidget):
     def _library_menu(self) -> None:
         """Редкие команды над библиотекой модов, а не над составом запуска."""
         menu = RoundMenu(parent=self)
+        menu.addAction(Action(FIF.SYNC, tr("mods.rescan", "Пересканировать папки"),
+                              triggered=self._refresh_clicked))
         menu.addAction(Action(FIF.FOLDER_ADD, tr("mods.add_local", "Добавить локальные моды"),
                               triggered=self._add_folder))
         menu.addAction(Action(FIF.VIEW, tr("mods.hidden_btn", "Скрытые моды…"),

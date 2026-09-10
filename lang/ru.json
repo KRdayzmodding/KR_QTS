@@ -1060,5 +1060,8 @@
   "mods.library": "Библиотека",
   "mods.sets": "Наборы",
   "mods.details_on": "Показать размеры и даты",
-  "mods.details_off": "Скрыть размеры и даты"
+  "mods.details_off": "Скрыть размеры и даты",
+  "mods.rescan": "Пересканировать папки",
+  "mods.rescan_stop": "Отменить",
+  "mods.rescanning": "Читаю папки: {n}…"
 }

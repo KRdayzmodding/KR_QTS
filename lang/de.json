@@ -1060,5 +1060,8 @@
   "mods.library": "Bibliothek",
   "mods.sets": "Sätze",
   "mods.details_on": "Größen und Daten zeigen",
-  "mods.details_off": "Größen und Daten verbergen"
+  "mods.details_off": "Größen und Daten verbergen",
+  "mods.rescan": "Ordner neu einlesen",
+  "mods.rescan_stop": "Abbrechen",
+  "mods.rescanning": "Lese Ordner: {n}…"
 }
