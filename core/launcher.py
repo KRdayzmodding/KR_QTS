@@ -301,6 +301,7 @@ class LaunchWorker(QThread):
     mods_checked = Signal(list, list)   # что обновляем и что проверить не вышло
     mods_updated = Signal()         # обновление закончилось успехом
     mods_failed = Signal(str)       # обновление сорвалось, причина
+    starting = Signal()             # подготовка кончилась, поднимаем процессы
     pack_plan = Signal(list)        # имена pbo, которые предстоит собрать
     pack_status = Signal(str, str, int, int, int)  # pbo, состояние, мс, warnings, errors
     server_started = Signal(int)    # pid
@@ -437,17 +438,20 @@ class LaunchWorker(QThread):
                              "Запуск идёт с тем, что собрано."), "warning")
         elif s.repack_before_launch:
             plan = packer.stale_mods(selected, force=self.rebuild)
-            # весь список объявляем заранее — сколько PBO предстоит собрать
-            # должно быть видно сразу, а не по мере готовности
-            self.pack_plan.emit([packer.pbo_for_source(m, src).name
-                                 for m, stale in plan for src in stale])
             if plan:
                 # Раньше состав перепаковки человек видел в окне предстартовой
                 # проверки. Окно убрано — но след в журнале нужен: по нему
                 # потом понятно, что именно пересобиралось перед этим запуском.
+                # Строка идёт раньше таблицы: таблица встаёт в журнал на своё
+                # место и остаётся там, а строки дописываются в конец — и
+                # заголовок оказывался под собственным содержимым.
                 self.log.emit(tr("launch.repacking", "Запаковка ({n}): {mods}",
                                  n=sum(len(st) for _, st in plan),
                                  mods=", ".join(m.name for m, _ in plan)), "info")
+            # весь список объявляем заранее — сколько PBO предстоит собрать
+            # должно быть видно сразу, а не по мере готовности
+            self.pack_plan.emit([packer.pbo_for_source(m, src).name
+                                 for m, stale in plan for src in stale])
             for mod, stale in plan:
                 mod_failed = False
                 for src in stale:
@@ -558,6 +562,11 @@ class LaunchWorker(QThread):
             self.failed.emit(tr("launch.pack_wait_failed",
                                 "Запаковка не завершилась — запуск отменён."))
             return
+
+        # Подготовка кончилась — с этого места в журнале заводится блок
+        # состояния. Раньше он заводился в начале запуска и всё, что делалось
+        # до старта процессов, оказывалось под ним.
+        self.starting.emit()
 
         # 5. Сервер
         server_proc = None

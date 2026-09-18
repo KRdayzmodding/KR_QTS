@@ -1063,5 +1063,12 @@
   "mods.details_off": "Größen und Daten verbergen",
   "mods.rescan": "Ordner neu einlesen",
   "mods.rescan_stop": "Abbrechen",
-  "mods.rescanning": "Lese Ordner: {n}…"
+  "mods.rescanning": "Lese Ordner: {n}…",
+  "main.log_stopped_why": "Status: {n} ist aus — {why}",
+  "stop.why_user": "aus der Anwendung gestoppt",
+  "stop.why_restart": "Neustart auf Anforderung",
+  "stop.why_schedule": "geplanter Neustart",
+  "stop.why_forced": "hat sich nicht selbst beendet, erzwungen beendet",
+  "stop.why_crash": "abgestürzt: {e}",
+  "stop.why_gone": "außerhalb der Anwendung geschlossen oder ohne Bericht abgestürzt"
 }

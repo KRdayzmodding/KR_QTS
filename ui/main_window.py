@@ -44,6 +44,14 @@ from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
 from ui.packlog_window import PackLogWindow
 from ui.theme import app_icon, link_html, outside_icon
 
+# Почему сторона выключилась. Записывается в момент, когда об остановке просим
+# мы сами; всё остальное разбирается по crash-логу уже постфактум.
+STOP_USER = "user"
+STOP_RESTART = "restart"
+STOP_SCHEDULE = "schedule"
+STOP_FORCED = "forced"
+
+
 # Пауза перед показом накопившихся сообщений: за неё прилетает вся пачка
 # событий одного обвала, и человек читает их одним окном, а не вереницей.
 _ALERT_MERGE_MS = 400
@@ -93,6 +101,13 @@ class MainWindow(FluentWindow):
         self._down_notice: tuple[str, bool] | None = None
         # заказан ли перезапуск нажатием кнопки во время выключения
         self._restart_queued = False
+        # почему сторона выключается — заполняем в момент, когда сами просим об
+        # остановке. Чему причины не нашлось, то либо упало, либо закрыто мимо
+        # приложения, и это разные новости для человека.
+        self._stop_reason: dict[str, str] = {}
+        # открыт ли прогон: от запуска до того, как всё уляжется. По закрытию
+        # в журнал уходит линия — иначе запуски и падения идут сплошной лентой
+        self._sequence_open = False
         # сторож сервера: перезапуск по расписанию и подъём после падения
         from core.watchdog import ServerWatch
         self._watch = ServerWatch()
@@ -609,9 +624,29 @@ class MainWindow(FluentWindow):
     # ------------------------------------------------------------------ запуск
 
     def _append_log(self, msg: str, level: str = "info") -> None:
+        """Строка журнала: время, потом сообщение.
+
+        Без времени по журналу нельзя ответить на простые вопросы отладки:
+        сколько заняла запаковка, через сколько после старта сервер стал готов,
+        сколько прожил клиент до падения. Секунд достаточно — миллисекунды в
+        журнале нечитаемы, а длительность каждого PBO видна в таблице
+        запаковки. Время ставим в момент записи строки: строки, подхваченные
+        из логов игры, иначе получили бы чужое.
+        """
         color = tokens.level_colors().get(level, tokens.color("console_fg"))
+        stamp = time.strftime("%H:%M:%S")
         self.launch_page.launch_log.appendHtml(
+            f'<span style="color:{tokens.color("log_time")};">{stamp}</span>&nbsp;'
             f'<span style="color:{color};">{html.escape(msg)}</span>')
+
+    def _append_rule(self) -> None:
+        """Граница прогона: линия после последней строки.
+
+        Пустая строка границей не читается и тратит высоту, которой в журнале
+        мало, поэтому именно линия.
+        """
+        self.launch_page.launch_log.appendHtml(
+            f'<span style="color:{tokens.color("divider")};">{"─" * 60}</span>')
 
     def _hide_window_changed(self, on: bool) -> None:
         """Запоминаем выбор: он относится к следующему запуску, а не к разовому."""
@@ -957,6 +992,7 @@ class MainWindow(FluentWindow):
         self._bind_log_dirs(adopt=False)
         self._starting = True
         self._launch_logged = False
+        self._sequence_open = True
         self._update_launch_button()
         if keep:
             self._append_log(tr("main.relaunching", "— Запуск: {s} «{n}» ({b}) —",
@@ -966,10 +1002,15 @@ class MainWindow(FluentWindow):
             self._append_log(tr("main.launching", "— Запуск «{n}» ({b}) —", n=p.name, b=branch))
         self._log_launch_summary(p, cfg_path)
         # keep — стороны, которые уже работают: их строка в блоке остаётся как
-        # есть, иначе живой сервер отобразился бы «не запущен»
-        self.launch_status.start(
-            self._server_name(p, cfg_path) if want_srv else "",
-            self._client_name(p) if want_cli else "", keep=keep)
+        # есть, иначе живой сервер отобразился бы «не запущен».
+        # Сам блок заводится не здесь, а когда подготовка кончится: он стоит в
+        # журнале на своём месте и переписывается там же, поэтому всё, что
+        # происходит до старта процессов, иначе оказывается под ним.
+        self._status_args = (self._server_name(p, cfg_path) if want_srv else "",
+                             self._client_name(p) if want_cli else "", keep)
+        # блок прошлого запуска с этого момента — история: сорвись подготовка,
+        # такт состояния иначе переписывал бы его строки состоянием нового
+        self.launch_status.detach()
         # RPT читаем с самого начала: строки про память слоёв движок пишет в
         # первые секунды, до того как порт будет занят
         if want_srv:
@@ -991,6 +1032,7 @@ class MainWindow(FluentWindow):
         self.worker.mods_checked.connect(self._mods_checked)
         self.worker.mods_updated.connect(self._mods_updated)
         self.worker.mods_failed.connect(self._mods_failed)
+        self.worker.starting.connect(self._status_block_start)
         self.worker.pack_plan.connect(self.pack_table.start)
         self.worker.pack_plan.connect(self.remember_packed)
         self.worker.pack_status.connect(self.pack_table.set_status)
@@ -1002,6 +1044,14 @@ class MainWindow(FluentWindow):
         self.worker.cancelled.connect(self._launch_cancelled)
         self.worker.start()
         return ""
+
+    def _status_block_start(self) -> None:
+        """Заводит блок состояния в журнале — после подготовки, перед стартом."""
+        names = getattr(self, "_status_args", None)
+        if not names:
+            return
+        server_name, client_name, keep = names
+        self.launch_status.start(server_name, client_name, keep=keep)
 
     def _server_name(self, preset: ServerPreset, cfg_path: str | None) -> str:
         """Название сервера так, как его увидят игроки.
@@ -1523,6 +1573,7 @@ class MainWindow(FluentWindow):
             started = True
             touched_server = touched_server or side == SERVER
             ready = self.side_state(side) == self.ST_RUN
+            self._stop_reason[attr] = STOP_RESTART if self._restart_queued else STOP_USER
             if ready and soft and winhide.ask_close(pid):
                 self.launch_status.set_process_state(side, PROC_STOPPING)
                 self._stopping[attr] = time.monotonic()
@@ -1637,6 +1688,7 @@ class MainWindow(FluentWindow):
         pid = self.server_pid
         if not pid:
             return
+        self._stop_reason["server_pid"] = STOP_SCHEDULE
         if winhide.ask_close(pid):
             self.launch_status.set_process_state(SERVER, PROC_STOPPING)
             self._stopping["server_pid"] = time.monotonic()
@@ -1845,6 +1897,7 @@ class MainWindow(FluentWindow):
                 self._append_log(tr("main.log_stop_forced",
                                     "{n} не закрылся сам — завершаем принудительно",
                                     n=self._side_name(side)), "warning")
+                self._stop_reason[attr] = STOP_FORCED
                 kill_pid(pid)
                 setattr(self, attr, None)
                 self._stopping.pop(attr, None)
@@ -1861,14 +1914,57 @@ class MainWindow(FluentWindow):
             was = self._alive.get(attr, False)
             alive = bool(pid) and psutil.pid_exists(pid)
             if was and not alive:
-                self._append_log(tr("main.log_stopped", "Статус: {n} отключён", n=label),
-                                 "warning")
+                side = SERVER if attr == "server_pid" else CLIENT
+                why, level = self._stop_reason_text(attr, side)
+                self._append_log(tr("main.log_stopped_why",
+                                    "Статус: {n} отключён — {why}", n=label, why=why),
+                                 level)
                 # статус блока обновит _update_status по состоянию процесса —
                 # здесь только глушим наблюдателя за логами
                 self.monitors[SERVER if attr == "server_pid" else CLIENT].stop()
                 if attr == "server_pid":
                     self._console_stop()   # сервера нет — читать его консоль нечем
             self._alive[attr] = alive
+
+    def _stop_reason_text(self, attr: str, side: str) -> tuple[str, str]:
+        """Почему стороны больше нет — словами и уровнем строки.
+
+        Причину, записанную при нашей же просьбе об остановке, забираем
+        насовсем: следующий раз будет своя. Если причины нет, смотрим crash-лог
+        этого запуска: он и отличает падение от закрытия мимо приложения. А вот
+        «завис» здесь не появится — отзывчивость мы не проверяем, и такое слово
+        было бы догадкой.
+        """
+        why = self._stop_reason.pop(attr, "")
+        if why == STOP_USER:
+            return tr("stop.why_user", "остановлен из приложения"), "info"
+        if why == STOP_RESTART:
+            return tr("stop.why_restart", "перезапуск по просьбе"), "info"
+        if why == STOP_SCHEDULE:
+            return tr("stop.why_schedule", "перезапуск по расписанию"), "info"
+        if why == STOP_FORCED:
+            return tr("stop.why_forced", "не закрылся сам, завершён принудительно"), "warning"
+        crash = self.launch_status.sides[side].crash
+        if crash is not None:
+            return tr("stop.why_crash", "упал: {e}", e=crash.summary()), "error"
+        return tr("stop.why_gone", "закрыт мимо приложения или упал без отчёта"), "warning"
+
+    def _close_sequence(self) -> None:
+        """Прогон кончился — отбиваем его линией.
+
+        Прогон открывается запуском и закрывается, когда не осталось ни живых
+        процессов, ни идущей подготовки. Без отбивки следующий запуск
+        приклеивается к предыдущему падению, и границу приходится искать
+        глазами по тексту.
+        """
+        if not self._sequence_open:
+            return
+        if (self._starting or self.server_running() or self.client_running()
+                or self._stopping
+                or (self.worker is not None and self.worker.isRunning())):
+            return
+        self._sequence_open = False
+        self._append_rule()
 
     def _update_sources_button(self) -> None:
         """Запаковывать нечего, пока ни одному моду не заданы сорсы.
@@ -1891,6 +1987,7 @@ class MainWindow(FluentWindow):
         self._watch_server()
         self._watch_down()
         self._log_stopped()
+        self._close_sequence()
         self._update_sources_button()
         # Блок в журнале узнаёт о процессах отсюда же, а не отдельным путём.
         # Просьба закрыться важнее живости: процесс после неё ещё существует,

@@ -1063,5 +1063,12 @@
   "mods.details_off": "Скрыть размеры и даты",
   "mods.rescan": "Пересканировать папки",
   "mods.rescan_stop": "Отменить",
-  "mods.rescanning": "Читаю папки: {n}…"
+  "mods.rescanning": "Читаю папки: {n}…",
+  "main.log_stopped_why": "Статус: {n} отключён — {why}",
+  "stop.why_user": "остановлен из приложения",
+  "stop.why_restart": "перезапуск по просьбе",
+  "stop.why_schedule": "перезапуск по расписанию",
+  "stop.why_forced": "не закрылся сам, завершён принудительно",
+  "stop.why_crash": "упал: {e}",
+  "stop.why_gone": "закрыт мимо приложения или упал без отчёта"
 }
