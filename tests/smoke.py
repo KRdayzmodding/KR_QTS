@@ -170,6 +170,46 @@ def screens(lang: str = "ru") -> None:
                   "" if wd <= PAGE_MAX_W else f"требует {wd} px{note}")
 
 
+def flashes() -> None:
+    """Виджет без родителя, которому сказали показаться, — окно верхнего уровня.
+
+    На экране оно мигает и пропадает, когда виджет кладут в раскладку. Одна
+    строка настроек — одна вспышка; при сборке главного окна их набралось 113,
+    и выглядело это как рябь из окон при каждом запуске программы. Глазами
+    такое не ловится: живут вспышки доли секунды. Поэтому считаем их сами.
+    """
+    print("Мигающие окна:")
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QApplication, QWidget
+    app = QApplication.instance() or QApplication([])
+
+    class Catcher(QObject):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        def eventFilter(self, obj, event):      # имя метода задаёт Qt
+            if (event.type() == QEvent.Type.Show and isinstance(obj, QWidget)
+                    and obj.isWindow()):
+                self.seen.append(type(obj).__name__)
+            return False
+
+    catcher = Catcher()
+    app.installEventFilter(catcher)
+    from core.settings import Settings
+    from ui.main_window import MainWindow
+    win = MainWindow(Settings.load())
+    for _ in range(20):
+        app.processEvents()
+    app.removeEventFilter(catcher)
+    win.deleteLater()
+    # Само главное окно показаться не успевает (show ему не говорили), так что
+    # честный ответ — ноль. Считаем всё, что всплыло сверх него.
+    extra = [n for n in catcher.seen if n != "MainWindow"]
+    check(f"при сборке главного окна всплыло окон: {len(extra)}", not extra,
+          ", ".join(sorted(set(extra))))
+
+
 def external() -> None:
     """Внешнее управление: грамматика и справка.
 
@@ -223,6 +263,7 @@ def external() -> None:
 def main() -> int:
     dictionaries()
     external()
+    flashes()
     for lang in LANGS:
         screens(lang)
     print()

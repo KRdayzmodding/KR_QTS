@@ -78,13 +78,16 @@ def setting_row(title: str, desc: str, control, prefix=None) -> QWidget:
     # подключённых модов, режим запаковки), и добавлять её потом значило бы
     # пересобирать строку.
     row.desc_label = shrink(CaptionLabel(desc))
-    row.desc_label.setVisible(bool(desc))
     text.addWidget(row.desc_label)
     holder = QWidget()
     holder.setLayout(text)
     holder.setMinimumWidth(TEXT_MIN)
     lay.addWidget(holder, 1)
     lay.addWidget(slot(control), 0, Qt.AlignmentFlag.AlignVCenter)
+    # Видимость — в самом конце, когда у подписи уже есть родитель. Виджет без
+    # родителя, которому сказали показаться, — это окно верхнего уровня: оно
+    # успевает мигнуть на экране и пропасть, когда его кладут в раскладку.
+    row.desc_label.setVisible(bool(desc))
     return row
 
 
@@ -174,12 +177,22 @@ class Columns(QWidget):
                                     0, c * 2 - 1, max(rows_count, 1), 1)
 
     def set_active(self, rows) -> None:
-        """Показать только эти строки — остальные убрать из сетки."""
-        for row in self.rows:
-            row.setVisible(row in rows)
+        """Показать только эти строки — остальные убрать из сетки.
+
+        Сначала перекладываем сетку, потом трогаем видимость: строку нам могли
+        отдать списком, ни разу не положив в раскладку (так делает панель
+        параметров), и тогда у неё нет родителя. Сказать такой строке
+        «покажись» — значит завести окно верхнего уровня, которое мигнёт на
+        экране и исчезнет. При тридцати строках это тридцать вспышек на старте.
+        """
         self.active = [r for r in self.rows if r in rows]
         cols, self._cols = self._cols, 0
         self._relayout(cols or 1)
+        for row in self.rows:
+            if row.parentWidget() is not self:
+                # не попала в сетку — всё равно наша, а не самостоятельное окно
+                row.setParent(self)
+            row.setVisible(row in rows)
 
     def minimumSizeHint(self):      # имя метода задаёт Qt
         """Минимум — одна колонка, а не столько, сколько показано сейчас.

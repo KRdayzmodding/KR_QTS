@@ -65,7 +65,9 @@ class PathRow(QVBoxLayout):
             row.addWidget(self.install_btn)
         self.addLayout(row)
 
-        self.status = CaptionLabel("")
+        # Родитель сразу: раскладка ещё не прикреплена к странице, и подпись
+        # без родителя, которой скажут показаться, мигнёт отдельным окном.
+        self.status = CaptionLabel("", parent)
         self.status.setWordWrap(True)
         self.status.hide()
         self.addWidget(self.status)
