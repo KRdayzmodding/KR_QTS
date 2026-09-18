@@ -105,9 +105,12 @@ class LaunchInterface(QWidget):
         layout.addWidget(TitleLabel(tr("main.tab_launch", "Запуск")))
         layout.addLayout(self._preset_row())
         layout.addWidget(self._hero())
+        # Порядок — по ходу работы: сперва какой это сервер (настройки запуска
+        # и его конфиг), потом с чем он поднимается (моды), потом чем их
+        # собрать перед стартом (запаковка).
+        layout.addWidget(self._setup_card())
         layout.addWidget(self._mods_card())
         layout.addWidget(self._pack_card())
-        layout.addWidget(self._setup_card())
         layout.addLayout(self._journal_head())
         layout.addWidget(self._journal(), 1)
 

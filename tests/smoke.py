@@ -38,7 +38,10 @@ KNOWN_WIDE: set[str] = set()
 # Страницы живут внутри главного окна и делят ширину с панелью навигации.
 # Отдельные окна (логи, запаковка) к этому бюджету отношения не имеют: их
 # растягивают на пол-экрана, и это нормально.
-PAGES = {"страница настроек", "редактор конфига"}
+PAGES = {"страница настроек"}
+# Карточки внутри страниц: с них спрашивается минимальная ширина — влезть в
+# узкое окно, а не желаемая, которую им всё равно задаёт страница.
+CARDS = {"редактор конфига"}
 
 _failures: list[str] = []
 
@@ -102,7 +105,7 @@ def screens(lang: str = "ru") -> None:
     s = Settings.load()
     preset = ServerPreset(name="smoke_test", mission="smoke.chernarusplus")
 
-    from ui.cfg_editor import CfgEditor
+    from ui.cfg_editor import CfgCard
     from ui.custom_map_dialog import CustomMapDialog
     from ui.mission_picker import MapPicker
     from ui.packlog_window import PackLogWindow
@@ -117,7 +120,7 @@ def screens(lang: str = "ru") -> None:
 
     cases = {
         "страница настроек": lambda: SettingsPage(s),
-        "редактор конфига": CfgEditor,
+        "редактор конфига": CfgCard,
         "выбор карты": MapPicker,
         "своя карта": lambda: CustomMapDialog(None),
         "настройки pboProject": lambda: PboProjectDialog(s.pack_flags, s.clean_meta),
@@ -153,6 +156,10 @@ def screens(lang: str = "ru") -> None:
         if isinstance(w, QDialog):
             check(f"{lang}/{name}: {wd}x{h} в бюджете {DIALOG_MAX_W}x{DIALOG_MAX_H}",
                   h <= DIALOG_MAX_H and wd <= DIALOG_MAX_W)
+        elif name in CARDS:
+            mw = w.minimumSizeHint().width()
+            check(f"{lang}/{name}: минимум {mw} px не больше {PAGE_MAX_W}",
+                  mw <= PAGE_MAX_W, "" if mw <= PAGE_MAX_W else f"требует {mw} px")
         elif name in PAGES:
             # Печатаем и уложившиеся: иначе «ничего не сказано» неотличимо от
             # «проверка не запускалась», а список известных превышений должен

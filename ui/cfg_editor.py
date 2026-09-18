@@ -17,12 +17,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, CheckBox, ComboBox, InfoBar, InfoBarPosition,
-    LineEdit, PrimaryPushButton, PushButton, SearchLineEdit, SmoothScrollArea,
-    StrongBodyLabel,
+    CaptionLabel, CheckBox, ComboBox, InfoBar, InfoBarPosition,
+    LineEdit, PushButton, SearchLineEdit, StrongBodyLabel,
     SwitchButton, FluentIcon as FIF,
 )
 
@@ -242,132 +241,16 @@ class CfgKeys(QWidget):
         return {name: row.value() for name, row in self.rows.items()}
 
 
-class CfgEditor(QWidget):
-    """Страница редактора: файл, кодировка, сохранение — вокруг списка ключей."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.cfg: ServerCfg | None = None
-        self._path: Path | None = None
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(tokens.SPACE_L, tokens.SPACE_L,
-                                  tokens.SPACE_L, tokens.SPACE_L)
-        layout.setSpacing(tokens.SPACE_S)
-
-        top = QHBoxLayout()
-        top.setSpacing(tokens.SPACE_S)
-        # Путь длинный, и требовать под него ширину нельзя: окно из-за одной
-        # подписи начинало требовать почти тысячу пикселей.
-        self.path_label = shrink(BodyLabel(tr("cfg.no_file", "Конфиг не загружен")))
-        self.enc_label = BodyLabel("")
-        self.enc_label.setStyleSheet(f"color:{tokens.color('warning')};")
-        self.unsaved = CaptionLabel("")
-        self.unsaved.setStyleSheet(f"color:{tokens.color('warning')};")
-        btn_reload = PushButton(FIF.SYNC, tr("cfg.reload", "Перечитать"))
-        btn_reload.clicked.connect(self.reload)
-        btn_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
-        btn_save.clicked.connect(self.save)
-        top.addWidget(self.path_label, 1)
-        top.addWidget(self.enc_label)
-        top.addWidget(self.unsaved)
-        top.addWidget(btn_reload)
-        top.addWidget(btn_save)
-        layout.addLayout(top)
-
-        # Содержимое в прокрутке: 67 строк в окно не помещаются ни при какой
-        # ширине, а распирать окно до высоты содержимого нельзя.
-        scroll = SmoothScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(SmoothScrollArea.Shape.NoFrame)
-        # Вбок страница не ездит никогда: содержимое перекладывается в меньшее
-        # число колонок, а не уезжает за край. Иначе внизу появляется вторая
-        # полоса прокрутки, и до правого контрола надо доскроллить.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}"
-                             " QWidget#cfgInner{background:transparent;}")
-        inner = QWidget()
-        inner.setObjectName("cfgInner")
-        inner_box = QVBoxLayout(inner)
-        # справа — место под полосу прокрутки: без него контролы правой
-        # колонки упираются в неё и обрезаются
-        inner_box.setContentsMargins(0, 0, tokens.SPACE_XL, 0)
-        inner_box.setSpacing(tokens.SPACE_XS)
-        self.keys = CfgKeys()
-        self.keys.changed.connect(self._touch)
-        inner_box.addWidget(self.keys)
-        inner_box.addStretch(1)
-        scroll.setWidget(inner)
-        layout.addWidget(scroll, 1)
-
-        hint = CaptionLabel(tr(
-            "cfg.hint2",
-            "Снятая галка означает, что ключа в файле нет и сервер возьмёт своё "
-            "умолчание. Комментарии и порядок строк сохраняются, файл пишется "
-            "в UTF-8 без BOM."))
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-    def _touch(self) -> None:
-        self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
-
-    # ---------------------------------------------------------------- данные
-
-    def set_path(self, path: Path | None) -> None:
-        self._path = path
-        self.reload()
-
-    def reload(self) -> None:
-        self.cfg = None
-        self.enc_label.setText("")
-        self.unsaved.setText("")
-        if not self._path or not self._path.is_file():
-            self.path_label.setText(tr("cfg.no_file", "Конфиг не загружен"))
-            self.keys.load({})
-            return
-        try:
-            self.cfg = ServerCfg(self._path)
-        except OSError as e:
-            self.path_label.setText(str(e))
-            return
-        self.path_label.setText(str(self._path))
-        if self.cfg.encoding != "utf-8":
-            self.enc_label.setText(tr("cfg.bad_enc",
-                                      "Кодировка {enc} — при сохранении станет UTF-8 без BOM",
-                                      enc=self.cfg.encoding))
-        self.keys.load(self.cfg.values())
-
-    def save(self) -> None:
-        if not self.cfg:
-            return
-        from core.launcher import dayz_running
-        if dayz_running():
-            InfoBar.warning(title=tr("cfg.save_busy", "Сервер запущен — сохранение отменено"),
-                            content=tr("cfg.save_busy_body",
-                                       "Остановите сервер: изменения cfg он всё равно не "
-                                       "подхватит на лету, а при выходе может перезаписать файл."),
-                            parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
-            return
-        try:
-            self.cfg.apply(self.keys.wanted())
-            self.cfg.save()
-        except OSError as e:
-            InfoBar.error(title=tr("cfg.save_err_title", "Ошибка сохранения"), content=str(e),
-                          parent=self, duration=5000, position=InfoBarPosition.TOP_RIGHT)
-            return
-        self.enc_label.setText("")
-        self.unsaved.setText("")
-        InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
-                        parent=self, duration=3000, position=InfoBarPosition.TOP_RIGHT)
-
-
 class CfgCard(QWidget):
     """Конфиг сервера внутри карточки на «Запуске».
 
-    Тот же список ключей, что на отдельной странице, но без пути и кодировки:
-    файл здесь и так известен — он принадлежит выбранному пресету. Кнопка
-    сохранения своя: конфиг это файл, и писать его на каждое нажатие тумблера
-    нельзя.
+    Кнопка сохранения своя: конфиг это файл, и писать его на каждое нажатие
+    тумблера нельзя.
+
+    Раньше рядом жила отдельная страница с тем же списком ключей — второй вход
+    в одно и то же место, лишний пункт в панели разделов и лишний переход. От
+    неё сюда переехало то, чего в карточке не было: имя файла, который сейчас
+    правим, предупреждение о кодировке и «Перечитать».
     """
 
     def __init__(self, parent=None):
@@ -381,39 +264,79 @@ class CfgCard(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(tokens.SPACE_XS)
-        head.addWidget(StrongBodyLabel(tr("cfg.card_title",
-                                          "Конфиг сервера (serverDZ.cfg)")))
+        # Заголовок ужимаем: в немецком он просит 490 px и в одиночку держал
+        # минимальную ширину всей карточки выше бюджета страницы.
+        head.addWidget(shrink(StrongBodyLabel(tr("cfg.card_title",
+                                                 "Конфиг сервера (serverDZ.cfg)"))), 1)
         self.unsaved = CaptionLabel("")
         self.unsaved.setStyleSheet(f"color:{tokens.color('warning')};")
         head.addWidget(self.unsaved)
         head.addStretch(1)
+        self.btn_reload = PushButton(FIF.SYNC, tr("cfg.reload", "Перечитать"))
+        self.btn_reload.clicked.connect(self.reload)
+        head.addWidget(self.btn_reload)
         self.btn_save = PushButton(FIF.SAVE, tr("common.save", "Сохранить"))
         self.btn_save.clicked.connect(self.save)
         head.addWidget(self.btn_save)
         box.addWidget(Rule())
         box.addLayout(head)
 
+        # Какой файл правим — видно без наведения мыши: конфигов у человека
+        # столько же, сколько пресетов, и правка не того файла обнаруживается
+        # только на запуске.
+        self.path_label = shrink(CaptionLabel(tr("cfg.no_file", "Конфиг не загружен")))
+        box.addWidget(self.path_label)
+        self.enc_label = shrink(CaptionLabel(""))
+        self.enc_label.setStyleSheet(f"color:{tokens.color('warning')};")
+        self.enc_label.setVisible(False)
+        box.addWidget(self.enc_label)
+
         self.keys = CfgKeys()
         self.keys.changed.connect(self._touch)
         box.addWidget(self.keys)
+
+        hint = shrink(CaptionLabel(tr(
+            "cfg.hint2",
+            "Снятая галка означает, что ключа в файле нет и сервер возьмёт своё "
+            "умолчание. Комментарии и порядок строк сохраняются, файл пишется "
+            "в UTF-8 без BOM.")))
+        box.addWidget(hint)
 
     def _touch(self) -> None:
         self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
 
     def set_path(self, path: Path | None) -> None:
-        self._path = path
+        self._path = Path(path) if path else None
+        self.reload()
+
+    def reload(self) -> None:
+        """Читает файл заново — и при смене пресета, и по кнопке.
+
+        Кнопка нужна потому, что конфиг правят не только отсюда: редактор
+        текста, другой инструмент, наш же ярлык. Без неё карточка показывала бы
+        то, чего в файле уже нет, до самой смены пресета.
+        """
         self.unsaved.setText("")
+        self.enc_label.setVisible(False)
         self.cfg = None
-        if not path or not Path(path).is_file():
+        if not self._path or not self._path.is_file():
+            self.path_label.setText(tr("cfg.no_file", "Конфиг не загружен"))
             self.keys.load({})
             self.setEnabled(False)
             return
         self.setEnabled(True)
         try:
-            self.cfg = ServerCfg(Path(path))
-        except OSError:
+            self.cfg = ServerCfg(self._path)
+        except OSError as e:
+            self.path_label.setText(str(e))
             self.keys.load({})
             return
+        self.path_label.setText(str(self._path))
+        if self.cfg.encoding != "utf-8":
+            self.enc_label.setText(tr("cfg.bad_enc",
+                                      "Кодировка {enc} — при сохранении станет UTF-8 без BOM",
+                                      enc=self.cfg.encoding))
+            self.enc_label.setVisible(True)
         self.keys.load(self.cfg.values())
 
     def save(self) -> None:
@@ -437,6 +360,7 @@ class CfgCard(QWidget):
                           position=InfoBarPosition.TOP_RIGHT)
             return
         self.unsaved.setText("")
+        self.enc_label.setVisible(False)
         InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
                         parent=self.window(), duration=3000,
                         position=InfoBarPosition.TOP_RIGHT)

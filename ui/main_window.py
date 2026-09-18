@@ -30,7 +30,6 @@ from core.settings import (
 from core.steam_urls import SETTINGS_APPS
 from core.version import APP_NAME, VERSION
 from ui import tokens
-from ui.cfg_editor import CfgEditor
 from ui.launch_page import LaunchInterface
 from ui.log_window import LogWindow
 from ui.mods_panel import ModsPanel
@@ -187,15 +186,12 @@ class MainWindow(FluentWindow):
         self.packlog_windows = {k: PackLogWindow(k) for k in packlog.KINDS}
         self.mods_panel.pack_table = self.pack_table
         self.mods_panel.packed_cb = self.remember_packed
-        self.cfg_editor = CfgEditor()
-        self.cfg_editor.setObjectName("cfgInterface")
         self.settings_page = SettingsPage(
             settings, on_saved=self._settings_saved,
             is_busy=lambda: self.server_running() or self.client_running())
         self.settings_page.setObjectName("settingsInterface")
 
         self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
-        self.addSubInterface(self.cfg_editor, FIF.DOCUMENT, tr("main.tab_cfg", "Конфиг сервера"))
         self.addSubInterface(self.settings_page, FIF.SETTING,
                              tr("menu.settings_nav", "Настройки"),
                              position=NavigationItemPosition.BOTTOM)
@@ -379,10 +375,8 @@ class MainWindow(FluentWindow):
         if p and p.server_config:
             from core.layout import resolve_config
             path = resolve_config(p.server_config, self.settings, self._branch(), p.mode)
-            self.cfg_editor.set_path(Path(path))
             self.launch_page.cfg_card.set_path(Path(path))
         else:
-            self.cfg_editor.set_path(None)
             self.launch_page.cfg_card.set_path(None)
 
     def _registry_rescanned(self, registry: ModRegistry) -> None:
