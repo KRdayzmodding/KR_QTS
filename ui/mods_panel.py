@@ -85,6 +85,9 @@ _GREEN = QColor("#2e7d32")
 # для Серверный, а для Мод — пара (не библиотека?, имя), чтобы библиотеки по
 # умолчанию (сортировка по Мод, по умолчанию восходящая) шли первыми)
 _KEYED_COLS = (COL_NAME, COL_SIZE, COL_PBO, COL_SERVER, COL_MODIFIED)
+# Подключён ли мод к текущему пресету: 0 — да, 1 — нет. Лежит на колонке имени
+# и участвует в сравнении раньше самой колонки, по которой сортируют.
+ROLE_PICKED = Qt.ItemDataRole.UserRole + 2
 
 
 class ModTreeItem(QTreeWidgetItem):
@@ -93,6 +96,17 @@ class ModTreeItem(QTreeWidgetItem):
     def __lt__(self, other: QTreeWidgetItem) -> bool:
         tree = self.treeWidget()
         col = tree.sortColumn() if tree else 0
+        # Подключённые сверху — что бы ни выбрали заголовком. Порядок учитываем
+        # руками: Qt переворачивает результат сравнения для убывающей
+        # сортировки, и без этого состав запуска уезжал бы вниз при первом же
+        # клике по заголовку.
+        mine = self.data(COL_NAME, ROLE_PICKED)
+        theirs = other.data(COL_NAME, ROLE_PICKED)
+        if mine is not None and theirs is not None and mine != theirs:
+            header = tree.header() if tree else None
+            down = (header is not None
+                    and header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder)
+            return mine > theirs if down else mine < theirs
         if col in _KEYED_COLS:
             a = self.data(col, Qt.ItemDataRole.UserRole + 1)
             b = other.data(col, Qt.ItemDataRole.UserRole + 1)
@@ -968,7 +982,10 @@ class ModsPanel(QWidget):
                 # колонке «Мод» жирный текст обрезается многоточием
                 gitem.setFirstColumnSpanned(True)
                 self.tree.addTopLevelItem(gitem)
-                for mod in mods:
+                # В дереве сортировки по заголовку нет, порядок задаём сами:
+                # подключённые первыми, дальше обычный порядок модов.
+                for mod in sorted(mods, key=lambda m: (self._connected(m) is False,)
+                                  + mods_sort_key(m)):
                     item = self._make_mod_item(mod)
                     gitem.addChild(item)
                     self._maybe_add_rebuild_button(item, mod)
@@ -1006,11 +1023,11 @@ class ModsPanel(QWidget):
                            else Qt.CheckState.Unchecked)
         # Галка подключения — на колонке имени, там же, где раньше была в окне
         # «Подключить моды». Без пресета её нет вовсе: подключать некуда.
+        on = self._connected(mod)
         if self.preset is not None and self.registry is not None:
-            on = (self.registry.index_of(mod, self.preset.mods) is not None
-                  or self.registry.index_of(mod, self.preset.server_mods) is not None)
             item.setCheckState(COL_NAME, Qt.CheckState.Checked if on
                                else Qt.CheckState.Unchecked)
+        item.setData(COL_NAME, ROLE_PICKED, 0 if on else 1)
         # ключ сортировки: Серверный — по чекбоксу
         # ключ по имени с рангом флага впереди: сортировка по «Мод» —
         # она же сортировка по умолчанию — держит помеченные сверху
@@ -1194,6 +1211,13 @@ class ModsPanel(QWidget):
                   self.b_collection):
             w.setEnabled(preset is not None)
         self._rebuild()
+
+    def _connected(self, mod) -> bool:
+        """Мод в составе выбранного пресета — неважно, клиентский или серверный."""
+        if self.preset is None or self.registry is None:
+            return False
+        return (self.registry.index_of(mod, self.preset.mods) is not None
+                or self.registry.index_of(mod, self.preset.server_mods) is not None)
 
     def _connection_changed(self, item: QTreeWidgetItem) -> None:
         """Галка на имени подключает мод к пресету и убирает из него.
