@@ -254,12 +254,15 @@ class SettingsPage(QScrollArea):
         # Сетевой запрос при старте должен быть отключаемым: у части людей
         # рабочая машина без интернета, и молчаливый поход наружу их нервирует.
         upd_row = QHBoxLayout()
-        self.check_updates = CheckBox(tr("settings.check_updates",
-                                         "Проверять обновления при запуске"))
+        # Тумблер, а не галка: это состояние программы, а не пункт в наборе.
+        self.check_updates = SwitchButton()
+        self.check_updates.setOnText(tr("settings.check_updates_on", "Проверять"))
+        self.check_updates.setOffText(tr("settings.check_updates_off", "Не проверять"))
         self.check_updates.setChecked(settings.check_updates)
         b_check_now = PushButton(FIF.SYNC, tr("settings.check_now", "Проверить сейчас"))
         b_check_now.clicked.connect(self._check_updates_now)
-        upd_row.addWidget(self.check_updates, 1)
+        upd_row.addWidget(self.check_updates)
+        upd_row.addStretch(1)
         upd_row.addWidget(b_check_now)
         form_general.addRow(BodyLabel(tr("settings.updates_label", "Обновления")), upd_row)
 

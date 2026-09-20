@@ -1070,5 +1070,18 @@
   "stop.why_schedule": "geplanter Neustart",
   "stop.why_forced": "hat sich nicht selbst beendet, erzwungen beendet",
   "stop.why_crash": "abgestürzt: {e}",
-  "stop.why_gone": "außerhalb der Anwendung geschlossen oder ohne Bericht abgestürzt"
+  "stop.why_gone": "außerhalb der Anwendung geschlossen oder ohne Bericht abgestürzt",
+  "gate.title": "Aktualisierung",
+  "gate.searching": "Suche nach Updates",
+  "gate.current": "Sie haben die aktuelle Version",
+  "gate.found": "Eine neue Version ist verfügbar!",
+  "gate.found_body": "{n} → {v}",
+  "gate.offline": "GitHub ist nicht erreichbar",
+  "gate.offline_body": "Sie können später in den Einstellungen nach Updates suchen.",
+  "gate.update": "Aktualisieren",
+  "gate.skip": "Überspringen",
+  "gate.failed_title": "Update nicht installiert",
+  "gate.failed_body": "{m}\n\nWir machen mit der aktuellen Version weiter.",
+  "settings.check_updates_on": "Prüfen",
+  "settings.check_updates_off": "Nicht prüfen"
 }

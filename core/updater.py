@@ -58,19 +58,29 @@ def _pick_asset(assets: list[dict]) -> dict | None:
 
 
 def fetch_latest(timeout: int = 15) -> Release | None:
-    """Последний релиз либо None, если релизов нет, сеть недоступна или
-    репозиторий закрыт. Отсутствие ответа — не ошибка: проверка обновлений не
-    должна мешать работать.
+    """Последний релиз либо None. Прежний вид ответа — без причины отказа."""
+    return fetch_result(timeout)[0]
+
+
+def fetch_result(timeout: int = 15) -> tuple[Release | None, bool]:
+    """(релиз, «не дозвонились»).
+
+    Различать эти два исхода нужно тому, кто про них говорит вслух: «у вас
+    свежая версия» и «GitHub не ответил» — разные новости, а раньше оба
+    выглядели как None. Отсутствие ответа при этом по-прежнему не ошибка:
+    проверка обновлений не должна мешать работать.
     """
     try:
         req = urllib.request.Request(_API, headers=_UA)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8", errors="replace"))
-    except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError):
-        return None
+    except (urllib.error.URLError, OSError):
+        return None, True               # сети нет, таймаут, GitHub молчит
+    except (json.JSONDecodeError, ValueError):
+        return None, True               # ответ пришёл, но разобрать нечего
     tag = str(data.get("tag_name") or "")
     if not tag:
-        return None
+        return None, False              # ответ есть, релизов нет
     rel = Release(
         version=tag.lstrip("vV"),
         name=str(data.get("name") or tag),
@@ -83,7 +93,7 @@ def fetch_latest(timeout: int = 15) -> Release | None:
         rel.asset_url = str(asset.get("browser_download_url") or "")
         rel.asset_size = int(asset.get("size") or 0)
         rel.digest = str(asset.get("digest") or "")
-    return rel
+    return rel, False
 
 
 def is_update(rel: Release | None) -> bool:
@@ -130,11 +140,15 @@ class CheckWorker(QThread):
     """Проверка версии в фоне: сеть при старте не должна задерживать окно."""
     done = Signal(object)        # Release либо None
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, timeout: int = 15) -> None:
         super().__init__(parent)
+        self.timeout = timeout
+        # «Не дозвонились» — читать после done: ставится до его отправки.
+        self.offline = False
 
     def run(self) -> None:
-        self.done.emit(fetch_latest())
+        rel, self.offline = fetch_result(self.timeout)
+        self.done.emit(rel)
 
 
 class DownloadWorker(QThread):

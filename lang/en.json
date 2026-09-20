@@ -1070,5 +1070,18 @@
   "stop.why_schedule": "scheduled restart",
   "stop.why_forced": "did not close itself, terminated",
   "stop.why_crash": "crashed: {e}",
-  "stop.why_gone": "closed outside the app, or crashed without a report"
+  "stop.why_gone": "closed outside the app, or crashed without a report",
+  "gate.title": "Update",
+  "gate.searching": "Looking for updates",
+  "gate.current": "You have the latest version",
+  "gate.found": "A new version is available!",
+  "gate.found_body": "{n} → {v}",
+  "gate.offline": "Could not reach GitHub",
+  "gate.offline_body": "You can check for updates later, in Settings.",
+  "gate.update": "Update",
+  "gate.skip": "Skip",
+  "gate.failed_title": "Update not installed",
+  "gate.failed_body": "{m}\n\nContinuing on the current version.",
+  "settings.check_updates_on": "Check",
+  "settings.check_updates_off": "Don't check"
 }

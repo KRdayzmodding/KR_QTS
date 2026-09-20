@@ -119,6 +119,17 @@ def main() -> int:
         wizard = FirstRunWizard(settings)
         if not wizard.exec():
             return 0  # пользователь закрыл мастер — выходим без сохранения
+    elif not quiet and not wanted:
+        # Проверка версии до главного окна: обновляться удобнее, пока работа
+        # ещё не начата. В начатую работу с этим уже не лезем — там обновление
+        # живёт тихой пометкой в панели разделов. Окно не покажется, если
+        # проверка выключена в настройках; запереть нас оно не может.
+        #
+        # Подняли по ярлыку или из qtsctl — окна нет вовсе: там ждут запуска
+        # сервера, а не вопросов про версию.
+        from ui.update_gate import run as update_gate
+        if not update_gate(settings):
+            return 0                # человек согласился обновиться, мы уходим
 
     window = MainWindow(settings)
     window.cliserver = CliServer(window)

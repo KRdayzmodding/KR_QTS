@@ -115,6 +115,7 @@ def screens(lang: str = "ru") -> None:
     from ui.steamid_list import SteamIdList
     from ui.times_list import TimesList
     from ui.log_window import LogWindow
+    from ui.update_gate import UpdateGate
     from ui.preset_editor import AdvancedPresetDialog, LazyPresetWizard
     from core.preflight import Problem
 
@@ -129,6 +130,7 @@ def screens(lang: str = "ru") -> None:
         "список времён": TimesList,
         "список SteamID": lambda: SteamIdList([]),
         "окно логов": lambda: LogWindow("Логи сервера"),
+        "проверка обновлений": UpdateGate,
         "логи запаковки": lambda: PackLogWindow("packing"),
         "редактор пресета": lambda: AdvancedPresetDialog(preset, s),
         "мастер пресета": lambda: LazyPresetWizard(s),

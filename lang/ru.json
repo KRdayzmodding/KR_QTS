@@ -1070,5 +1070,18 @@
   "stop.why_schedule": "перезапуск по расписанию",
   "stop.why_forced": "не закрылся сам, завершён принудительно",
   "stop.why_crash": "упал: {e}",
-  "stop.why_gone": "закрыт мимо приложения или упал без отчёта"
+  "stop.why_gone": "закрыт мимо приложения или упал без отчёта",
+  "gate.title": "Обновление",
+  "gate.searching": "Поиск обновлений",
+  "gate.current": "Установлена актуальная версия",
+  "gate.found": "Найдена новая версия!",
+  "gate.found_body": "{n} → {v}",
+  "gate.offline": "Не удалось подключиться к GitHub",
+  "gate.offline_body": "Проверить обновления можно позже — в настройках.",
+  "gate.update": "Обновить",
+  "gate.skip": "Пропустить",
+  "gate.failed_title": "Обновление не установлено",
+  "gate.failed_body": "{m}\n\nПродолжаем на текущей версии.",
+  "settings.check_updates_on": "Проверять",
+  "settings.check_updates_off": "Не проверять"
 }
