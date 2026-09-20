@@ -105,7 +105,6 @@ def screens(lang: str = "ru") -> None:
     s = Settings.load()
     preset = ServerPreset(name="smoke_test", mission="smoke.chernarusplus")
 
-    from ui.cfg_editor import CfgCard
     from ui.custom_map_dialog import CustomMapDialog
     from ui.mission_picker import MapPicker
     from ui.packlog_window import PackLogWindow
@@ -121,7 +120,9 @@ def screens(lang: str = "ru") -> None:
 
     cases = {
         "страница настроек": lambda: SettingsPage(s),
-        "редактор конфига": CfgCard,
+        # Со строками: карточка строит их при первом показе, а мерить надо
+        # именно её настоящий размер, а не пустую заготовку.
+        "редактор конфига": _cfg_card_built,
         "выбор карты": MapPicker,
         "своя карта": lambda: CustomMapDialog(None),
         "настройки pboProject": lambda: PboProjectDialog(s.pack_flags, s.clean_meta),
@@ -226,6 +227,15 @@ def flashes() -> None:
           ", ".join(sorted(set(extra))))
     app.removeEventFilter(catcher)
     _poke(win, app)
+
+
+def _cfg_card_built():
+    """Карточка конфига со всеми ключами — как её видит человек."""
+    from ui.cfg_editor import CfgCard
+    card = CfgCard()
+    card.keys.build()
+    card.keys.load({})
+    return card
 
 
 def _poke(win, app) -> None:

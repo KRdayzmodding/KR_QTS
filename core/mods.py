@@ -189,9 +189,11 @@ class ModInfo:
     is_server: bool = False   # по умолчанию подключать в -serverMod, а не в -mod
     flags: list[str] = field(default_factory=list)  # id пользовательских флагов (ModFlagDef.id)
     problem: str = ""          # причина невалидности (нет addons/.pbo и т.п.), пусто — всё ок
-    size_bytes: int = 0        # суммарный размер папки мода на диске
-    pbo_names: list[str] = field(default_factory=list)  # имена .pbo в addons
-    mtime: float = 0.0         # дата последнего изменения файлов мода (эпоха, локально на диске)
+    # Размер, имена PBO и дата — ленивые: считаются при первом обращении и
+    # запоминаются. Обход всех файлов мода стоит заметно, а спрашивают их
+    # редко: колонки размера, PBO и даты по умолчанию скрыты, а проверка
+    # свежести стим-мода спрашивает дату сама и только у тех, кого проверяет.
+    _stats: tuple | None = field(default=None, repr=False, compare=False)
     # Состояние проверки обновления, три значения вместо двух. Двух не хватало:
     # мастерская не описывает скрытые и неопубликованные предметы публично и
     # отвечает на них «файл не найден», а прежняя проверка молча считала это
@@ -231,6 +233,27 @@ class ModInfo:
     @property
     def folder_name(self) -> str:
         return as_folder(self.name)
+
+    def _stats_now(self) -> tuple:
+        if self._stats is None:
+            self._stats = scan_mod_stats(Path(self.path))
+        return self._stats
+
+    def forget_stats(self) -> None:
+        """Забыть посчитанное: файлы мода изменились (запаковка, обновление)."""
+        self._stats = None
+
+    @property
+    def pbo_names(self) -> list[str]:
+        return self._stats_now()[0]
+
+    @property
+    def size_bytes(self) -> int:
+        return self._stats_now()[1]
+
+    @property
+    def mtime(self) -> float:
+        return self._stats_now()[2]
 
 
 def _read_meta_name(mod_dir: Path) -> str:
@@ -359,11 +382,10 @@ class ModRegistry:
                 name = _read_meta_name(item) or item.name
                 if progress:
                     progress(name)
-                pbo_names, size_bytes, mtime = scan_mod_stats(item)
                 mod = ModInfo(
                     name=name, path=str(item), source=SOURCE_STEAM, group="Steam",
-                    workshop_id=item.name, has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
-                    pbo_names=pbo_names, size_bytes=size_bytes, mtime=mtime,
+                    workshop_id=item.name,
+                    has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
                 )
                 self.mods[mod.folder_name.lower()] = mod
 
@@ -397,13 +419,11 @@ class ModRegistry:
             dup = ""
             if key in self.mods and self.mods[key].source == SOURCE_STEAM:
                 dup = self.mods[key].workshop_id  # локальный приоритетнее, помечаем дубль
-            pbo_names, size_bytes, mtime = scan_mod_stats(item)
             self.mods[key] = ModInfo(
                 name=item.name.lstrip("@"), path=str(item), source=source, group=group,
                 has_keys=(item / "keys").is_dir() or (item / "Keys").is_dir(),
                 duplicate_of_steam=dup,
                 problem=validate_mod_dir(item),  # проверяется при каждом скане
-                pbo_names=pbo_names, size_bytes=size_bytes, mtime=mtime,
             )
 
         for rpath, source, group in scan_dirs:

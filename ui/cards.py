@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CardWidget, IconWidget, StrongBodyLabel, TransparentToolButton,
@@ -30,6 +30,10 @@ FREE = 16777215                         # «потолка нет» на язы�
 
 class Section(CardWidget):
     """Карточка с шапкой, итогом и сворачиваемым содержимым."""
+
+    # Раскрыли. Нужен тем, кто строит содержимое по требованию: свёрнутое тело
+    # для Qt всё равно «показано», и на событие показа полагаться нельзя.
+    opened = Signal()
 
     def __init__(self, icon, title: str, rows: list[QWidget], parent=None):
         super().__init__(parent)
@@ -100,6 +104,8 @@ class Section(CardWidget):
         if open_ == self._open:
             return
         self._open = open_
+        if open_:
+            self.opened.emit()      # содержимое могло ждать этого, чтобы собраться
         self.chevron.setIcon(FIF.CHEVRON_DOWN_MED if open_ else FIF.CHEVRON_RIGHT_MED)
         self._ani.stop()
         shut = self.head.sizeHint().height()

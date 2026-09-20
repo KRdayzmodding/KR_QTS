@@ -85,7 +85,13 @@ class _RconWorker(QThread):
 
 
 class MainWindow(FluentWindow):
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, live: bool = True):
+        """live=False — собраться, но не заявлять о себе.
+
+        Так окно строится за спиной проверки обновлений: значок в трее в этот
+        момент выглядел бы как уже запустившаяся программа, а такту состояния
+        нечего опрашивать. Оживает окно по go_live().
+        """
         super().__init__()
         self.settings = settings
         self.registry = ModRegistry(settings)
@@ -244,12 +250,13 @@ class MainWindow(FluentWindow):
         lp.pack_engine.currentIndexChanged.connect(self._pack_engine_changed)
         self._update_branch_availability()
 
-        self._reload_presets()
+        self._reload_presets(rescan=False)      # реестр только что обошли
 
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(1000)
         self.status_timer.timeout.connect(self._update_status)
-        self.status_timer.start()
+        if live:
+            self.status_timer.start()
 
         # Загрузки Steam отслеживает главное окно, а не страница настроек:
         # компонентов можно поставить на скачивание сразу несколько и уйти
@@ -261,7 +268,7 @@ class MainWindow(FluentWindow):
         self.steam_watcher.app_installed.connect(self._steam_app_installed)
         self.steam_watcher.start()
 
-        self._setup_tray()
+        self._setup_tray(live)
 
     # ----------------------------------------------------- загрузки Steam
 
@@ -331,9 +338,13 @@ class MainWindow(FluentWindow):
         """Пресеты правили мимо нас — перечитать, сохранив выбранный."""
         self._reload_presets(select=self.current.file_stem() if self.current else None)
 
-    def _reload_presets(self, select: str | None = None) -> None:
+    def _reload_presets(self, select: str | None = None, rescan: bool = True) -> None:
         combo = self.launch_page.preset_combo
-        self.registry.scan()  # редакторы могли докачать моды карт (mods_dl)
+        if rescan:
+            # Редакторы могли докачать моды карт (mods_dl). При сборке окна
+            # обход уже сделан строкой выше в конструкторе — второй раз те же
+            # сорок папок читать незачем, это четверть секунды на запуске.
+            self.registry.scan()
         combo.blockSignals(True)
         combo.clear()
         self.presets = ServerPreset.load_all()
@@ -2250,7 +2261,18 @@ class MainWindow(FluentWindow):
 
     # ---------------------------------------------------------------- трей
 
-    def _setup_tray(self) -> None:
+    def go_live(self) -> None:
+        """Заявить о себе: значок в трее и такт состояния.
+
+        Зовётся, когда окно перестало быть заготовкой — его собрали заранее,
+        пока шла проверка обновлений, и теперь оно действительно работает.
+        Повторный вызов безвреден.
+        """
+        self.tray.show()
+        if not self.status_timer.isActive():
+            self.status_timer.start()
+
+    def _setup_tray(self, live: bool = True) -> None:
         """Иконка в трее + мини-окно. Крестик главного окна не закрывает
         приложение, а прячет его: в цикле отладки мода менеджер нужен
         постоянно, но разворачивать его целиком ради одной кнопки незачем."""
@@ -2266,7 +2288,8 @@ class MainWindow(FluentWindow):
                               triggered=self.quit_app))
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
-        self.tray.show()
+        if live:
+            self.tray.show()
 
     def _tray_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger,

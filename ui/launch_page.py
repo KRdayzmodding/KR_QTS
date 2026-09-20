@@ -321,6 +321,8 @@ class LaunchInterface(QWidget):
                 self.params_panel,
                 self.cfg_card,
             ])
+        # Ключи конфига строятся при первом раскрытии, а не на запуске.
+        self.setup_card.opened.connect(self.cfg_card.ensure_built)
         return self.setup_card
 
     # ---------------------------------------------------------------- журнал

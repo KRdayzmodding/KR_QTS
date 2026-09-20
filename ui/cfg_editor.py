@@ -136,6 +136,7 @@ class CfgKeys(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows: dict[str, _Row] = {}
+        self._values: dict = {}
         self.groups: dict[str, tuple[QWidget, Columns]] = {}
         # Пока раскладываем прочитанные значения по контролам, каждый из них
         # шлёт сигнал «поменялось». Без этого признака окно объявляло
@@ -162,6 +163,18 @@ class CfgKeys(QWidget):
         self.inner_box.setSpacing(tokens.SPACE_XS)
         box.addLayout(self.inner_box)
 
+        self._built = False
+
+    def build(self) -> None:
+        """Раскладывает все ключи по группам. Зовётся при первом показе.
+
+        Отдельно от конструктора ради запуска программы: строк под семьдесят,
+        каждая со своим контролом, и стоят они четверть секунды. Карточка при
+        этом свёрнута, и за сессию её могут не открыть ни разу.
+        """
+        if self._built:
+            return
+        self._built = True
         for group in servercfg.GROUPS:
             self._add_group(group, servercfg.specs_of_group(group))
 
@@ -202,6 +215,14 @@ class CfgKeys(QWidget):
     # ---------------------------------------------------------------- данные
 
     def load(self, values: dict) -> None:
+        # Значения могут прийти раньше, чем строки построены (карточку ещё не
+        # раскрывали) — запоминаем и разложим при показе.
+        self._values = dict(values)
+        if not self._built:
+            return
+        self._load_now(values)
+
+    def _load_now(self, values: dict) -> None:
         """Расставляет значения. Ключа нет в словаре — значит нет и в файле."""
         self._loading = True
         try:
@@ -235,6 +256,13 @@ class CfgKeys(QWidget):
             head, cols = self.groups.pop(OTHER)
             head.setParent(None)
             cols.setParent(None)
+
+    def is_built(self) -> bool:
+        return self._built
+
+    def values_waiting(self) -> dict:
+        """Значения, прочитанные из файла до того, как строки были построены."""
+        return self._values
 
     def wanted(self) -> dict:
         """Что должно оказаться в файле. None — ключа быть не должно."""
@@ -304,6 +332,19 @@ class CfgCard(QWidget):
 
     def _touch(self) -> None:
         self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
+
+    def ensure_built(self) -> None:
+        """Строит ключи, если их ещё нет. Зовётся при раскрытии карточки.
+
+        На событие показа полагаться нельзя: тело свёрнутой карточки для Qt
+        всё равно «показано», и строки собрались бы на запуске — ровно то,
+        чего мы избегаем. Семьдесят строк с контролами стоят четверть секунды,
+        а карточку за сессию могут не открыть ни разу.
+        """
+        if self.keys.is_built():
+            return
+        self.keys.build()
+        self.keys.load(self.keys.values_waiting())
 
     def set_path(self, path: Path | None) -> None:
         self._path = Path(path) if path else None

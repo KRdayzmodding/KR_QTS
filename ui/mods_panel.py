@@ -1011,9 +1011,15 @@ class ModsPanel(QWidget):
         name += _update_mark(mod)
         if not mod.valid:
             name = "⚠ " + name
-        item = ModTreeItem([name, mod.folder_name, format_size(mod.size_bytes),
-                           str(mod.pbo_count), "",
-                           self._sources_text(mod), self._modified_text(mod.mtime), ""])
+        # Размер, число PBO и дату спрашиваем, только если колонки видны:
+        # каждое такое обращение читает всё дерево файлов мода.
+        if self._details:
+            size, pbo, when = (format_size(mod.size_bytes), str(mod.pbo_count),
+                               self._modified_text(mod.mtime))
+        else:
+            size = pbo = when = ""
+        item = ModTreeItem([name, mod.folder_name, size, pbo, "",
+                            self._sources_text(mod), when, ""])
         item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                       | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(COL_SERVER, Qt.CheckState.Checked if mod.is_server
@@ -1036,9 +1042,10 @@ class ModsPanel(QWidget):
             item.setToolTip(COL_SOURCES, "\n".join(mod.sources))
         item.setForeground(COL_SIZE, _GREY)
         item.setForeground(COL_PBO, _GREY)
-        item.setData(COL_SIZE, Qt.ItemDataRole.UserRole + 1, mod.size_bytes)
+        if self._details:
+            item.setData(COL_SIZE, Qt.ItemDataRole.UserRole + 1, mod.size_bytes)
         item.setData(COL_PBO, Qt.ItemDataRole.UserRole + 1, mod.pbo_count)
-        if mod.pbo_names:
+        if self._details and mod.pbo_names:
             item.setToolTip(COL_PBO, "\n".join(mod.pbo_names))
         # оформление имени по флагам: цвет/иконка — от первого назначенного,
         # начертание (жирный/курсив/подчёркнутый) — объединяется по всем сразу;
@@ -1071,7 +1078,8 @@ class ModsPanel(QWidget):
                                        "Подключать в -serverMod (только на сервер), а не в -mod, "
                                        "в окне «Подключить моды»."))
         item.setForeground(COL_MODIFIED, _GREY)
-        item.setData(COL_MODIFIED, Qt.ItemDataRole.UserRole + 1, mod.mtime)
+        if self._details:
+            item.setData(COL_MODIFIED, Qt.ItemDataRole.UserRole + 1, mod.mtime)
         item.setData(COL_NAME, Qt.ItemDataRole.UserRole, mod.folder_name.lower())
         return item
 
@@ -1192,6 +1200,20 @@ class ModsPanel(QWidget):
                               triggered=self._connect_collection))
         menu.exec(self.b_sets.mapToGlobal(self.b_sets.rect().bottomLeft()))
 
+    def _refill_details(self) -> None:
+        """Колонки показали — заполняем их: значения до сих пор не читались."""
+        for item in self._iter_mod_items():
+            mod = self._item_mod(item)
+            if mod is None:
+                continue
+            item.setText(COL_SIZE, format_size(mod.size_bytes))
+            item.setText(COL_PBO, str(mod.pbo_count))
+            item.setText(COL_MODIFIED, self._modified_text(mod.mtime))
+            item.setData(COL_SIZE, Qt.ItemDataRole.UserRole + 1, mod.size_bytes)
+            item.setData(COL_MODIFIED, Qt.ItemDataRole.UserRole + 1, mod.mtime)
+            if mod.pbo_names:
+                item.setToolTip(COL_PBO, "\n".join(mod.pbo_names))
+
     def _toggle_details(self) -> None:
         """Размер, число PBO и дата — не то, по чему выбирают состав запуска."""
         self._details = not self._details
@@ -1200,6 +1222,11 @@ class ModsPanel(QWidget):
     def _apply_details(self) -> None:
         for col in (COL_FOLDER, COL_SIZE, COL_PBO, COL_MODIFIED):
             self.tree.setColumnHidden(col, not self._details)
+        if self._details:
+            # правка текста строки шлёт itemChanged — глушим обработчик галок
+            was, self._building = self._building, True
+            self._refill_details()
+            self._building = was
 
     def set_preset(self, preset) -> None:
         """Пресет, к которому подключаются моды. None — подключать некуда."""

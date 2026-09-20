@@ -1,12 +1,18 @@
 """Проверка обновлений перед показом главного окна.
 
-Маленькое окно на несколько секунд: крутилка и «Поиск обновлений». Дальше одно
-из трёх — актуальная версия, найдено обновление, GitHub не ответил.
+Квадратное окно на пару секунд: наверху надпись, в середине крутилка. Пришёл
+ответ — крутилка превращается в галку или в предупреждение, под ней словами
+итог. Нашлось обновление — окно подрастает, и снизу появляются две кнопки.
 
 Почему отдельным окном, а не в фоне у главного: обновление стоит предлагать
 до того, как человек начал работать. Начатую работу прерывать нельзя, и в
 главном окне обновление поэтому живёт тихой пометкой в панели разделов — её
 легко не заметить месяцами. Здесь же ещё ничего не начато, и вопрос уместен.
+
+Пока окно висит, главное окно собирается за его спиной: проверка упирается в
+сеть, сборка — в процессор, и делать их по очереди значит складывать секунды.
+Собранное окно при этом ничем себя не выдаёт — ни значка в трее, ни тактов
+состояния, пока ему не скажут «живи».
 
 Запереть это окно не может ни при каких обстоятельствах: нет сети, GitHub
 молчит, ответ пришёл битым — идём дальше. Неудобство от старой версии
@@ -14,10 +20,13 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import (
+    Property, QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer,
+)
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    BodyLabel, FluentIcon as FIF, IconWidget, IndeterminateProgressRing,
+    BodyLabel, CaptionLabel, FluentIcon as FIF, IndeterminateProgressRing,
     PrimaryPushButton, PushButton, StrongBodyLabel,
 )
 
@@ -32,13 +41,98 @@ from ui.theme import ThemedDialog
 # версии не та задача, ради которой стоит держать человека перед пустым окном.
 TIMEOUT_MS = 5000
 
-# Сколько показываем «всё актуально». Меньше секунды — мелькание, которое
-# не успеваешь прочитать; больше — задержка на ровном месте.
-OK_HOLD_MS = 1000
+# Сколько показываем «всё актуально» перед уходом. Меньше полусекунды —
+# мелькание, которое не успеваешь прочитать.
+OK_HOLD_MS = 900
+
+# Движение — по шкале из docs/UX.md: знак дорисовывается заметно, окно растёт
+# быстро.
+MARK_MS = 250
+GROW_MS = 180
+
+SIDE = 360              # квадрат: надпись сверху, крутилка в середине
+TALL = 440              # он же, когда снизу появились кнопки
 
 # Проверка может пережить своё окно: ответ придёт, когда окна уже нет. Поток
 # нельзя дать собрать сборщику мусора, пока он работает.
 _detached: list[updater.CheckWorker] = []
+
+
+def _slice(path: QPainterPath, part: float) -> QPainterPath:
+    """Кусок пути от начала до доли part — линия, нарисованная не до конца."""
+    if part >= 1.0:
+        return path
+    out = QPainterPath()
+    out.moveTo(path.pointAtPercent(0.0))
+    steps = 24
+    for i in range(1, steps + 1):
+        out.lineTo(path.pointAtPercent(part * i / steps))
+    return out
+
+
+class Mark(QWidget):
+    """Знак на месте крутилки: галка или восклицательный знак.
+
+    Рисуем сами, а не берём готовый значок, ради одного: линия проявляется на
+    глазах. Статичная картинка, возникшая вместо крутилки, читается как
+    «подвисло», а дорисовавшаяся за четверть секунды — как «готово».
+    """
+
+    OK, WARN = "ok", "warn"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.kind = self.OK
+        self.color = QColor(tokens.color("success"))
+        self._grow = 0.0
+        self.setFixedSize(72, 72)
+        self._ani = QPropertyAnimation(self, b"grow", self)
+        self._ani.setDuration(MARK_MS)
+        self._ani.setEasingCurve(QEasingCurve.Type.OutQuad)
+
+    def start(self, kind: str, color: str) -> None:
+        self.kind = kind
+        self.color = QColor(color)
+        self.show()
+        self._ani.stop()
+        self._ani.setStartValue(0.0)
+        self._ani.setEndValue(1.0)
+        self._ani.start()
+
+    def _get_grow(self) -> float:
+        return self._grow
+
+    def _set_grow(self, v: float) -> None:
+        self._grow = v
+        self.update()
+
+    grow = Property(float, _get_grow, _set_grow)
+
+    def paintEvent(self, e):        # имя метода задаёт Qt
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        p.setPen(QPen(self.color, 5.0, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        # Кольцо дорисовывается вместе со знаком: оно занимает место крутилки,
+        # и без него знак повисает в пустоте там, где только что было кольцо.
+        p.drawArc(QRectF(3, 3, w - 6, w - 6), 90 * 16, -int(360 * 16 * self._grow))
+        if self.kind == self.OK:
+            path = QPainterPath()
+            path.moveTo(w * 0.30, w * 0.52)
+            path.lineTo(w * 0.44, w * 0.66)
+            path.lineTo(w * 0.71, w * 0.36)
+            p.drawPath(_slice(path, self._grow))
+        else:
+            # Восклицательный знак: палочка растёт сверху вниз, точка
+            # появляется в конце — раньше она мелькала бы прежде смысла.
+            top, bottom = w * 0.28, w * 0.56
+            p.drawLine(int(w / 2), int(top),
+                       int(w / 2), int(top + (bottom - top) * self._grow))
+            if self._grow > 0.85:
+                p.setBrush(self.color)
+                r = 3.0
+                p.drawEllipse(QRectF(w / 2 - r, w * 0.68 - r, r * 2, r * 2))
 
 
 class UpdateGate(ThemedDialog):
@@ -51,13 +145,7 @@ class UpdateGate(ThemedDialog):
         self._answered = False
 
         self.setWindowTitle(tr("gate.title", "Обновление"))
-        # Ширина одна на все состояния и все языки, высота — по содержимому:
-        # пока это строка с крутилкой, окно маленькое; появятся пояснение и
-        # кнопки — подрастёт один раз. Держать заранее высокое окно ради
-        # состояния, до которого обычно не доходит, значит показывать секунду
-        # наполовину пустую коробку.
-        self.setFixedSize(420, 112)
-        # Без кнопки помощи в заголовке: она ничего не делает.
+        self.setFixedSize(SIDE, SIDE)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
 
         box = QVBoxLayout(self)
@@ -65,28 +153,45 @@ class UpdateGate(ThemedDialog):
                                tokens.SPACE_L, tokens.SPACE_L)
         box.setSpacing(tokens.SPACE_M)
 
-        head = QHBoxLayout()
-        head.setSpacing(tokens.SPACE_S)
+        # Надпись сверху — прописными и с разрядкой: так она читается как имя
+        # происходящего, а не как фраза, которую надо дочитывать.
+        self.caption = CaptionLabel(tr("gate.searching", "Поиск обновлений").upper())
+        font = QFont(self.caption.font())
+        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 112)
+        self.caption.setFont(font)
+        self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        box.addWidget(self.caption)
+
+        box.addStretch(1)
+        middle = QHBoxLayout()
+        middle.addStretch(1)
         self.ring = IndeterminateProgressRing(self)
-        self.ring.setFixedSize(24, 24)
-        self.ring.setStrokeWidth(3)
-        head.addWidget(self.ring)
-        # Значок вместо крутилки — когда ждать больше нечего.
-        self.icon = IconWidget(FIF.ACCEPT, self)
-        self.icon.setFixedSize(24, 24)
-        self.icon.setVisible(False)
-        head.addWidget(self.icon)
-        self.title = StrongBodyLabel(tr("gate.searching", "Поиск обновлений"))
-        head.addWidget(self.title, 1)
-        box.addLayout(head)
+        self.ring.setFixedSize(72, 72)
+        self.ring.setStrokeWidth(5)
+        middle.addWidget(self.ring)
+        self.mark = Mark(self)
+        self.mark.hide()
+        middle.addWidget(self.mark)
+        middle.addStretch(1)
+        box.addLayout(middle)
+
+        self.result = StrongBodyLabel("")
+        self.result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.result.setWordWrap(True)
+        self.result.setVisible(False)
+        box.addWidget(self.result)
 
         self.note = BodyLabel("")
+        self.note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.note.setWordWrap(True)
         self.note.setVisible(False)
         box.addWidget(self.note)
         box.addStretch(1)
 
+        # Кнопки по центру и своей ширины: одна кнопка враспор на всё окно
+        # выглядит как полоса, а не как кнопка.
         row = QHBoxLayout()
+        row.setSpacing(tokens.SPACE_S)
         row.addStretch(1)
         self.b_skip = PushButton(tr("gate.skip", "Пропустить"))
         self.b_skip.clicked.connect(self.reject)
@@ -100,51 +205,62 @@ class UpdateGate(ThemedDialog):
         self.b_ok.clicked.connect(self.reject)
         self.b_ok.setVisible(False)
         row.addWidget(self.b_ok)
+        row.addStretch(1)
+        for b in (self.b_skip, self.b_update, self.b_ok):
+            b.setMinimumWidth(128)
         box.addLayout(row)
 
-        # Ответ ждём ровно столько, сколько обещали. Сам запрос оборвётся сам
-        # по своему таймауту; окно его не дожидается.
+        self._grow_ani = QPropertyAnimation(self, b"maximumHeight", self)
+        self._grow_ani.setDuration(GROW_MS)
+        self._grow_ani.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._grow_ani.finished.connect(lambda: self.setFixedHeight(TALL))
+
         QTimer.singleShot(TIMEOUT_MS, self._timed_out)
 
     # ------------------------------------------------------------ состояния
 
     def _grow(self) -> None:
-        """Место под пояснение и кнопки — по самому длинному из трёх языков."""
-        self.setFixedSize(420, 168)
+        """Растём под кнопки. Меняем только высоту: прыжок в обе стороны
+        читается как «окно перестраивается», а не «раскрылось»."""
+        self.setMinimumHeight(0)        # иначе фиксированный размер держит
+        self._grow_ani.stop()
+        self._grow_ani.setStartValue(self.height())
+        self._grow_ani.setEndValue(TALL)
+        self._grow_ani.start()
 
-    def _settle(self, icon, color: str, title: str) -> None:
-        """Общее для всех трёх исходов: крутилка уступает место значку."""
+    def _settle(self, kind: str, color: str, text: str) -> None:
+        """Общее для всех исходов: крутилка уступает место знаку."""
         self._answered = True
-        self.ring.setVisible(False)
-        self.icon.setIcon(icon.colored(color, color))
-        self.icon.setVisible(True)
-        self.title.setText(title)
+        self.ring.hide()
+        self.mark.start(kind, color)
+        self.result.setText(text)
+        self.result.setVisible(True)
 
     def show_current(self) -> None:
-        self._settle(FIF.ACCEPT, tokens.color("success"),
+        self._settle(Mark.OK, tokens.color("success"),
                      tr("gate.current", "Установлена актуальная версия"))
         QTimer.singleShot(OK_HOLD_MS, self.reject)
 
     def show_found(self, rel: Release) -> None:
         self.release = rel
-        self._settle(FIF.UPDATE, tokens.ACCENT,
+        self._settle(Mark.WARN, tokens.ACCENT,
                      tr("gate.found", "Найдена новая версия!"))
         self.note.setText(tr("gate.found_body", "{n} → {v}", n=VERSION, v=rel.version))
         self.note.setVisible(True)
-        self._grow()
         self.b_skip.setVisible(True)
         self.b_update.setVisible(True)
         self.b_update.setFocus()
+        self._grow()
 
     def show_offline(self) -> None:
-        self._settle(FIF.INFO, tokens.color("warning"),
+        self._settle(Mark.WARN, tokens.color("warning"),
                      tr("gate.offline", "Не удалось подключиться к GitHub"))
         self.note.setText(tr("gate.offline_body",
                              "Проверить обновления можно позже — в настройках."))
         self.note.setVisible(True)
-        self._grow()
         self.b_ok.setVisible(True)
         self.b_ok.setFocus()
+        self._grow()
 
     # -------------------------------------------------------------- события
 
@@ -170,22 +286,26 @@ class UpdateGate(ThemedDialog):
             self.show_current()
 
 
-def run(settings, parent: QWidget | None = None) -> bool:
-    """Показывает окно проверки. True — идти дальше, False — мы закрываемся.
+def run(settings, build=None, parent: QWidget | None = None):
+    """Показывает окно проверки. Отдаёт (идти дальше, собранное главное окно).
 
-    False означает, что человек согласился обновиться и помощник пошёл
-    работать: приложение обязано уйти, иначе он будет ждать нас до упора.
+    build — как собрать главное окно. Собираем его, пока ждём GitHub: это
+    единственное место в запуске, где сеть и процессор можно занять
+    одновременно. Показывать собранное окно здесь нельзя ничем — им
+    распоряжается тот, кто нас позвал.
+
+    «Идти дальше» = False означает, что человек согласился обновиться и
+    помощник пошёл работать: приложение обязано уйти.
     """
-    if not getattr(settings, "check_updates", True):
-        return True
-    if updater.pending() is not None:
-        # Обновление уже скачано и ждёт перезапуска — спрашивать GitHub
-        # незачем, об этом скажет само главное окно.
-        return True
+    if not getattr(settings, "check_updates", True) or updater.pending() is not None:
+        # Проверка выключена или обновление уже скачано и ждёт перезапуска —
+        # окна нет, но собрать главное всё равно надо.
+        return True, (build() if build else None)
 
     gate = UpdateGate(parent)
     worker = updater.CheckWorker(timeout=int(TIMEOUT_MS / 1000))
     _detached.append(worker)
+    made: dict[str, object] = {"win": None}
 
     def got(rel: Release | None) -> None:
         offline = getattr(worker, "offline", False)
@@ -198,11 +318,19 @@ def run(settings, parent: QWidget | None = None) -> bool:
     worker.finished.connect(lambda: _detached.remove(worker)
                             if worker in _detached else None)
     worker.start()
+
+    if build is not None:
+        # Через очередь событий, а не сразу: сборка держит поток секунду с
+        # лишним, и начатая раньше показа она задержала бы саму крутилку.
+        QTimer.singleShot(0, lambda: made.__setitem__("win", build()))
     gate.exec()
 
+    window = made["win"]
+    if window is None and build is not None:
+        window = build()            # окно закрыли раньше, чем мы успели собрать
     if not gate.accepted_update or gate.release is None:
-        return True
-    return _install(gate.release, parent)
+        return True, window
+    return _install(gate.release, parent), window
 
 
 def _install(rel: Release, parent: QWidget | None) -> bool:
