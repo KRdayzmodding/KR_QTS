@@ -38,9 +38,10 @@ class WheelGuard(QObject):
         return True
 
 
-# Шаг колеса: столько проезжает страница за один щелчок, когда ведёт край
-# карточки к экрану. Примерно как обычный шаг колеса в Windows.
-_STEP = 110
+# Насколько раньше упора список передаёт ход странице. Щелчок колеса: ждать
+# самого упора — значит показать человеку остановку и новый старт. Последний
+# щелчок при этом двигает обоих, и список всё же доезжает до конца.
+_NEAR = 110
 
 
 class ChainGuard(QObject):
@@ -58,8 +59,10 @@ class ChainGuard(QObject):
     и уносить её в другое место нечестно.
     """
 
+    _busy = False           # сами же и отдали событие странице — не ловим его снова
+
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if event.type() != QEvent.Type.Wheel:
+        if event.type() != QEvent.Type.Wheel or self._busy:
             return False
         area = _area_of_viewport(obj)
         if area is None:
@@ -70,36 +73,46 @@ class ChainGuard(QObject):
         inner = _inner_area_under(event, area)
         if inner is None:
             return False        # курсор не над списком — страница едет как обычно
-        self._move_page(area, inner, event, _STEP)
-        return True
+        return self._move_page(area, inner, event)
 
     # ----------------------------------------------------------------- шаги
 
     def _hand_off(self, inner, page, event) -> bool:
-        """Остаток хода списка отдаём ему, хвост щелчка — странице."""
+        """Список почти докручен — ход продолжает страница.
+
+        Порог не нулевой: если ждать самого упора, страница трогается ровно в
+        тот миг, когда список встал, и это читается как рывок. Полщелчка
+        запаса — и движение переходит незаметно.
+        """
         down = event.angleDelta().y() < 0
         bar = inner.verticalScrollBar()
         left = (bar.maximum() - bar.value()) if down else bar.value()
-        if left >= _STEP:
-            return False        # списку есть куда ехать — не вмешиваемся
-        if left:
-            bar.setValue(bar.maximum() if down else 0)
-        self._move_page(page, inner, event, _STEP - left)
-        return True
+        if left > _NEAR:
+            return False        # списку ещё есть куда ехать — не вмешиваемся
+        moved = self._move_page(page, inner, event)
+        # Последние пиксели списка отдаём ему же: если забрать щелчок целиком,
+        # нижние строки станут недосягаемы колесом — только полосой прокрутки.
+        return False if left else moved
 
-    def _move_page(self, page, inner, event, step: int) -> None:
-        """Двигает страницу к нужному краю карточки, но не дальше него."""
-        if step <= 0:
-            return
+    def _move_page(self, page, inner, event) -> bool:
+        """Отдаёт колесо странице, пока нужный край карточки не показался.
+
+        Именно отдаёт событие, а не двигает полосу сама: страница листается
+        плавно, своей анимацией, а подкрутка значением шла рывками — то самое
+        подёргивание, ради которого всё и затевалось.
+        """
         down = event.angleDelta().y() < 0
         anchor = _anchor_of(inner, page)
         top = anchor.mapTo(page.viewport(), QPoint(0, 0)).y()
         hidden = (top + anchor.height() - page.viewport().height()) if down else -top
         if hidden <= 0:
-            return
-        bar = page.verticalScrollBar()
-        move = min(hidden, step)
-        bar.setValue(bar.value() + (move if down else -move))
+            return True         # край виден — дальше страницу не трогаем
+        self._busy = True
+        try:
+            QApplication.sendEvent(page.viewport(), event)
+        finally:
+            self._busy = False
+        return True
 
 
 def _outer_area(area: QAbstractScrollArea):
