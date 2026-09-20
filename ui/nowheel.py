@@ -38,50 +38,78 @@ class WheelGuard(QObject):
         return True
 
 
-# Сколько страница проезжает за один щелчок колеса, когда доводит край
-# упёршегося списка до экрана. Примерно как обычный шаг колеса в Windows.
+# Шаг колеса: столько проезжает страница за один щелчок, когда ведёт край
+# карточки к экрану. Примерно как обычный шаг колеса в Windows.
 _STEP = 110
 
 
 class ChainGuard(QObject):
-    """Колесо над упёршимся списком не уносит страницу, но край списка покажет.
+    """Колесо над списком: страница подхватывает движение, но не убегает.
 
-    Перехватываем не у списка, а у страницы: к ней событие приходит уже после
-    того, как список отказался его брать. Дальше два случая.
+    Правило одно на два случая.
 
-    Список виден целиком — страницу не трогаем: рука делает одно движение, а
-    поехало бы другое, и это читается как сбой.
+    Список ещё не докручен, но до края ему осталось меньше щелчка — остаток
+    отдаём списку, а хвост щелчка уже уходит странице. Без этого страница
+    трогалась ровно в тот миг, когда список упёрся, и это читалось как рывок.
 
-    Список торчит за край страницы — докручиваем её ровно настолько, чтобы
-    показался тот край, к которому тянется человек, и останавливаемся. Иначе
-    в невысоком окне последние строки списка увидеть нечем: сам он докручен,
-    а страница стоит.
+    Список докручен — страница едет дальше, но ровно до края карточки, в
+    которой он лежит: вверх до шапки (там кнопка сворачивания), вниз до низа
+    (там ручка размера и подсказка). Дошли — стоим: рука делает одно движение,
+    и уносить её в другое место нечестно.
     """
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() != QEvent.Type.Wheel:
             return False
-        page = _area_of_viewport(obj)
-        if page is None:
+        area = _area_of_viewport(obj)
+        if area is None:
             return False
-        inner = _inner_area_under(event, page)
+        page = _outer_area(area)
+        if page is not None:
+            return self._hand_off(area, page, event)     # колесо пришло списку
+        inner = _inner_area_under(event, area)
         if inner is None:
-            return False            # курсор не над списком — страница едет как обычно
+            return False        # курсор не над списком — страница едет как обычно
+        self._move_page(area, inner, event, _STEP)
+        return True
 
+    # ----------------------------------------------------------------- шаги
+
+    def _hand_off(self, inner, page, event) -> bool:
+        """Остаток хода списка отдаём ему, хвост щелчка — странице."""
         down = event.angleDelta().y() < 0
-        if down:
-            top = inner.mapTo(page.viewport(), QPoint(0, 0)).y()
-            hidden = top + inner.height() - page.viewport().height()
-        else:
-            # Вверх целимся не в верх списка, а в шапку карточки, в которой он
-            # лежит: доехав, человек сразу видит, чем её свернуть.
-            anchor = _anchor_of(inner, page)
-            hidden = -anchor.mapTo(page.viewport(), QPoint(0, 0)).y()
-        if hidden > 0:
-            bar = page.verticalScrollBar()
-            step = min(hidden, _STEP)
-            bar.setValue(bar.value() + (step if down else -step))
-        return True                 # в любом случае дальше событие не пускаем
+        bar = inner.verticalScrollBar()
+        left = (bar.maximum() - bar.value()) if down else bar.value()
+        if left >= _STEP:
+            return False        # списку есть куда ехать — не вмешиваемся
+        if left:
+            bar.setValue(bar.maximum() if down else 0)
+        self._move_page(page, inner, event, _STEP - left)
+        return True
+
+    def _move_page(self, page, inner, event, step: int) -> None:
+        """Двигает страницу к нужному краю карточки, но не дальше него."""
+        if step <= 0:
+            return
+        down = event.angleDelta().y() < 0
+        anchor = _anchor_of(inner, page)
+        top = anchor.mapTo(page.viewport(), QPoint(0, 0)).y()
+        hidden = (top + anchor.height() - page.viewport().height()) if down else -top
+        if hidden <= 0:
+            return
+        bar = page.verticalScrollBar()
+        move = min(hidden, step)
+        bar.setValue(bar.value() + (move if down else -move))
+
+
+def _outer_area(area: QAbstractScrollArea):
+    """Область прокрутки, внутри которой лежит эта. None — она и есть внешняя."""
+    node = area.parentWidget()
+    while node is not None:
+        if isinstance(node, QAbstractScrollArea):
+            return node
+        node = node.parentWidget()
+    return None
 
 
 def _anchor_of(widget, page: QAbstractScrollArea):
