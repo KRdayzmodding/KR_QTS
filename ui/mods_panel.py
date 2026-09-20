@@ -48,6 +48,7 @@ from ui.mod_flags_dialog import (
     _swatch_icon,
 )
 from ui import packing_log
+from ui.resizer import Resizer
 from ui.theme import ThemedDialog
 from core.presets import ModPreset
 from core.settings import Settings
@@ -80,6 +81,9 @@ def _update_tip(mod: ModInfo) -> str:
             "мода видит только сам Steam.")
     return ""
 _GREEN = QColor("#2e7d32")
+# Шесть строк — столько список показывал до появления ручки. К ней же
+# возвращает двойной щелчок по ручке.
+DEFAULT_LIST_H = 192
 # колонки, у которых сортировка идёт не по тексту ячейки, а по значению,
 # сохранённому в UserRole+1 (числа для Размер/PBO/Дата изменения, bool-int
 # для Серверный, а для Мод — пара (не библиотека?, имя), чтобы библиотеки по
@@ -794,6 +798,14 @@ class ModsPanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._tree_context_menu)
         layout.addWidget(self.tree, 1)
 
+        # Ручка высоты: список живёт в прокручиваемой странице, и «растянуть
+        # до конца окна» ему нельзя — страница просто станет длиннее. А сам по
+        # себе он ровно шесть строк, меньше, чем модов у любого пресета.
+        self.resizer = Resizer(self.tree, default=DEFAULT_LIST_H,
+                               minimum=3 * 32, maximum=1400)
+        self.resizer.resized.connect(self._list_height_changed)
+        layout.addWidget(self.resizer)
+
         hint = CaptionLabel(tr(
             "mods.hint2",
             "Галка слева подключает мод к выбранному пресету, «Серверный» — "
@@ -809,10 +821,20 @@ class ModsPanel(QWidget):
 
     # ---------------------------------------------------------------- контекст
 
+    def _list_height_changed(self, height: int) -> None:
+        """Подобранную мышью высоту запоминаем: она про удобство работы, а не
+        про один сеанс."""
+        if self.settings is None:
+            return
+        self.settings.mods_list_height = int(height)
+        self.settings.save()
+
     def set_context(self, registry: ModRegistry, settings: Settings | None = None) -> None:
         self.registry = registry
         if settings is not None:
             self.settings = settings
+            self.tree.setFixedHeight(max(3 * 32, int(
+                getattr(settings, "mods_list_height", DEFAULT_LIST_H))))
         self._rebuild()
         self._check_stale()
 
