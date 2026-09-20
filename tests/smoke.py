@@ -208,6 +208,49 @@ def flashes() -> None:
     extra = [n for n in catcher.seen if n != "MainWindow"]
     check(f"при сборке главного окна всплыло окон: {len(extra)}", not extra,
           ", ".join(sorted(set(extra))))
+    _poke(win, app)
+
+
+def _poke(win, app) -> None:
+    """Дёргает то, что человек трогает первым делом.
+
+    Собранное окно ещё ничего не доказывает: обработчик может быть подключён с
+    неверной подписью, и это выяснится на первом нажатии. Именно так и вышло с
+    фильтром модов — падало на первом набранном символе.
+
+    Ошибку в обработчике Qt вызывающему не отдаёт: сигнал пришёл из недр
+    библиотеки, и исключение уходит в sys.excepthook, а setText возвращается
+    как ни в чём не бывало. Поэтому try/except тут бесполезен — подменяем
+    крючок и смотрим, не легло ли в него что-нибудь.
+    """
+    def run(title, action):
+        errors = []
+        hook = sys.excepthook
+        sys.excepthook = lambda t, v, tb: errors.append(f"{t.__name__}: {v}")
+        try:
+            action()
+            for _ in range(3):
+                app.processEvents()
+        except Exception as e:      # noqa: BLE001 — прогон должен дойти до конца
+            errors.append(f"{type(e).__name__}: {e}")
+        finally:
+            sys.excepthook = hook
+        check(title, not errors, "; ".join(errors))
+
+    panel = getattr(win, "mods_panel", None)
+    if panel is not None:
+        def type_filter():
+            panel.search.setText("kr")
+            panel.search.setText("")
+        run("фильтр модов принимает текст", type_filter)
+
+    page = getattr(win, "launch_page", None)
+    for name in ("setup_card", "mods_card", "pack_card"):
+        card = getattr(page, name, None)
+        if card is None:
+            continue
+        run(f"карточка «{name}» раскрывается и сворачивается",
+            lambda c=card: (c.set_open(True), c.set_open(False)))
 
 
 def external() -> None:

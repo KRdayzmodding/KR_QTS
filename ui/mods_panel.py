@@ -721,13 +721,6 @@ class ModsPanel(QWidget):
         self.status = CaptionLabel("")
         self.status.setWordWrap(True)
 
-        # Поиск и переключатель вида — в одной строке, прямо над заголовками
-        # колонок: кнопка «Вид» физически рядом с тем, чем она управляет
-        # (сортировкой по клику на заголовок).
-        search_row = QHBoxLayout()
-        self.search = SearchLineEdit()
-        self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
-        self.search.textChanged.connect(self._apply_filter)
         # Состав запуска — отдельным рядом от библиотечных кнопок: это разные
         # задачи, и смешанные в одну строку они читались бы как одна.
         set_row = QHBoxLayout()
@@ -757,7 +750,7 @@ class ModsPanel(QWidget):
         search_row = QHBoxLayout()
         self.search = SearchLineEdit()
         self.search.setPlaceholderText(tr("mods.search_ph", "Фильтр по названию…"))
-        self.search.textChanged.connect(lambda _t: self._apply_filter())
+        self.search.textChanged.connect(self._apply_filter)
         search_row.addWidget(self.search, 1)
         search_row.addWidget(self.b_library)
         layout.addLayout(search_row)
@@ -1450,7 +1443,11 @@ class ModsPanel(QWidget):
             else:
                 self.tree.removeItemWidget(item, COL_REBUILD)
 
-    def _apply_filter(self, text: str) -> None:
+    def _apply_filter(self, text: str | None = None) -> None:
+        # Зовут и сигналом (текст приходит), и из пересборки (текста нет).
+        # Пусть обе дороги ведут в одно место, а не в TypeError.
+        if text is None:
+            text = self.search.text()
         q = text.strip().lower()
 
         def matches(item) -> bool:
