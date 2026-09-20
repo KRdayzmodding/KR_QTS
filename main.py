@@ -169,7 +169,19 @@ def main() -> int:
         # проверка версии — сеть не должна задерживать запуск
         window.start_update_check()
 
-    QTimer.singleShot(0, after_paint)
+    # За саму отрисовку, а не за таймер: таймер с нулевой задержкой
+    # срабатывает раньше неё, и работа снова оказалась бы перед пустым окном.
+    # Запасной срок — на случай, когда окно не показывают вовсе (трей, ярлык,
+    # qtsctl): отрисовки тогда не будет, а работу сделать всё равно надо.
+    done = {"v": False}
+
+    def once() -> None:
+        if not done["v"]:
+            done["v"] = True
+            after_paint()
+
+    window.painted_once.connect(once)
+    QTimer.singleShot(400, once)
     return app.exec()
 
 

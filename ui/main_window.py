@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import html
+import sys
 import time
 from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QApplication,
     QSystemTrayIcon,
@@ -85,6 +87,11 @@ class _RconWorker(QThread):
 
 
 class MainWindow(FluentWindow):
+    # Первая отрисовка окна. За неё цепляется всё, что можно сделать потом:
+    # пока поток занят, окно стоит пустым, и любая работа сразу после show()
+    # видна человеку как белое полотно.
+    painted_once = Signal()
+
     def __init__(self, settings: Settings, live: bool = True):
         """live=False — собраться, но не заявлять о себе.
 
@@ -158,7 +165,11 @@ class MainWindow(FluentWindow):
         # подробности в _apply_icon. Перевыставляется при смене темы на лету,
         # включая случай «следовать теме Windows».
         self._apply_icon()
+        self._painted = False
+        self._revealing = False
         qconfig.themeChanged.connect(self._apply_icon)
+        qconfig.themeChanged.connect(self._paint_background)
+        self._paint_background()
         self.resize(*tokens.WIN_MAIN)
         self.setMinimumSize(*tokens.WIN_MAIN_MIN)
 
@@ -2261,6 +2272,62 @@ class MainWindow(FluentWindow):
 
     # ---------------------------------------------------------------- трей
 
+    def paintEvent(self, e):        # имя метода задаёт Qt
+        super().paintEvent(e)
+        if self._revealing:
+            # Нарисовались — можно показываться. Через очередь событий, а не
+            # сразу: окно должно сперва дорисовать этот кадр.
+            self._revealing = False
+            QTimer.singleShot(0, lambda: self.setWindowOpacity(1.0))
+        if not self._painted:
+            self._painted = True
+            self.painted_once.emit()
+
+    def reveal(self, how=None) -> None:
+        """Показывает окно так, чтобы не мелькнуло белым.
+
+        how — чем именно показываться (show, showNormal). Пока окна не видно,
+        оно прозрачное; непрозрачность возвращается по первой же отрисовке.
+        """
+        self._revealing = True
+        self.setWindowOpacity(0.0)
+        (how or self.show)()
+        # Страховка: без отрисовки окно осталось бы невидимым насовсем.
+        QTimer.singleShot(400, lambda: self.setWindowOpacity(1.0))
+
+    def _paint_background(self) -> None:
+        """Красит фон окна цветом темы — и в Qt, и на уровне Windows.
+
+        Пока Qt не нарисовал окно, его закрашивает система: при показе и при
+        разворачивании из мини-окна в тёмной теме сначала было видно белое
+        полотно. Палитры Qt для этого мало — стирает окно сама Windows кистью
+        из класса окна, а она по умолчанию белая. Меняем обе.
+        """
+        col = QColor(tokens.color("window"))
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, col)
+        self.setPalette(pal)
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+            gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
+            gdi32.CreateSolidBrush.restype = wintypes.HANDLE
+            brush = gdi32.CreateSolidBrush(
+                col.blue() << 16 | col.green() << 8 | col.red())
+            setter = getattr(user32, "SetClassLongPtrW", None) or user32.SetClassLongW
+            setter.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+            setter.restype = ctypes.c_void_p
+            GCLP_HBRBACKGROUND = -10
+            old_brush = setter(wintypes.HWND(int(self.winId())),
+                               GCLP_HBRBACKGROUND, brush)
+            if old_brush:
+                gdi32.DeleteObject(wintypes.HANDLE(old_brush))
+        except Exception:   # noqa: BLE001 — winapi через ctypes: не вышло и ладно
+            pass
+
     def go_live(self) -> None:
         """Заявить о себе: значок в трее и такт состояния.
 
@@ -2308,7 +2375,7 @@ class MainWindow(FluentWindow):
         if mode == "mini":
             self.mini.show_at_saved_pos()
             return
-        self.show()
+        self.reveal()
 
     def autostart_presets(self) -> None:
         """Поднимает серверы пресетов, отмеченных «запускать при старте».
@@ -2344,7 +2411,9 @@ class MainWindow(FluentWindow):
 
     def restore_from_tray(self) -> None:
         self.mini.hide()
-        self.showNormal()
+        # Через reveal: разворачивание из мини-окна мелькало белым ровно так
+        # же, как показ на старте — окно рисуется не мгновенно.
+        self.reveal(self.showNormal)
         self.activateWindow()
         self.raise_()
 
