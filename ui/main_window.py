@@ -2415,12 +2415,35 @@ class MainWindow(FluentWindow):
                                 thick=10, pill=26, line=False, parent=self)
         self.nav_grip.resized.connect(self._nav_width_changed)
         self.hBoxLayout.insertWidget(1, self.nav_grip)
+        # Панель не должна разворачиваться сама. Её собственный фильтр событий
+        # ловит любой ресайз окна и раскрывает её, стоит окну стать шире
+        # minimumExpandWidth, — поэтому программа и открывалась с раскрытой
+        # панелью. Объявляем её несворачиваемой: этот фильтр тогда молчит, а
+        # заодно разворот всегда идёт на месте, а не всплывающим меню.
+        # Состоянием после этого распоряжаемся только мы, ручкой.
+        self.navigationInterface.panel.setCollapsible(False)
+
+        # Начальное состояние ставим напрямую, а не через _apply_nav_width:
+        # та бережёт от лишних перестроений и ничего не делает, если считает
+        # состояние уже верным. На старте оно как раз считается верным, а
+        # панель при этом остаётся в режиме «развёрнута» — и окно открывалось
+        # с раскрытой панелью независимо от настройки.
         saved = int(getattr(self.settings, "nav_width", 0) or self.NAV_NARROW)
-        self._apply_nav_width(max(self.NAV_NARROW, min(saved, wide)))
+        self._nav_expanded = saved > self.NAV_NARROW + (wide - self.NAV_NARROW) // 2
+        if self._nav_expanded:
+            self.navigationInterface.setExpandWidth(wide)
+            self.navigationInterface.panel.expand(useAni=False)
+        else:
+            self.navigationInterface.panel.collapse()
 
     def _nav_width_changed(self, _width: int) -> None:
-        """Запоминаем состояние, а не пиксели: их всего два."""
-        self.settings.nav_width = int(self.navigationInterface.width())
+        """Запоминаем состояние, а не пиксели.
+
+        Ширину читать нельзя: к моменту, когда кнопку отпустили, панель ещё
+        едет, и в настройки попадало промежуточное число вроде 91 — ни то, ни
+        сё, и при следующем запуске оно толковалось как попало.
+        """
+        self.settings.nav_width = self._nav_wide() if self._nav_expanded else self.NAV_NARROW
         self.settings.save()
 
     def go_live(self) -> None:
