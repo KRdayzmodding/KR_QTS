@@ -2372,19 +2372,33 @@ class MainWindow(FluentWindow):
         подписи так и не появятся.
         """
         panel = self.navigationInterface.panel
-        # Состояния два, промежуточных нет. Любая ширина между ними режет
-        # подписи на полуслове — «Настройки» превращаются в «Н», и панель
-        # выглядит сломанной. Поэтому тянем как переключатель: перевалило за
-        # треть пути — разворачиваем целиком, не перевалило — сворачиваем.
-        wide = self._nav_wide()
-        if width > self.NAV_NARROW + (wide - self.NAV_NARROW) // 3:
-            self.navigationInterface.setExpandWidth(wide)
+        # Состояния два, промежуточных нет: любая ширина между ними режет
+        # подписи на полуслове — «Настройки» превращаются в «Н».
+        #
+        # Два правила против дрожи. Первое: если состояние уже такое, какое
+        # нужно, не трогаем панель вовсе — иначе каждое движение мыши заново
+        # разворачивало её, и она тряслась под рукой. Второе: пороги разные в
+        # разные стороны. С одним порогом у самой границы хватало дрожания
+        # руки, чтобы панель хлопала туда-сюда по нескольку раз в секунду.
+        span = self._nav_wide() - self.NAV_NARROW
+        # Состояние помним сами, а не читаем из ширины панели: сворачивается
+        # она с анимацией, и посреди неё ширина промежуточная — по ней
+        # состояние определялось неверно, и панель хлопала всю дорогу.
+        now_wide = self._nav_expanded
+        edge = self.NAV_NARROW + span * (0.35 if now_wide else 0.6)
+        want_wide = width > edge
+        if want_wide == now_wide:
+            return
+        self._nav_expanded = want_wide
+        if want_wide:
+            self.navigationInterface.setExpandWidth(self._nav_wide())
             panel.expand(useAni=False)
         else:
             panel.collapse()
 
     def _add_nav_grip(self) -> None:
         """Ручка между панелью разделов и содержимым."""
+        self._nav_expanded = False
         from ui.resizer import Resizer
         wide = self._nav_wide()
         # Ручка на стыке панели и содержимого: узкая и без черты — край здесь
