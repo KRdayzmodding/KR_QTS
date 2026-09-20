@@ -8,7 +8,7 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QApplication,
     QSystemTrayIcon,
@@ -170,8 +170,18 @@ class MainWindow(FluentWindow):
         qconfig.themeChanged.connect(self._apply_icon)
         qconfig.themeChanged.connect(self._paint_background)
         self._paint_background()
-        self.resize(*tokens.WIN_MAIN)
         self.setMinimumSize(*tokens.WIN_MAIN_MIN)
+        # Размер — как оставили в прошлый раз. Положение не запоминаем:
+        # мониторы подключают и отключают, и окно на координатах исчезнувшего
+        # экрана человек просто не найдёт.
+        w = int(getattr(settings, "window_w", 0) or 0)
+        h = int(getattr(settings, "window_h", 0) or 0)
+        if w >= tokens.WIN_MAIN_MIN[0] and h >= tokens.WIN_MAIN_MIN[1]:
+            self.resize(w, h)
+        else:
+            self.resize(*tokens.WIN_MAIN)
+        if getattr(settings, "window_max", False):
+            self.setWindowState(Qt.WindowState.WindowMaximized)
 
         self.log_server = LogWindow(tr("main.server_log", "Логи сервера"),
                                     accent="#2e7d32", banner_text="SERVER", key=SERVER)
@@ -226,6 +236,15 @@ class MainWindow(FluentWindow):
             is_busy=lambda: self.server_running() or self.client_running())
         self.settings_page.setObjectName("settingsInterface")
 
+        # Кнопки «развернуть панель» нет: разделов три, и все узнаются по
+        # значку. Вместо неё — ручка на границе панели (см. _add_nav_grip):
+        # тем же жестом, что и список модов, и без кнопки, которая предлагала
+        # выбор между двумя видами одного списка.
+        self.navigationInterface.setMenuButtonVisible(False)
+        # Панель не разворачивается сама от ширины окна: разворачивать её или
+        # нет — решает человек ручкой, и это решение должно держаться.
+        self.navigationInterface.setMinimumExpandWidth(100000)
+
         self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
         self.addSubInterface(self.settings_page, FIF.SETTING,
                              tr("menu.settings_nav", "Настройки"),
@@ -279,6 +298,7 @@ class MainWindow(FluentWindow):
         self.steam_watcher.app_installed.connect(self._steam_app_installed)
         self.steam_watcher.start()
 
+        self._add_nav_grip()
         self._setup_tray(live)
 
     # ----------------------------------------------------- загрузки Steam
@@ -2328,6 +2348,46 @@ class MainWindow(FluentWindow):
         except Exception:   # noqa: BLE001 — winapi через ctypes: не вышло и ладно
             pass
 
+    # ------------------------------------------------- панель разделов
+
+    NAV_NARROW = 48         # только значки — столько занимает панель Fluent
+
+    def _nav_wide(self) -> int:
+        """Ширина, при которой видна самая длинная подпись, и ни пикселем больше."""
+        fm = QFontMetrics(self.font())
+        texts = [tr("main.tab_launch", "Запуск"),
+                 tr("menu.settings_nav", "Настройки"),
+                 tr("menu.about", "О программе")]
+        return self.NAV_NARROW + max(fm.horizontalAdvance(t) for t in texts) + 40
+
+    def _apply_nav_width(self, width: int) -> None:
+        """Ставит ширину панели и показывает подписи, если места хватило."""
+        panel = self.navigationInterface.panel
+        wide = width > self.NAV_NARROW + 16
+        self.navigationInterface.setExpandWidth(max(width, self.NAV_NARROW + 1))
+        if wide:
+            panel.expand(useAni=False)
+        else:
+            panel.collapse()
+        self.navigationInterface.setFixedWidth(width if wide else self.NAV_NARROW)
+
+    def _add_nav_grip(self) -> None:
+        """Ручка между панелью разделов и содержимым."""
+        from ui.resizer import Resizer
+        wide = self._nav_wide()
+        self.nav_grip = Resizer(self.navigationInterface, default=self.NAV_NARROW,
+                                minimum=self.NAV_NARROW, maximum=wide,
+                                vertical=True, apply=self._apply_nav_width,
+                                parent=self)
+        self.nav_grip.resized.connect(self._nav_width_changed)
+        self.hBoxLayout.insertWidget(1, self.nav_grip)
+        saved = int(getattr(self.settings, "nav_width", 0) or self.NAV_NARROW)
+        self._apply_nav_width(max(self.NAV_NARROW, min(saved, wide)))
+
+    def _nav_width_changed(self, width: int) -> None:
+        self.settings.nav_width = int(width)
+        self.settings.save()
+
     def go_live(self) -> None:
         """Заявить о себе: значок в трее и такт состояния.
 
@@ -2417,6 +2477,20 @@ class MainWindow(FluentWindow):
         self.activateWindow()
         self.raise_()
 
+    def _remember_size(self) -> None:
+        """Сохраняет размер окна: при закрытии и при уходе в трей.
+
+        Развёрнутое окно своих «нормальных» размеров не показывает, поэтому
+        их и не трогаем — иначе после разворота окно навсегда запомнило бы
+        размер во весь экран.
+        """
+        s = self.settings
+        was_max = bool(self.isMaximized())
+        if not was_max:
+            s.window_w, s.window_h = self.width(), self.height()
+        s.window_max = was_max
+        s.save()
+
     def quit_app(self) -> None:
         """Настоящий выход. Запущенный сервер намеренно не трогаем: это
         отдельный процесс, и он должен пережить закрытие менеджера."""
@@ -2424,6 +2498,9 @@ class MainWindow(FluentWindow):
         self.close()
 
     def closeEvent(self, event) -> None:  # имя метода задаёт Qt
+        # Размер запоминаем в обоих случаях: и когда уходим в трей, и когда
+        # закрываемся насовсем.
+        self._remember_size()
         if not self._quitting:
             event.ignore()
             self.hide()

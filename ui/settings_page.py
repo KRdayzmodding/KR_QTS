@@ -4,11 +4,11 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog, QScrollArea,
 )
-from PySide6.QtCore import QUrl, QRegularExpression
+from PySide6.QtCore import QTimer, QUrl, QRegularExpression
 from PySide6.QtGui import QDesktopServices, QRegularExpressionValidator
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox, CheckBox,
-    PushButton, PrimaryPushButton, ToolButton, BodyLabel, CaptionLabel,
+    PushButton, ToolButton, BodyLabel, CaptionLabel,
     StrongBodyLabel, SimpleCardWidget, SwitchButton, TransparentToolButton, TeachingTip,
     TeachingTipTailPosition, InfoBar, InfoBarPosition,
     FluentIcon as FIF, setTheme, Theme,
@@ -197,6 +197,7 @@ class SettingsPage(QScrollArea):
         super().__init__()
         self.settings = settings
         self.on_saved = on_saved
+        self._save_timer = None
         # «занято ли» — спрашиваем у главного окна: расположение файлов нельзя
         # менять при живом сервере, он держит профиль открытым
         self.is_busy = is_busy
@@ -599,16 +600,14 @@ class SettingsPage(QScrollArea):
         btn_detect = PushButton(FIF.SEARCH, tr("settings.autodetect",
                                                "Автопоиск незаполненных путей"))
         btn_detect.clicked.connect(self._autodetect)
-        btn_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
-        btn_save.clicked.connect(self._save)
-        self.unsaved = BodyLabel(tr("settings.unsaved",
-                                    "Есть несохранённые изменения"))
-        self.unsaved.setStyleSheet("color:#e08f00;")
-        self.unsaved.hide()
+        # Кнопки «Сохранить» нет: настройки записываются при изменении. Но
+        # молчать об этом нельзя — привычка искать кнопку сильнее, чем вера в
+        # то, что всё уже сохранено.
+        self.unsaved = BodyLabel(tr("settings.autosaved",
+                                    "Изменения сохраняются сразу"))
         btns.addWidget(btn_detect)
         btns.addStretch(1)
         btns.addWidget(self.unsaved)
-        btns.addWidget(btn_save)
         layout.addLayout(btns)
 
         self.note = CaptionLabel("")
@@ -618,16 +617,25 @@ class SettingsPage(QScrollArea):
         # Подписываемся на все поля разом: перечислять сигналы по одному —
         # верный способ забыть новое поле и получить молча неверный индикатор.
         for widget in (self.lang, self.pack_engine, self.theme, self.stop_method,
-                       self.start_mode):
-            widget.currentIndexChanged.connect(lambda _i: self._refresh_dirty())
-        for widget in (self.project_prefix, self.admin_pass, self.steam_key):
-            widget.textChanged.connect(lambda _t: self._refresh_dirty())
-        self.workshop.textChanged.connect(self._refresh_dirty)
-        self.admin_ids.changed.connect(lambda: self._refresh_dirty())
+                       self.start_mode, self.mod_update_method,
+                       self.mod_update_timeout_min):
+            widget.currentIndexChanged.connect(lambda _i: self._save())
+        # Тумблеры и галки шлют разные сигналы — подключаемся по тому, какой
+        # у виджета есть, чтобы новое поле нельзя было забыть привязать.
+        for widget in (self.check_updates, self.mod_update_before_launch,
+                       self.external_control, self.start_with_windows):
+            signal = (getattr(widget, "checkedChanged", None)
+                      or getattr(widget, "toggled", None))
+            signal.connect(lambda _v: self._save())
+        # Печатают руками — пишем по окончании ввода, а не по букве.
+        for widget in (self.project_prefix, self.admin_pass, self.steam_key,
+                       self.steamcmd_exe, self.steam_login):
+            widget.editingFinished.connect(self._save)
+        self.workshop.textChanged.connect(self._save_later)
+        self.admin_ids.changed.connect(lambda: self._save())
         for row in (self.p_client, self.p_client_exp, self.p_server, self.p_server_exp,
                     self.p_mikero, self.p_tools, self.p_tools_exp, self.p_downloads):
-            row.edit.textChanged.connect(lambda _t: self._refresh_dirty())
-        self._refresh_dirty()
+            row.edit.editingFinished.connect(self._save)
 
         # Слежением за загрузками Steam владеет главное окно: качать можно
         # несколько компонентов сразу и уйти с этой страницы, а уведомление и
@@ -899,10 +907,10 @@ class SettingsPage(QScrollArea):
         return any(getattr(self.settings, k) != v for k, v in self._form_values().items())
 
     def _refresh_dirty(self) -> None:
-        """Подсказка рядом с «Сохранить»: настройки применяются только по ней,
-        а диалог флагов pboProject закрывается по OK и выглядит применённым —
-        без этой пометки правки молча терялись при выходе."""
-        self.unsaved.setVisible(self.is_dirty())
+        """Раньше показывала «есть несохранённые изменения». Теперь их не
+        бывает: всё пишется сразу, — но метод зовут из нескольких мест, и
+        пусть он останется точкой, где это решается."""
+        self.unsaved.setVisible(True)
 
     def _modupd_method_changed(self, *_a) -> None:
         """Поля SteamCMD видны только когда он и выбран.
@@ -928,14 +936,33 @@ class SettingsPage(QScrollArea):
                         position=InfoBarPosition.TOP_RIGHT)
 
     def _save(self) -> None:
+        """Пишет форму в настройки. Зовётся на каждое изменение."""
         s = self.settings
-        for key, value in self._form_values().items():
+        values = self._form_values()
+        autostart_changed = values.get("start_with_windows") != s.start_with_windows
+        for key, value in values.items():
             setattr(s, key, value)
         s.save()
-        self._apply_autostart()
+        # В реестр ходим, только когда тронули саму галку: при записи по
+        # каждому изменению это был бы поход на любое движение в форме.
+        if autostart_changed:
+            self._apply_autostart()
         self._refresh_dirty()
         if self.on_saved:
             self.on_saved()
+
+    def _save_later(self) -> None:
+        """Сохранение с отсрочкой — для полей, которые правят построчно.
+
+        Список папок мастерской — многострочное поле без «конца ввода»:
+        писать на каждый символ незачем, а терять набранное нельзя.
+        """
+        if self._save_timer is None:
+            self._save_timer = QTimer(self)
+            self._save_timer.setSingleShot(True)
+            self._save_timer.setInterval(700)
+            self._save_timer.timeout.connect(self._save)
+        self._save_timer.start()
 
     def _apply_autostart(self) -> None:
         """Правит запись в автозагрузке под галку.

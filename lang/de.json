@@ -1086,5 +1086,6 @@
   "settings.check_updates_off": "Nicht prüfen",
   "common.resize_hint": "Ziehen, um die Höhe zu ändern. Doppelklick setzt zurück",
   "preset.apply_name": "Übernehmen",
-  "preset.autosaved": "Änderungen werden sofort gespeichert"
+  "preset.autosaved": "Änderungen werden sofort gespeichert",
+  "settings.autosaved": "Änderungen werden sofort gespeichert"
 }
