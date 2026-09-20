@@ -201,13 +201,28 @@ def flashes() -> None:
     win = MainWindow(Settings.load())
     for _ in range(20):
         app.processEvents()
-    app.removeEventFilter(catcher)
+    main_seen = list(catcher.seen)
     win.deleteLater()
     # Само главное окно показаться не успевает (show ему не говорили), так что
     # честный ответ — ноль. Считаем всё, что всплыло сверх него.
-    extra = [n for n in catcher.seen if n != "MainWindow"]
+    # Отдельно — страница настроек с пустыми путями: кнопки «получить
+    # недостающее» видны только в этом случае, и мигали именно они. На
+    # заполненных настройках разработчика проверка их не касалась.
+    from core.settings import Settings as _S
+    from ui.settings_page import SettingsPage
+    blank = _S()
+    catcher.seen.clear()
+    page = SettingsPage(blank)
+    for _ in range(5):
+        app.processEvents()
+    page.deleteLater()
+    check(f"страница настроек с пустыми путями: всплыло окон {len(catcher.seen)}",
+          not catcher.seen, ", ".join(sorted(set(catcher.seen))))
+
+    extra = [n for n in main_seen if n != "MainWindow"]
     check(f"при сборке главного окна всплыло окон: {len(extra)}", not extra,
           ", ".join(sorted(set(extra))))
+    app.removeEventFilter(catcher)
     _poke(win, app)
 
 

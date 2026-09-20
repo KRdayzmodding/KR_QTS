@@ -7,7 +7,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import setTheme, setThemeColor, Theme
 
-from core import console, crashguard, i18n, updater_apply
+from core import console, crashguard, i18n, updater_apply, wintrace
 from core.settings import APP_DIR, Settings
 from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
@@ -82,6 +82,8 @@ def main() -> int:
     # чтение настроек или сборка окна, пользователь увидит причину, а не
     # исчезнувшее окно. У собранной версии stderr некуда выводить.
     crashguard.install(f"{APP_NAME} {VERSION}", APP_DIR / "logs")
+    # Ловушка мигающих окон — только по просьбе (KR_QTS_TRACE_WINDOWS=1).
+    wintrace.install(app, APP_DIR / "logs")
     # общая для всех окон: мастер, главное окно и окна логов берут её сами
     app.setWindowIcon(outside_icon())
     # колесо мыши листает страницы, а не правит числа под курсором

@@ -150,7 +150,7 @@ def make_install_button(parent, settings_key: str):
     app = steam_urls.SETTINGS_APPS.get(settings_key)
     if app:
         appid, title = app
-        btn = ToolButton(FIF.DOWNLOAD)
+        btn = ToolButton(FIF.DOWNLOAD, parent)
         btn.setToolTip(tr("settings.install_via_steam",
                           "Установить «{n}» через Steam", n=title))
         btn.clicked.connect(lambda _=False, a=appid, t=title: install_via_steam(parent, a, t))
@@ -159,7 +159,7 @@ def make_install_button(parent, settings_key: str):
     ext = EXTERNAL_DOWNLOADS.get(settings_key)
     if ext:
         url, title = ext
-        btn = ToolButton(FIF.LINK)
+        btn = ToolButton(FIF.LINK, parent)
         btn.setToolTip(tr("settings.open_download_page",
                           "Открыть страницу загрузки «{n}»", n=title))
         btn.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
