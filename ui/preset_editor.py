@@ -131,6 +131,21 @@ class AdvancedPresetDialog(ThemedDialog):
         self.name_error.setWordWrap(True)
         form.addRow("", self.name_error)
 
+        # Название — единственное, что не применяется само: по нему называются
+        # файл пресета, конфиг и папка профиля, и смена имени переименовывает
+        # их на диске. Кнопка видна, только пока имя отличается от записанного.
+        self.b_rename = PushButton(FIF.EDIT, tr("preset.apply_name", "Применить"))
+        self.b_rename.clicked.connect(self._apply_name)
+        self.b_rename.setVisible(False)
+        # Кнопка маленькая и прижата к левому краю поля: она относится к
+        # одному значению, а не ко всему окну, и во всю ширину читалась бы
+        # как главное действие.
+        rename_row = QHBoxLayout()
+        rename_row.setContentsMargins(0, 0, 0, 0)
+        rename_row.addWidget(self.b_rename)
+        rename_row.addStretch(1)
+        form.addRow("", rename_row)
+
         self.mode = ComboBox()
         self.mode.addItem(tr("preset.mode_diag",
                              "Diag: DayZDiag_x64 как сервер и клиент (отладка, filepatching)"),
@@ -177,7 +192,7 @@ class AdvancedPresetDialog(ThemedDialog):
         self.mode.currentIndexChanged.connect(self._mission_ctx)
         self.branch.currentIndexChanged.connect(self._mission_ctx)
         self.name.textChanged.connect(self._name_changed)
-        self.map_picker.changed.connect(self._files_hint_update)
+
         form.addRow(tr("preset.map", "Карта"), self.map_picker)
         self.files_hint = CaptionLabel("")
         self.files_hint.setWordWrap(True)
@@ -261,13 +276,16 @@ class AdvancedPresetDialog(ThemedDialog):
         layout.addLayout(form2)
 
         btns = QHBoxLayout()
+        # Подпись вместо кнопки «Сохранить»: сохранять нечего, всё уже
+        # записано. Молчать об этом нельзя — человек привык искать кнопку и
+        # без неё не уверен, что изменения уцелели.
+        self.saved_hint = CaptionLabel(tr("preset.autosaved",
+                                          "Изменения сохраняются сразу"))
+        btns.addWidget(self.saved_hint)
         btns.addStretch(1)
-        b_cancel = PushButton(tr("common.cancel", "Отмена"))
-        b_cancel.clicked.connect(self.reject)
-        b_save = PrimaryPushButton(FIF.SAVE, tr("common.save", "Сохранить"))
-        b_save.clicked.connect(self._save)
-        btns.addWidget(b_cancel)
-        btns.addWidget(b_save)
+        b_close = PrimaryPushButton(tr("common.close", "Закрыть"))
+        b_close.clicked.connect(self.accept)
+        btns.addWidget(b_close)
         # Кнопки — за пределами прокрутки: до них должно быть можно дотянуться
         # из любого положения списка, не докручивая до низа.
         btns.setContentsMargins(16, 8, 16, 12)
@@ -279,6 +297,48 @@ class AdvancedPresetDialog(ThemedDialog):
         # оказывалось на пару сотен пикселей меньше нужного.
         self._inner = inner
         self._width_fitted = False
+        self._wire_autosave()
+
+    def _wire_autosave(self) -> None:
+        """Связывает каждый контрол с записью значения.
+
+        Текстовые поля — по окончании ввода, а не по букве: иначе пресет
+        переписывался бы на каждый символ, а «Доп. аргументы» успели бы
+        сохраниться в десятке промежуточных состояний.
+        """
+        self.mode.currentIndexChanged.connect(self._apply_now)
+        self.branch.currentIndexChanged.connect(self._apply_now)
+        self.map_picker.changed.connect(self._map_changed)
+        self.port.valueChanged.connect(self._apply_now)
+        self.time_login.valueChanged.connect(self._apply_now)
+        self.chk_autostart.toggled.connect(self._apply_now)
+        self.chk_revive.toggled.connect(self._apply_now)
+        self.chk_restart.toggled.connect(self._apply_now)
+        self.restart_times.changed.connect(self._apply_now)
+        self.warn_min.valueChanged.connect(self._apply_now)
+        for edit in (self.restart_msg, self.extra_server, self.extra_client):
+            edit.editingFinished.connect(self._apply_now)
+        self._wire_params()
+
+    def _wire_params(self) -> None:
+        """Параметры сервера и клиента — те же правила.
+
+        Зовётся заново после пересборки: набор параметров зависит от режима,
+        и старые виджеты к этому моменту уже уничтожены.
+        """
+        for w in self._param_widgets.values():
+            if hasattr(w, "toggled"):
+                w.toggled.connect(self._apply_now)
+            elif hasattr(w, "currentIndexChanged"):
+                w.currentIndexChanged.connect(self._apply_now)
+            elif hasattr(w, "editingFinished"):
+                w.editingFinished.connect(self._apply_now)
+
+    def _map_changed(self, *_a) -> None:
+        """Карту выбирают явно, поэтому применяем сразу — вместе с миссией."""
+        self._files_hint_update()
+        self._apply_now()
+        self.map_picker.ensure_mission()    # нет на диске — начнётся загрузка
 
     def _clear_storage(self) -> None:
         from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
@@ -505,6 +565,7 @@ class AdvancedPresetDialog(ThemedDialog):
         self.name.setError(False)
         self.name_error.setText("")
         self.map_picker.set_preset_name(name.strip())
+        self.b_rename.setVisible(name.strip() != self.preset.name)
 
     def _make_shortcut(self) -> None:
         """Ярлык быстрого запуска на рабочем столе."""
@@ -574,6 +635,8 @@ class AdvancedPresetDialog(ThemedDialog):
                 f.addRow(label, w)
                 self._param_widgets[(target, spec.name)] = w
             self.params_box.addWidget(box)
+        if hasattr(self, "_inner"):     # первая сборка идёт до _wire_autosave
+            self._wire_params()
 
     def _collect_params(self, target: str) -> dict:
         out = {}
@@ -601,9 +664,13 @@ class AdvancedPresetDialog(ThemedDialog):
                         out[spec.name] = text
         return out
 
-    def _save(self) -> None:
-        from core.layout import (valid_name, name_conflict, create_preset_files,
-                                 rename_preset_files)
+    def _apply_name(self) -> None:
+        """Переименование: проверка, файлы на диске, запись.
+
+        Отдельным действием, потому что трогает диск. Всё остальное в этом
+        окне записывается само, см. _apply_now.
+        """
+        from core.layout import (valid_name, name_conflict, rename_preset_files)
         p = self.preset
         new_name = self.name.text().strip() or p.name
         if not valid_name(new_name):
@@ -628,6 +695,17 @@ class AdvancedPresetDialog(ThemedDialog):
                                 self.mode.currentData(), p.name, new_name, world)
             p.name = new_name  # save() сам уберёт старый файл пресета
             self.map_picker.set_preset_name(new_name)
+        self._apply_now()
+        self.b_rename.setVisible(False)
+
+    def _apply_now(self, *_a) -> None:
+        """Записывает всё, что можно записать без вопросов, и сохраняет.
+
+        Зовётся на любое изменение в окне. Имя сюда не входит: оно требует
+        проверки и переименования файлов, см. _apply_name.
+        """
+        from core.layout import create_preset_files
+        p = self.preset
         p.mode = self.mode.currentData()
         p.branch = self.branch.currentData()
         p.mission = self.map_picker.mission_name()
@@ -659,8 +737,6 @@ class AdvancedPresetDialog(ThemedDialog):
         p.extra_server = self.extra_server.text().strip()
         p.extra_client = self.extra_client.text().strip()
         p.save()
-        self.map_picker.ensure_mission()  # миссии нет — стартует модальная загрузка
-        self.accept()
 
 
 # ---------------------------------------------------------------- Ленивый мастер

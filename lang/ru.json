@@ -1084,5 +1084,7 @@
   "gate.failed_body": "{m}\n\nПродолжаем на текущей версии.",
   "settings.check_updates_on": "Проверять",
   "settings.check_updates_off": "Не проверять",
-  "common.resize_hint": "Потяните, чтобы изменить высоту. Двойной щелчок — вернуть как было"
+  "common.resize_hint": "Потяните, чтобы изменить высоту. Двойной щелчок — вернуть как было",
+  "preset.apply_name": "Применить",
+  "preset.autosaved": "Изменения сохраняются сразу"
 }

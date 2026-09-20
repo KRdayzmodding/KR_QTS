@@ -1084,5 +1084,7 @@
   "gate.failed_body": "{m}\n\nContinuing on the current version.",
   "settings.check_updates_on": "Check",
   "settings.check_updates_off": "Don't check",
-  "common.resize_hint": "Drag to resize. Double-click to reset"
+  "common.resize_hint": "Drag to resize. Double-click to reset",
+  "preset.apply_name": "Apply",
+  "preset.autosaved": "Changes are saved as you make them"
 }
