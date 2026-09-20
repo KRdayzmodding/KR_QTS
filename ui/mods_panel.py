@@ -18,7 +18,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QSize, QStandardPaths, QDir
+from PySide6.QtCore import QTimer, Qt, QThread, Signal, QUrl, QSize, QStandardPaths, QDir
 from PySide6.QtGui import QColor, QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem, QHeaderView, QMenu,
@@ -683,6 +683,10 @@ class ModsPanel(QWidget):
     update_check_done = Signal(list, list)
 
     presets_changed = Signal()   # пресеты правились на диске — окну пора перечитать
+    # Состав текущего пресета изменили прямо здесь, галкой. Это не повод
+    # перечитывать пресеты с диска и обходить папки модов: окну достаточно
+    # пересчитать свои подписи.
+    mods_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1242,9 +1246,22 @@ class ModsPanel(QWidget):
         if enabled:
             (p.server_mods if mod.is_server else p.mods).append(mod.name)
         p.save()
-        self.presets_changed.emit()
+        self.mods_changed.emit()
+        # Признак «подключён» держит порядок строк. Правим его отложенно:
+        # сортировка переставляет строку, а делать это внутри сигнала самой
+        # строки нельзя — именно так программа и падала.
+        QTimer.singleShot(0, lambda it=item, on=enabled: self._mark_picked(it, on))
         if enabled and not was:
             self._check_dependencies([mod])
+
+    def _mark_picked(self, item, on: bool) -> None:
+        """Обновляет признак «подключён» у строки — после того, как сигнал ушёл."""
+        try:
+            was_building, self._building = self._building, True
+            item.setData(COL_NAME, ROLE_PICKED, 0 if on else 1)
+            self._building = was_building
+        except RuntimeError:
+            pass        # строки уже нет: список успели пересобрать
 
     def _set_all(self, state: bool) -> None:
         p = self.preset
@@ -1257,6 +1274,7 @@ class ModsPanel(QWidget):
                         and self.registry.index_of(mod, p.server_mods) is None:
                     (p.server_mods if mod.is_server else p.mods).append(mod.name)
         p.save()
+        self.mods_changed.emit()
         self._rebuild()
 
     # ---------------------------------------------------------------- зависимости

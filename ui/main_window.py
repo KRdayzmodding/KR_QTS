@@ -180,6 +180,9 @@ class MainWindow(FluentWindow):
         # файлах пресетов — тот, что открыт у нас, надо перечитать, иначе
         # запустимся по устаревшему списку из памяти
         self.mods_panel.presets_changed.connect(self._presets_changed_outside)
+        # Состав пресета правят галкой здесь же — окну надо только пересчитать
+        # подписи, а не перечитывать пресеты и обходить папки модов заново.
+        self.mods_panel.mods_changed.connect(self._update_launch_button)
 
         self.launch_page = LaunchInterface(self)
         self.pack_table = PackingLog(self.launch_page.launch_log)
