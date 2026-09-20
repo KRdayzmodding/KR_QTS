@@ -1083,5 +1083,6 @@
   "gate.failed_title": "Update nicht installiert",
   "gate.failed_body": "{m}\n\nWir machen mit der aktuellen Version weiter.",
   "settings.check_updates_on": "Prüfen",
-  "settings.check_updates_off": "Nicht prüfen"
+  "settings.check_updates_off": "Nicht prüfen",
+  "common.resize_hint": "Ziehen, um die Höhe zu ändern. Doppelklick setzt zurück"
 }
