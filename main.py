@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import setTheme, setThemeColor, Theme
 
@@ -152,14 +153,23 @@ def main() -> int:
         window.launch_preset_by_stem(wanted)
     else:
         window.show_as_configured()
-    # после показа: подхват уже работающих клиента и сервера прошлого запуска
-    window.adopt_running()
-    if not wanted and not quiet:
-        # Автозапуск — после подхвата: сервер прошлой сессии мог пережить
-        # закрытие менеджера, и поднимать второй поверх него незачем.
-        window.autostart_presets()
-    # проверка версии — после показа окна: сеть не должна задерживать запуск
-    window.start_update_check()
+    def after_paint() -> None:
+        """Всё, что можно сделать, когда окно уже нарисовано.
+
+        Раньше это шло сразу за show(), и опрос процессов прошлой сессии
+        держал поток четверть секунды — ровно столько окно и висело пустым
+        белым прямоугольником. Показать сначала, поработать потом.
+        """
+        # подхват уже работающих клиента и сервера прошлого запуска
+        window.adopt_running()
+        if not wanted and not quiet:
+            # Автозапуск — после подхвата: сервер прошлой сессии мог пережить
+            # закрытие менеджера, и поднимать второй поверх него незачем.
+            window.autostart_presets()
+        # проверка версии — сеть не должна задерживать запуск
+        window.start_update_check()
+
+    QTimer.singleShot(0, after_paint)
     return app.exec()
 
 

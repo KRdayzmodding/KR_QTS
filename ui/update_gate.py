@@ -143,6 +143,12 @@ class UpdateGate(ThemedDialog):
         self.release: Release | None = None
         self.accepted_update = False
         self._answered = False
+        # «Всё актуально» уходит не по таймеру, а когда сойдётся двое: время
+        # показа вышло И главное окно собрано. Иначе бывает так: ответ пришёл
+        # за треть секунды, окно проверки закрылось — а главное ещё строится,
+        # и человек полсекунды смотрит на пустой белый прямоугольник.
+        self._ready = False
+        self._held = False
 
         self.setWindowTitle(tr("gate.title", "Обновление"))
         self.setFixedSize(SIDE, SIDE)
@@ -239,7 +245,21 @@ class UpdateGate(ThemedDialog):
     def show_current(self) -> None:
         self._settle(Mark.OK, tokens.color("success"),
                      tr("gate.current", "Установлена актуальная версия"))
-        QTimer.singleShot(OK_HOLD_MS, self.reject)
+        QTimer.singleShot(OK_HOLD_MS, self._hold_over)
+
+    def _hold_over(self) -> None:
+        """Минимальное время показа вышло."""
+        self._held = True
+        self._close_when_ready()
+
+    def build_finished(self) -> None:
+        """Главное окно собрано — можно уступать ему место."""
+        self._ready = True
+        self._close_when_ready()
+
+    def _close_when_ready(self) -> None:
+        if self._held and self._ready:
+            self.reject()
 
     def show_found(self, rel: Release) -> None:
         self.release = rel
@@ -305,7 +325,7 @@ def run(settings, build=None, parent: QWidget | None = None):
     gate = UpdateGate(parent)
     worker = updater.CheckWorker(timeout=int(TIMEOUT_MS / 1000))
     _detached.append(worker)
-    made: dict[str, object] = {"win": None}
+    made: dict[str, object] = {"win": None, "err": None}
 
     def got(rel: Release | None) -> None:
         offline = getattr(worker, "offline", False)
@@ -319,15 +339,32 @@ def run(settings, build=None, parent: QWidget | None = None):
                             if worker in _detached else None)
     worker.start()
 
+    def do_build() -> None:
+        if made["win"] is not None:
+            return                  # уже собрали (окно закрыли раньше срока)
+        try:
+            made["win"] = build()
+        except Exception as e:      # noqa: BLE001 — доложим после закрытия окна
+            made["err"] = e
+        gate.build_finished()       # даже если не вышло: держать окно нечем
+
     if build is not None:
         # Через очередь событий, а не сразу: сборка держит поток секунду с
         # лишним, и начатая раньше показа она задержала бы саму крутилку.
-        QTimer.singleShot(0, lambda: made.__setitem__("win", build()))
+        QTimer.singleShot(0, do_build)
+    else:
+        gate.build_finished()
     gate.exec()
+
+    if made.get("err") is not None:
+        raise made["err"]           # пусть разбирается сторож падений
 
     window = made["win"]
     if window is None and build is not None:
-        window = build()            # окно закрыли раньше, чем мы успели собрать
+        # Окно закрыли раньше, чем очередь событий дошла до сборки. Собираем
+        # здесь и кладём в тот же словарь: отложенный вызов увидит готовое и
+        # второго окна не построит.
+        window = made["win"] = build()
     if not gate.accepted_update or gate.release is None:
         return True, window
     return _install(gate.release, parent), window
