@@ -241,9 +241,12 @@ class MainWindow(FluentWindow):
         # тем же жестом, что и список модов, и без кнопки, которая предлагала
         # выбор между двумя видами одного списка.
         self.navigationInterface.setMenuButtonVisible(False)
-        # Панель не разворачивается сама от ширины окна: разворачивать её или
-        # нет — решает человек ручкой, и это решение должно держаться.
-        self.navigationInterface.setMinimumExpandWidth(100000)
+        # Порог, ниже которого библиотека показывает панель не на месте, а
+        # всплывающим меню поверх содержимого: она считает, что окну узко.
+        # Ставим заведомо маленький — у нас панель разворачивается ручкой и
+        # всегда должна оставаться на своём месте. Сам порог считается как
+        # minimumExpandWidth + expandWidth - 322, см. NavigationPanel.expand.
+        self.navigationInterface.setMinimumExpandWidth(200)
 
         self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
         self.addSubInterface(self.settings_page, FIF.SETTING,
@@ -2361,24 +2364,30 @@ class MainWindow(FluentWindow):
         return self.NAV_NARROW + max(fm.horizontalAdvance(t) for t in texts) + 40
 
     def _apply_nav_width(self, width: int) -> None:
-        """Ставит ширину панели и показывает подписи, если места хватило."""
+        """Ставит ширину панели и показывает подписи, если места хватило.
+
+        Ширину разворота задаём только при разворачивании. Записать её в
+        свёрнутом состоянии нельзя: библиотека помнит это число и в следующий
+        раз «развернёт» панель ровно в него — то есть в те же 48 пикселей, и
+        подписи так и не появятся.
+        """
         panel = self.navigationInterface.panel
-        wide = width > self.NAV_NARROW + 16
-        self.navigationInterface.setExpandWidth(max(width, self.NAV_NARROW + 1))
-        if wide:
+        if width > self.NAV_NARROW + 16:
+            self.navigationInterface.setExpandWidth(width)
             panel.expand(useAni=False)
         else:
             panel.collapse()
-        self.navigationInterface.setFixedWidth(width if wide else self.NAV_NARROW)
 
     def _add_nav_grip(self) -> None:
         """Ручка между панелью разделов и содержимым."""
         from ui.resizer import Resizer
         wide = self._nav_wide()
+        # Ручка на стыке панели и содержимого: узкая и без черты — край здесь
+        # виден сам, и лишняя линия рядом с границей панели читается как рябь.
         self.nav_grip = Resizer(self.navigationInterface, default=self.NAV_NARROW,
                                 minimum=self.NAV_NARROW, maximum=wide,
                                 vertical=True, apply=self._apply_nav_width,
-                                parent=self)
+                                thick=10, pill=26, line=False, parent=self)
         self.nav_grip.resized.connect(self._nav_width_changed)
         self.hBoxLayout.insertWidget(1, self.nav_grip)
         saved = int(getattr(self.settings, "nav_width", 0) or self.NAV_NARROW)
