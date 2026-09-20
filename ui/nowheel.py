@@ -70,6 +70,8 @@ class ChainGuard(QObject):
         page = _outer_area(area)
         if page is not None:
             return self._hand_off(area, page, event)     # колесо пришло списку
+        if not _is_page(area):
+            return False        # не страница, а просто список — цеплять нечего
         inner = _inner_area_under(event, area)
         if inner is None:
             return False        # курсор не над списком — страница едет как обычно
@@ -116,19 +118,30 @@ class ChainGuard(QObject):
 
 
 def _outer_area(area: QAbstractScrollArea):
-    """Область прокрутки, внутри которой лежит эта. None — она и есть внешняя."""
+    """Страница, внутри которой лежит эта область. None — страницы нет.
+
+    Страницей считаем только настоящую прокручиваемую страницу — QScrollArea
+    со своим содержимым. Список сам по себе тоже область прокрутки, и внутри
+    его строк живут свои виджеты: без этой проверки дерево модов оказывалось
+    «страницей» для собственного содержимого.
+    """
     node = area.parentWidget()
     while node is not None:
-        if isinstance(node, QAbstractScrollArea):
+        if isinstance(node, QAbstractScrollArea) and _is_page(node):
             return node
         node = node.parentWidget()
     return None
 
 
+def _is_page(area) -> bool:
+    getter = getattr(area, "widget", None)
+    return callable(getter) and getter() is not None
+
+
 def _anchor_of(widget, page: QAbstractScrollArea):
     """Карточка, в которой лежит список. Нет такой — сам список."""
     node = widget
-    while node is not None and node is not page.widget():
+    while node is not None and node is not page:
         if node.property("wheelAnchor"):
             return node
         node = node.parentWidget()

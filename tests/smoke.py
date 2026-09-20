@@ -229,6 +229,37 @@ def flashes() -> None:
     _poke(win, app)
 
 
+def wheel_rules() -> None:
+    """Правило колеса не должно спотыкаться о вложенные списки.
+
+    Оно ходит по дереву виджетов вверх, разыскивая страницу. Список сам по
+    себе тоже область прокрутки, и внутри его строк бывают свои виджеты —
+    один такой случай уронил программу прямо под курсором: «страницей»
+    оказалось само дерево модов.
+    """
+    print("Правила колеса:")
+    from PySide6.QtWidgets import QApplication, QScrollArea, QTreeWidget, QWidget
+    from ui import nowheel
+    QApplication.instance() or QApplication([])
+
+    page = QScrollArea()
+    inner = QWidget()
+    page.setWidget(inner)
+    tree = QTreeWidget(inner)
+    nested = QScrollArea(tree.viewport())       # список внутри строки списка
+
+    found = nowheel._outer_area(nested)
+    check("страницей считается страница, а не список",
+          found is page, f"нашлось: {type(found).__name__ if found else 'ничего'}")
+    try:
+        nowheel._anchor_of(nested, page)
+        ok, detail = True, ""
+    except Exception as e:      # noqa: BLE001 — прогон должен дойти до конца
+        ok, detail = False, f"{type(e).__name__}: {e}"
+    check("поиск карточки-якоря не падает", ok, detail)
+    page.deleteLater()
+
+
 def _cfg_card_built():
     """Карточка конфига со всеми ключами — как её видит человек."""
     from ui.cfg_editor import CfgCard
@@ -270,6 +301,26 @@ def _poke(win, app) -> None:
             panel.search.setText("kr")
             panel.search.setText("")
         run("фильтр модов принимает текст", type_filter)
+
+    if panel is not None:
+        def spin_wheel():
+            """Колесо над списком модов — там живёт правило передачи хода.
+
+            Оно лазает по дереву виджетов вверх и вниз, и одна неверная
+            догадка о том, что считать страницей, роняла программу прямо под
+            курсором.
+            """
+            from PySide6.QtCore import QPoint, QPointF, Qt
+            from PySide6.QtGui import QWheelEvent
+            view = panel.tree.viewport()
+            centre = view.rect().center()
+            for delta in (-120, 120):
+                e = QWheelEvent(QPointF(centre), QPointF(view.mapToGlobal(centre)),
+                                QPoint(0, 0), QPoint(0, delta),
+                                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                Qt.ScrollPhase.NoScrollPhase, False)
+                app.sendEvent(view, e)
+        run("колесо над списком модов", spin_wheel)
 
     page = getattr(win, "launch_page", None)
     for name in ("setup_card", "mods_card", "pack_card"):
@@ -333,6 +384,7 @@ def external() -> None:
 def main() -> int:
     dictionaries()
     external()
+    wheel_rules()
     flashes()
     for lang in LANGS:
         screens(lang)
