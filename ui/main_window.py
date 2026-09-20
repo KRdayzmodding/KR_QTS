@@ -2372,8 +2372,13 @@ class MainWindow(FluentWindow):
         подписи так и не появятся.
         """
         panel = self.navigationInterface.panel
-        if width > self.NAV_NARROW + 16:
-            self.navigationInterface.setExpandWidth(width)
+        # Состояния два, промежуточных нет. Любая ширина между ними режет
+        # подписи на полуслове — «Настройки» превращаются в «Н», и панель
+        # выглядит сломанной. Поэтому тянем как переключатель: перевалило за
+        # треть пути — разворачиваем целиком, не перевалило — сворачиваем.
+        wide = self._nav_wide()
+        if width > self.NAV_NARROW + (wide - self.NAV_NARROW) // 3:
+            self.navigationInterface.setExpandWidth(wide)
             panel.expand(useAni=False)
         else:
             panel.collapse()
@@ -2393,8 +2398,9 @@ class MainWindow(FluentWindow):
         saved = int(getattr(self.settings, "nav_width", 0) or self.NAV_NARROW)
         self._apply_nav_width(max(self.NAV_NARROW, min(saved, wide)))
 
-    def _nav_width_changed(self, width: int) -> None:
-        self.settings.nav_width = int(width)
+    def _nav_width_changed(self, _width: int) -> None:
+        """Запоминаем состояние, а не пиксели: их всего два."""
+        self.settings.nav_width = int(self.navigationInterface.width())
         self.settings.save()
 
     def go_live(self) -> None:

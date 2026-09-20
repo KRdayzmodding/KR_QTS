@@ -119,16 +119,31 @@ class Resizer(QWidget):
     def mousePressEvent(self, e):   # имя метода задаёт Qt
         self._from = e.globalPosition().toPoint()
         self._start = self._size()
+        # Держим мышь за собой: ручка во время перетаскивания уезжает вместе с
+        # краем, курсор оказывается вне её, и без явного захвата Qt перестаёт
+        # слать события — перетаскивание срывалось на полпути.
+        self.grabMouse()
 
     def mouseMoveEvent(self, e):    # имя метода задаёт Qt
         if self._from.isNull():
+            return
+        if not (e.buttons() & Qt.MouseButton.LeftButton):
+            # Кнопку отпустили мимо нас (захват всё-таки сорвался) — заканчиваем,
+            # иначе ручка продолжала тянуть за просто ведомой мышью.
+            self._finish()
             return
         now = e.globalPosition().toPoint()
         delta = (now.x() - self._from.x()) if self.vertical else (now.y() - self._from.y())
         self._apply(self._start + delta)
 
     def mouseReleaseEvent(self, e):  # имя метода задаёт Qt
+        self._finish()
+
+    def _finish(self) -> None:
+        if self._from.isNull():
+            return
         self._from = QPoint()
+        self.releaseMouse()
         self.resized.emit(self._size())
 
     def mouseDoubleClickEvent(self, e):     # имя метода задаёт Qt
