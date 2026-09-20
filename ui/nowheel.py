@@ -18,7 +18,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject
+from PySide6.QtCore import QEvent, QObject, QPoint
 from PySide6.QtWidgets import QAbstractScrollArea, QAbstractSpinBox, QApplication
 
 
@@ -38,13 +38,24 @@ class WheelGuard(QObject):
         return True
 
 
-class ChainGuard(QObject):
-    """Не даёт колесу перескочить с упёршегося списка на страницу под ним.
+# Сколько страница проезжает за один щелчок колеса, когда доводит край
+# упёршегося списка до экрана. Примерно как обычный шаг колеса в Windows.
+_STEP = 110
 
-    Перехватываем не у списка, а у страницы: к ней событие приходит уже
-    после того, как список отказался его брать. Если курсор стоит над
-    вложенной областью, которой есть куда листать, — значит она просто
-    упёрлась в край, и страница здесь ни при чём.
+
+class ChainGuard(QObject):
+    """Колесо над упёршимся списком не уносит страницу, но край списка покажет.
+
+    Перехватываем не у списка, а у страницы: к ней событие приходит уже после
+    того, как список отказался его брать. Дальше два случая.
+
+    Список виден целиком — страницу не трогаем: рука делает одно движение, а
+    поехало бы другое, и это читается как сбой.
+
+    Список торчит за край страницы — докручиваем её ровно настолько, чтобы
+    показался тот край, к которому тянется человек, и останавливаемся. Иначе
+    в невысоком окне последние строки списка увидеть нечем: сам он докручен,
+    а страница стоит.
     """
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
@@ -54,7 +65,17 @@ class ChainGuard(QObject):
         if page is None:
             return False
         inner = _inner_area_under(event, page)
-        return inner is not None
+        if inner is None:
+            return False            # курсор не над списком — страница едет как обычно
+
+        down = event.angleDelta().y() < 0
+        top = inner.mapTo(page.viewport(), QPoint(0, 0)).y()
+        hidden = (top + inner.height() - page.viewport().height()) if down else -top
+        if hidden > 0:
+            bar = page.verticalScrollBar()
+            step = min(hidden, _STEP)
+            bar.setValue(bar.value() + (step if down else -step))
+        return True                 # в любом случае дальше событие не пускаем
 
 
 def _area_of_viewport(obj: QObject) -> QAbstractScrollArea | None:
