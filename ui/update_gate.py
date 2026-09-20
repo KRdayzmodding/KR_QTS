@@ -209,16 +209,17 @@ def _install(rel: Release, parent: QWidget | None) -> bool:
     """Качает и ставит. True — идти дальше (не вышло), False — мы закрываемся."""
     from ui.update_dialog import UpdateDialog
 
-    dlg = UpdateDialog(rel, parent=parent)
+    # downloading=True: «Обновить» уже нажали, и окно сразу показывает ход
+    # загрузки, а не кнопку «Скачать». Второй раз спрашивать о том же — лишний
+    # клик, а кнопка, которая ничего не начинает, потому что уже качается, —
+    # прямая ложь.
+    dlg = UpdateDialog(rel, downloading=True, parent=parent)
     worker = updater.DownloadWorker(rel, dlg)
     worker.progress.connect(dlg.set_progress)
     worker.failed.connect(dlg.set_failed)
     worker.done.connect(lambda _p: dlg.set_ready())
-    dlg.download_requested.connect(worker.start)
     go = {"v": False}
     dlg.restart_requested.connect(lambda: go.__setitem__("v", True))
-    # Загрузку начинаем сразу: «Обновить» уже нажали, второй раз спрашивать
-    # незачем — окно здесь показывает список изменений и ход загрузки.
     QTimer.singleShot(0, worker.start)
     dlg.exec()
     if worker.isRunning():          # окно закрыли посреди загрузки
