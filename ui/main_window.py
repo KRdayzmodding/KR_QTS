@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QAbstractAnimation, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QApplication,
@@ -2390,10 +2390,16 @@ class MainWindow(FluentWindow):
         if want_wide == now_wide:
             return
         self._nav_expanded = want_wide
+        # Предыдущее движение могло ещё доигрывать. Библиотека в этом случае
+        # просто игнорирует новую команду — панель «залипала» на полпути и
+        # доезжала не туда, куда тянули. Останавливаем и ведём сами.
+        ani = panel.expandAni
+        if ani.state() == QAbstractAnimation.State.Running:
+            ani.stop()
         if want_wide:
             self.navigationInterface.setExpandWidth(self._nav_wide())
-            panel.expand(useAni=False)
-        else:
+            panel.expand()      # с анимацией: рывок из «закрыто» в «открыто»
+        else:                   # выглядел как подёргивание, а не как движение
             panel.collapse()
 
     def _add_nav_grip(self) -> None:
