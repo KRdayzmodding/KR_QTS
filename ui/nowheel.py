@@ -69,13 +69,29 @@ class ChainGuard(QObject):
             return False            # курсор не над списком — страница едет как обычно
 
         down = event.angleDelta().y() < 0
-        top = inner.mapTo(page.viewport(), QPoint(0, 0)).y()
-        hidden = (top + inner.height() - page.viewport().height()) if down else -top
+        if down:
+            top = inner.mapTo(page.viewport(), QPoint(0, 0)).y()
+            hidden = top + inner.height() - page.viewport().height()
+        else:
+            # Вверх целимся не в верх списка, а в шапку карточки, в которой он
+            # лежит: доехав, человек сразу видит, чем её свернуть.
+            anchor = _anchor_of(inner, page)
+            hidden = -anchor.mapTo(page.viewport(), QPoint(0, 0)).y()
         if hidden > 0:
             bar = page.verticalScrollBar()
             step = min(hidden, _STEP)
             bar.setValue(bar.value() + (step if down else -step))
         return True                 # в любом случае дальше событие не пускаем
+
+
+def _anchor_of(widget, page: QAbstractScrollArea):
+    """Карточка, в которой лежит список. Нет такой — сам список."""
+    node = widget
+    while node is not None and node is not page.widget():
+        if node.property("wheelAnchor"):
+            return node
+        node = node.parentWidget()
+    return widget
 
 
 def _area_of_viewport(obj: QObject) -> QAbstractScrollArea | None:

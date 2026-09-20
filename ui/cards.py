@@ -37,6 +37,10 @@ class Section(CardWidget):
 
     def __init__(self, icon, title: str, rows: list[QWidget], parent=None):
         super().__init__(parent)
+        # Метка для правила колеса: докручивая страницу вверх ради списка
+        # внутри карточки, доезжать надо до её шапки, а не до верха списка —
+        # иначе кнопка «свернуть» так и остаётся за краем. См. ui/nowheel.
+        self.setProperty("wheelAnchor", True)
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
