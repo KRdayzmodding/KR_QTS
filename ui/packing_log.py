@@ -25,11 +25,13 @@ from ui import tokens
 WAIT, PACKING, OK, FAIL = "wait", "packing", "ok", "fail"
 
 # Роли, а не цвета: тон под текущую тему знает ui.tokens.
-_ROLES = {WAIT: "muted", PACKING: "warning", OK: "success", FAIL: "error"}
+# Ожидание — text_dim, а не muted: muted как текст не держит 4.5:1
+# (3,16 на карточке, 3,99 на консоли), и «[wait]» читался бы с трудом.
+_ROLES = {WAIT: "text_dim", PACKING: "warning", OK: "success", FAIL: "error"}
 
 
 def _color(status: str) -> str:
-    return tokens.color(_ROLES.get(status, "muted"))
+    return tokens.color(_ROLES.get(status, "text_dim"))
 _MIN_WIDTH = 34      # до какой ширины тянуть точки, если имена короткие
 
 

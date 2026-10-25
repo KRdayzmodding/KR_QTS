@@ -764,6 +764,11 @@ class ModsPanel(QWidget):
         layout.addLayout(search_row)
 
         self.tree = TreeWidget(self)
+        # Строки здесь одной высоты все до единой, и сказать об этом Qt —
+        # дешевле на полтора миллисекунды в кадре: иначе на каждую отрисовку
+        # он опрашивает высоту каждой строки заново. На шестидесяти модах это
+        # заметно, когда список раскрыт.
+        self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setColumnCount(8)
         self.tree.setHeaderLabels([
@@ -1187,7 +1192,12 @@ class ModsPanel(QWidget):
                          list=", ".join(changed)),
                 content="", parent=self, duration=6000,
                 position=InfoBarPosition.TOP_RIGHT)
-            self.presets_changed.emit()
+            # Через очередь событий, а не сразу: по этому сигналу окно
+            # перечитывает пресеты и пересобирает дерево, а мы сейчас внутри
+            # сигнала строки, которую пересборка удалит. Qt после возврата
+            # обратится к освобождённой памяти — программа падала насмерть,
+            # без записи в журнал.
+            QTimer.singleShot(0, self.presets_changed.emit)
 
     def _library_menu(self) -> None:
         """Редкие команды над библиотекой модов, а не над составом запуска."""
@@ -1313,11 +1323,18 @@ class ModsPanel(QWidget):
             pass        # строки уже нет: список успели пересобрать
 
     def _set_all(self, state: bool) -> None:
+        """«Включить все» и «Выключить все» над составом пресета.
+
+        Идём по строкам модов, а не по всем строкам дерева: в режиме групп
+        верхние строки — это заголовки «Steam», «GitHub» и прочие, мода за
+        ними нет. Раньше здесь звался несуществующий _iter_items, и «Включить
+        все» молча не делало ничего.
+        """
         p = self.preset
         if not state:
             p.mods, p.server_mods = [], []
         else:
-            for item in self._iter_items():
+            for item in self._iter_mod_items():
                 mod = self._item_mod(item)
                 if mod and self.registry.index_of(mod, p.mods) is None \
                         and self.registry.index_of(mod, p.server_mods) is None:

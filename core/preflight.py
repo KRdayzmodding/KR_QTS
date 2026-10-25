@@ -21,6 +21,10 @@ class Problem:
     check_id: str
     severity: str
     message: str
+    # Имя мода, которого нет ни в одной папке. Проверка не правит пресет сама,
+    # но тот, кто показывает проблему, должен уметь предложить починку —
+    # иначе человеку остаётся правка json руками.
+    missing_mod: str = ""
 
 
 def run_checks(preset: ServerPreset, settings: Settings, branch: str,
@@ -28,8 +32,8 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
     """Возвращает список найденных проблем (пустой список — всё в порядке)."""
     problems: list[Problem] = []
 
-    def crit(cid: str, msg: str) -> None:
-        problems.append(Problem(cid, CRITICAL, msg))
+    def crit(cid: str, msg: str, missing_mod: str = "") -> None:
+        problems.append(Problem(cid, CRITICAL, msg, missing_mod))
 
     def warn(cid: str, msg: str) -> None:
         problems.append(Problem(cid, WARNING, msg))
@@ -85,6 +89,31 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
                         if v.name == "template"), "")
         except OSError:
             tpl = ""
+        # Условия тестового обхода защиты модов (MBSL): она пропускает
+        # незарегистрированный сервер, только если видит, что он тестовый.
+        # Не выполнено — сервер поднимется и погаснет через несколько секунд,
+        # причём с виду беспричинно: в журнале запуска будет «отключён».
+        try:
+            vals = ServerCfg(Path(cfg)).values()
+        except OSError:
+            vals = {}
+        host = vals.get("hostname", "")
+        if host and "test" not in host.lower():
+            warn("mbsl_host", tr(
+                "check.mbsl_host",
+                "В hostname нет слова «test»: «{h}». Защита модов (MBSL) "
+                "пропускает только тестовые серверы, иначе выключит сервер "
+                "через несколько секунд.", h=host))
+        try:
+            players = int(vals.get("maxPlayers", "10"))
+        except ValueError:
+            players = 10
+        if players > 10:
+            warn("mbsl_players", tr(
+                "check.mbsl_players",
+                "maxPlayers = {n}: защита модов (MBSL) считает тестовым только "
+                "сервер на десять игроков или меньше.", n=players))
+
         if tpl:
             folder = mpmissions_dir(settings, branch, preset.mode) / tpl
             if not folder.is_dir():
@@ -105,7 +134,8 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
     for name in preset.mods + preset.server_mods:
         mod = registry.get(name)
         if not mod:
-            crit("mod_" + name, tr("check.mod_missing", "Мод не найден: {m}", m=name))
+            crit("mod_" + name, tr("check.mod_missing", "Мод не найден: {m}", m=name),
+                 missing_mod=name)
         elif not Path(mod.path).is_dir():
             crit("mod_" + name, tr("check.mod_gone",
                  "Папка мода исчезла: {m} ({p})", m=name, p=mod.path))

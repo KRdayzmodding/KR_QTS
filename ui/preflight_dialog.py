@@ -4,6 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QListWidgetItem
 from PySide6.QtGui import QColor
 from qfluentwidgets import (
+    FluentIcon as FIF,
     ListWidget, PushButton, PrimaryPushButton, CheckBox, StrongBodyLabel,
 )
 
@@ -23,6 +24,9 @@ class PreflightDialog(ThemedDialog):
         super().__init__(parent)
         self.problems = problems
         self.ignore_ids: set[str] = set()
+        # Моды, которых нет нигде: их предлагаем убрать из пресета тут же.
+        self.missing_mods = [p.missing_mod for p in problems if p.missing_mod]
+        self.drop_missing = False
         self.setWindowTitle(tr("preflight.title", "Проверка перед запуском"))
         self.resize(640, 360)
 
@@ -51,6 +55,16 @@ class PreflightDialog(ThemedDialog):
         layout.addWidget(self.chk_ignore)
 
         btns = QHBoxLayout()
+        if self.missing_mods:
+            # Сообщить о тупике и не дать из него выйти — худшее, что может
+            # сделать проверка. Эти моды не существуют ни в одной папке, и
+            # единственное осмысленное действие с ними — убрать из пресета.
+            btn_drop = PushButton(FIF.DELETE, tr(
+                "preflight.drop_missing", "Убрать из пресета ({n})",
+                n=len(self.missing_mods)))
+            btn_drop.setToolTip(", ".join(self.missing_mods))
+            btn_drop.clicked.connect(self._drop_missing)
+            btns.addWidget(btn_drop)
         btns.addStretch(1)
         btn_cancel = PushButton(tr("common.cancel", "Отмена"))
         btn_cancel.clicked.connect(self.reject)
@@ -63,6 +77,11 @@ class PreflightDialog(ThemedDialog):
         btns.addWidget(btn_cancel)
         btns.addWidget(btn_skip)
         layout.addLayout(btns)
+
+    def _drop_missing(self) -> None:
+        """Выйти с просьбой убрать эти моды из пресета. Чинит их тот, кто звал."""
+        self.drop_missing = True
+        self.reject()
 
     def _skip(self) -> None:
         if self.chk_ignore.isChecked():

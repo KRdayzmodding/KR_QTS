@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QEvent, QObject, QPoint
 from PySide6.QtWidgets import QAbstractScrollArea, QAbstractSpinBox, QApplication
 
@@ -43,6 +45,13 @@ class WheelGuard(QObject):
 # щелчок при этом двигает обоих, и список всё же доезжает до конца.
 _NEAR = 110
 
+# Сколько страница не слушается колеса после того, как довела край карточки до
+# экрана. Пока крутишь, курсор стоит на месте, а содержимое под ним уезжает —
+# и там, где был список, оказывается страница. Следующий щелчок листал бы уже
+# её, хотя рука делает то же самое движение. Треть секунды — пауза, за которую
+# человек успевает увидеть, что докрутка кончилась.
+_HOLD_MS = 350
+
 
 class ChainGuard(QObject):
     """Колесо над списком: страница подхватывает движение, но не убегает.
@@ -60,6 +69,8 @@ class ChainGuard(QObject):
     """
 
     _busy = False           # сами же и отдали событие странице — не ловим его снова
+    _hold_until = 0.0       # до какого момента страница не слушается колеса
+    _hold_down = None       # в какую сторону молчит
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() != QEvent.Type.Wheel or self._busy:
@@ -72,6 +83,8 @@ class ChainGuard(QObject):
             return self._hand_off(area, page, event)     # колесо пришло списку
         if not _is_page(area):
             return False        # не страница, а просто список — цеплять нечего
+        if self._held(event):
+            return True         # только что довели край — даём руке остановиться
         inner = _inner_area_under(event, area)
         if inner is None:
             return False        # курсор не над списком — страница едет как обычно
@@ -108,13 +121,31 @@ class ChainGuard(QObject):
         top = anchor.mapTo(page.viewport(), QPoint(0, 0)).y()
         hidden = (top + anchor.height() - page.viewport().height()) if down else -top
         if hidden <= 0:
+            self._hold(down)    # докрутили — и на время замолкаем
             return True         # край виден — дальше страницу не трогаем
         self._busy = True
         try:
             QApplication.sendEvent(page.viewport(), event)
         finally:
             self._busy = False
+        # Пока страница догоняла, содержимое под курсором уехало, и следующий
+        # щелчок пришёл бы уже ей. Держим паузу в ту же сторону.
+        self._hold(down)
         return True
+
+
+    # ----------------------------------------------------------------- пауза
+
+    def _hold(self, down: bool) -> None:
+        self._hold_until = time.monotonic() + _HOLD_MS / 1000
+        self._hold_down = down
+
+    def _held(self, event) -> bool:
+        """Идёт ли пауза для этого направления. Другая сторона — не пауза:
+        передумал и крутишь обратно — значит, так и надо."""
+        if self._hold_down is None or time.monotonic() >= self._hold_until:
+            return False
+        return (event.angleDelta().y() < 0) == self._hold_down
 
 
 def _outer_area(area: QAbstractScrollArea):

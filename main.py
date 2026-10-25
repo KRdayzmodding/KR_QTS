@@ -14,7 +14,7 @@ from core.version import APP_NAME, VERSION
 from ui.first_run_update import ensure_current
 from ui.cliserver import CliServer
 from ui.main_window import MainWindow
-from ui import nowheel, single_instance
+from ui import fasticons, nowheel, single_instance
 from ui import tokens
 from ui.theme import outside_icon
 from ui.wizard import FirstRunWizard
@@ -104,6 +104,14 @@ def main() -> int:
     settings = Settings.load()
     setTheme(_THEMES.get(settings.theme, Theme.AUTO))
     setThemeColor(tokens.ACCENT)  # оливково-оранжевый акцент под DayZ
+    # До первого окна: библиотека разбирает svg иконки заново на каждый кадр,
+    # и ставить кэш надо раньше, чем кто-то успеет нарисоваться. См. модуль.
+    fasticons.install()
+
+    # Ключ подписи раньше жил внутри строки флагов pboProject — переносим в
+    # своё поле один раз и молча. См. Settings.lift_sign_key.
+    if settings.lift_sign_key():
+        settings.save()
 
     i18n.load(settings.language)
 

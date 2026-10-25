@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -120,7 +121,7 @@ class LaunchStatus:
             if u is None:
                 # слой ещё не скомпилирован — показываем прочерк, а не 0%:
                 # ноль читался бы как «памяти не занято», а это не так
-                parts.append(f'<span style="color:{tokens.color("muted")};">{layer} —</span>')
+                parts.append(f'<span style="color:{tokens.color("text_dim")};">{layer} —</span>')
                 continue
             col = scriptmem.color(u.percent)
             weight = ";font-weight:700" if u.dangerous else ""
@@ -259,6 +260,10 @@ class LaunchStatus:
         return self.sides[side].errors
 
 
+# Отказ защиты модов: так о нём пишут MBSL и наши моды поверх неё.
+_DENIED_RE = re.compile(r"ClaimDenied|Unauthorized launch detected", re.I)
+
+
 class _SessionTail:
     """Хвост логов, ограниченный текущей сессией.
 
@@ -300,6 +305,7 @@ class LaunchMonitor(QObject):
     danger = Signal(str, object)    # впервые перевалило за 95%
     limit = Signal(str, object)     # лимит достигнут
     crashed = Signal(str, object)   # сторона, crashlog.CrashReport — запуск сорван
+    denied = Signal(str, str)       # сторона, строка — защита модов отказала
     errored = Signal(str, object)   # то же, но ошибка в скриптах: запуск идёт дальше
 
     def __init__(self, side: str, parent=None):
@@ -313,6 +319,7 @@ class LaunchMonitor(QObject):
         # потом упёршийся в лимит, второго — главного — сообщения бы не дал
         self._warned: set[str] = set()
         self._over: set[str] = set()
+        self._denied = False        # об отказе защиты говорим один раз
         self._timer = QTimer(self)
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._poll)
@@ -347,6 +354,11 @@ class LaunchMonitor(QObject):
         self._check_crash()
         lines = [ln for tail in self._tails for ln in tail.poll()]
         for line in lines:
+            if not self._denied and _DENIED_RE.search(line):
+                # Защита модов отказала. Сервер после этого гаснет сам, и без
+                # этой строки выглядит так, будто он упал без причины.
+                self._denied = True
+                self.denied.emit(self.side, line.strip())
             u = scriptmem.parse(line)
             if not u:
                 continue

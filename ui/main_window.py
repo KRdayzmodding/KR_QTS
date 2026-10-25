@@ -39,6 +39,7 @@ from ui.preflight_dialog import PreflightDialog
 from ui.preset_editor import AdvancedPresetDialog, LazyPresetWizard
 from ui.settings_page import SettingsPage
 from ui.steam_watch import SteamWatcher, status_text
+from ui.logview import append_html
 from ui.mini_window import MiniWindow
 from ui.packing_log import PackingLog
 from ui.launch_status import (LaunchStatus, LaunchMonitor, READY_LAYER,
@@ -179,7 +180,12 @@ class MainWindow(FluentWindow):
         if w >= tokens.WIN_MAIN_MIN[0] and h >= tokens.WIN_MAIN_MIN[1]:
             self.resize(w, h)
         else:
-            self.resize(*tokens.WIN_MAIN)
+            # Первый запуск — минимальный размер, а не «удобный по нашему
+            # мнению». Окно, открывшееся больше нужного, человек ужимает сам
+            # и запоминает этот размер; открывшееся меньше нужного — растит.
+            # Начинать с меньшего честнее: так программа ничего не занимает
+            # сверх необходимого, пока ей не разрешили.
+            self.resize(*tokens.WIN_MAIN_MIN)
         if getattr(settings, "window_max", False):
             self.setWindowState(Qt.WindowState.WindowMaximized)
 
@@ -226,6 +232,7 @@ class MainWindow(FluentWindow):
             mon.errored.connect(self._on_script_error)
             mon.danger.connect(self._on_memory_danger)
             mon.limit.connect(self._on_memory_limit)
+            mon.denied.connect(self._on_drm_denied)
         # какие pbo паковались в последний раз — только их логи и показываем
         self._packed: list[str] = []
         self.packlog_windows = {k: PackLogWindow(k) for k in packlog.KINDS}
@@ -264,6 +271,7 @@ class MainWindow(FluentWindow):
         lp.b_new.clicked.connect(self._new_preset)
         lp.b_edit.clicked.connect(self._edit_preset)
         lp.b_del.clicked.connect(self._delete_preset)
+        lp.btn_service.clicked.connect(self._service_menu)
         lp.chk_server.toggled.connect(self._launch_flags_changed)
         lp.chk_hide_window.setChecked(settings.hide_server_window)
         lp.chk_hide_window.checkedChanged.connect(self._hide_window_changed)
@@ -276,6 +284,8 @@ class MainWindow(FluentWindow):
         lp.btn_update.clicked.connect(self._open_update)
         lp.btn_sources.clicked.connect(self._open_sources)
         lp.btn_pack_settings.clicked.connect(self._open_pack_settings)
+        lp.btn_krbuild_settings.clicked.connect(
+            lambda: self.settings_page._open_krbuild_settings())
 
         current_engine = settings.pack_engine if settings.repack_before_launch else ""
         idx = lp.pack_engine.findData(current_engine)
@@ -283,7 +293,11 @@ class MainWindow(FluentWindow):
         lp.pack_engine.currentIndexChanged.connect(self._pack_engine_changed)
         self._update_branch_availability()
 
-        self._reload_presets(rescan=False)      # реестр только что обошли
+        # Открываем тот пресет, с которым работали в прошлый раз: первый по
+        # списку — это просто алфавит, и человеку каждый запуск приходилось
+        # переключаться обратно.
+        self._reload_presets(select=getattr(settings, "last_preset", "") or None,
+                             rescan=False)      # реестр только что обошли
 
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(1000)
@@ -409,13 +423,28 @@ class MainWindow(FluentWindow):
 
     def _preset_changed(self, idx: int) -> None:
         self.current = self.presets[idx] if 0 <= idx < len(self.presets) else None
+        self._remember_preset()
         self._bind_preset()
+
+    def _remember_preset(self) -> None:
+        """Запоминает выбранный пресет для следующего запуска.
+
+        Пишем сразу при выборе, а не при закрытии: программа живёт сутками и
+        закрывается как придётся — в том числе вместе с перезагрузкой. Запись
+        короткая и случается только когда выбор правда поменялся.
+        """
+        stem = self.current.file_stem() if self.current else ""
+        if stem != getattr(self.settings, "last_preset", ""):
+            self.settings.last_preset = stem
+            self.settings.save()
 
     def _bind_preset(self) -> None:
         p = self.current
         lp = self.launch_page
         lp.b_edit.setEnabled(p is not None)
         lp.b_del.setEnabled(p is not None)
+        # Пресета нет — обслуживать нечего, и меню не предлагаем
+        lp.btn_service.setEnabled(p is not None)
         # Панель модов живёт прямо в карточке и следует за выбранным пресетом.
         # Панель модов живёт в карточке на «Запуске» и следует за пресетом.
         self.mods_panel.set_preset(p)
@@ -599,8 +628,56 @@ class MainWindow(FluentWindow):
         if self.current:
             self.current.branch = self._branch()
             self.current.save()
+            self._prepare_branch_files(self.current)
         self._bind_cfg()
         self._bind_log_dirs()
+
+    def _prepare_branch_files(self, preset: ServerPreset) -> None:
+        """Создаёт для выбранной ветки то, чего в ней ещё нет.
+
+        У каждой ветки свой корень, а в нём свои конфиг, профиль и миссия.
+        Раньше смена ветки меняла только запись в пресете, и запуск упирался в
+        «конфиг не найден» без всякого выхода: файлы лежали в соседней ветке.
+        """
+        from core.layout import create_preset_files
+        try:
+            cfg, profiles = create_preset_files(
+                self.settings, preset.branch, preset.mode, preset.name, preset.mission)
+        except RuntimeError:
+            return          # корень ветки не задан — скажет предстартовая проверка
+        if (cfg, profiles) != (preset.server_config, preset.profiles):
+            preset.server_config, preset.profiles = cfg, profiles
+            preset.save()
+        self._offer_mission_copy(preset)
+
+    def _offer_mission_copy(self, preset: ServerPreset) -> None:
+        """Миссии в этой ветке нет, а в соседней есть — предлагаем перенести."""
+        from pathlib import Path as _P
+
+        from core.missions import mpmissions_dir
+        from core.settings import EXPERIMENTAL, STABLE
+        if not preset.mission:
+            return
+        here = mpmissions_dir(self.settings, preset.branch, preset.mode) / preset.mission
+        if not str(here) or here.is_dir():
+            return
+        other = EXPERIMENTAL if preset.branch == STABLE else STABLE
+        there = mpmissions_dir(self.settings, other, preset.mode) / preset.mission
+        if not str(there) or not there.is_dir():
+            return      # взять неоткуда — об этом скажет предстартовая проверка
+        from qfluentwidgets import MessageBox
+        box = MessageBox(
+            tr("main.mission_copy_title", "Миссии нет в этой ветке"),
+            tr("main.mission_copy_body",
+               "«{m}» есть в ветке {other}. Скопировать её сюда?\n\n{p}",
+               m=preset.mission, other=other, p=str(here)),
+            self)
+        box.yesButton.setText(tr("common.copy", "Скопировать"))
+        box.cancelButton.setText(tr("common.later", "Позже"))
+        if not box.exec():
+            return
+        from ui.mission_picker import CopyDialog
+        CopyDialog(_P(there), _P(here), parent=self).exec()
 
     def _launch_flags_changed(self) -> None:
         if self.current:
@@ -628,6 +705,14 @@ class MainWindow(FluentWindow):
         dlg = AdvancedPresetDialog(self.current, self.settings, self)
         if dlg.exec():
             self._reload_presets(select=self.current.file_stem())
+
+    def _service_menu(self) -> None:
+        """Служебные действия над выбранным пресетом — см. ui/preset_actions."""
+        from ui import preset_actions
+        if not self.current:
+            return
+        preset_actions.show_menu(self.launch_page.btn_service, self, self.settings,
+                                 self.current, self._branch())
 
     def _delete_preset(self) -> None:
         p = self.current
@@ -757,24 +842,23 @@ class MainWindow(FluentWindow):
             self._console_win = None
         self.launch_page.console_box.setVisible(False)
 
+    def _console_html(self, line: str) -> str:
+        color = tokens.level_colors().get(logsource.classify(line),
+                                          tokens.color("console_fg"))
+        return f'<span style="color:{color};">{html.escape(line)}</span>'
+
     def _console_lines(self, lines: list) -> None:
-        view = self.launch_page.console_log
-        for line in lines:
-            color = tokens.level_colors().get(logsource.classify(line),
-                                             tokens.color("console_fg"))
-            view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
+        # Пачкой, а не построчно: см. ui/logview. Сервер в минуту пишет
+        # столько строк, что построчная вставка занимала бы окно целиком.
+        append_html(self.launch_page.console_log,
+                    [self._console_html(line) for line in lines])
 
     def _console_poll(self) -> None:
         if self._console_tailer is None:
             return
-        view = self.launch_page.console_log
-        for line in self._console_tailer.poll():
-            line = line.rstrip()
-            if not line:
-                continue
-            color = tokens.level_colors().get(logsource.classify(line),
-                                             tokens.color("console_fg"))
-            view.appendHtml(f'<span style="color:{color};">{html.escape(line)}</span>')
+        append_html(self.launch_page.console_log,
+                    [self._console_html(line.rstrip())
+                     for line in self._console_tailer.poll() if line.strip()])
 
     def _append_alarm(self, msg: str) -> None:
         """Крупная красная строка в журнале — для того, что нельзя проглядеть.
@@ -821,6 +905,21 @@ class MainWindow(FluentWindow):
                      tr("status.crash_hint", "Подробности — в {p}", p=report.path.name)):
             if line:
                 self._append_log(line, "error")
+
+    def _on_drm_denied(self, side: str, line: str) -> None:
+        """Защита модов отказала — сервер сейчас выключится сам.
+
+        Без этой строки выглядит беспричинно: сервер поднялся, поработал
+        несколько секунд и ушёл, а в журнале только «отключён».
+        """
+        self._append_log(tr("main.drm_denied",
+                            "Защита модов не пропустила запуск — сервер сейчас "
+                            "выключится. Для тестового запуска нужны «test» в "
+                            "hostname и maxPlayers не больше десяти."), "error")
+        self._append_log("    " + line, "error")
+        self._say("error", tr("main.drm_denied_title", "Защита модов отказала"),
+                  tr("main.drm_denied_body",
+                     "Проверьте hostname и maxPlayers в конфиге сервера."))
 
     def _on_memory_danger(self, side: str, usage) -> None:
         self._append_alarm(tr(
@@ -924,7 +1023,37 @@ class MainWindow(FluentWindow):
                          "Остальные актуальны. Не удалось проверить: {list}",
                          list=", ".join(unverified)))
         else:
-            self._say("success", tr("upd.say_ok", "Моды актуальны"))
+            repack = self._repack_pending()
+            if repack:
+                # «Моды актуальны» здесь было бы полуправдой: мастерская — да,
+                # а локальные моды ещё предстоит собрать, и это минуты.
+                self._say("info",
+                          tr("upd.say_ok_repack",
+                             "Моды мастерской актуальны, перепаковка: {n}",
+                             n=len(repack)),
+                          ", ".join(repack))
+            else:
+                self._say("success", tr("upd.say_ok", "Моды актуальны"))
+
+    def _repack_pending(self) -> list[str]:
+        """Имена модов, которые перед запуском будут пересобраны.
+
+        Пусто, если перепаковка выключена в настройках или собирать нечего.
+        Считаем по тому же правилу, что и сам запуск, — по датам файлов сорсов
+        против собранных pbo.
+        """
+        if not getattr(self.settings, "repack_before_launch", False):
+            return []
+        preset, reg = self.current, self.registry
+        if preset is None or reg is None:
+            return []
+        from core import packer
+        selected = [m for m in (reg.get(n) for n in
+                                (preset.mods + preset.server_mods)) if m]
+        try:
+            return [mod.name for mod, _ in packer.stale_mods(selected)]
+        except OSError:
+            return []       # сорсы на отвалившемся диске — молчим, не гадаем
 
     def _mods_updated(self) -> None:
         self._say("success", tr("upd.say_done", "Моды обновлены"))
@@ -1011,7 +1140,15 @@ class MainWindow(FluentWindow):
                     + "\n" + "\n".join("  " + pr.message for pr in problems))
         if problems:
             dlg = PreflightDialog(problems, self)
-            if not dlg.exec():
+            ok = dlg.exec()
+            if dlg.drop_missing:
+                # Этих модов нет ни в одной папке — убираем их из пресета и
+                # начинаем запуск заново: может оказаться, что больше ничего и
+                # не мешало.
+                self._drop_missing_mods(p, dlg.missing_mods)
+                return self._launch(preset=preset, quiet=quiet, pack=pack,
+                                    rebuild=rebuild)
+            if not ok:
                 return ""
             self.ignored_checks |= dlg.ignore_ids
 
@@ -1100,6 +1237,23 @@ class MainWindow(FluentWindow):
             return
         server_name, client_name, keep = names
         self.launch_status.start(server_name, client_name, keep=keep)
+
+    def _drop_missing_mods(self, preset: ServerPreset, names: list[str]) -> None:
+        """Убирает из пресета моды, которых нет ни в одной папке.
+
+        Так бывает, когда автор переименовал мод в мастерской: Steam скачивает
+        его заново под новым именем, а в пресете остаётся прежнее. Найти такую
+        строку человеку негде — в списке модов показываются только настоящие.
+        """
+        gone = set(names)
+        preset.mods = [n for n in preset.mods if n not in gone]
+        preset.server_mods = [n for n in preset.server_mods if n not in gone]
+        preset.save()
+        self._append_log(tr("main.dropped_missing",
+                            "Убраны из пресета (таких модов нет): {list}",
+                            list=", ".join(sorted(gone))), "warning")
+        self.mods_panel.set_preset(preset)
+        self._update_launch_button()
 
     def _server_name(self, preset: ServerPreset, cfg_path: str | None) -> str:
         """Название сервера так, как его увидят игроки.
@@ -1790,6 +1944,10 @@ class MainWindow(FluentWindow):
         self._append_log(tr("watch.say", "Игрокам: {t}", t=text))
         worker = _RconWorker(*conf, f"say -1 {text}", self)
         worker.done.connect(lambda ok, err, w=worker: self._rcon_said(ok, err))
+        # Отработавшие отпускаем, как в панели модов: сервер с автоперезапуском
+        # шлёт предупреждения каждую минуту, и за сутки список копил бы сотни
+        # мёртвых потоков вместе с их системными ресурсами.
+        self._say_workers = [w for w in self._say_workers if w.isRunning()]
         self._say_workers.append(worker)
         worker.start()
 
@@ -1970,6 +2128,8 @@ class MainWindow(FluentWindow):
                 # статус блока обновит _update_status по состоянию процесса —
                 # здесь только глушим наблюдателя за логами
                 self.monitors[SERVER if attr == "server_pid" else CLIENT].stop()
+                # Правки конфига, сделанные при живом сервере, ждали его ухода.
+                self.launch_page.cfg_card.flush_if_waiting()
                 if attr == "server_pid":
                     self._console_stop()   # сервера нет — читать его консоль нечем
             self._alive[attr] = alive
@@ -2079,6 +2239,9 @@ class MainWindow(FluentWindow):
         self.registry.scan()
         self._bind_preset()
         self._update_branch_availability()
+        # Движок запаковки меняют в настройках, а видно это и на странице
+        # запуска: там свои строки под каждый движок.
+        self.launch_page.apply_pack_tool()
         self._notify("success", tr("settings.saved", "Настройки сохранены."))
 
     def _drop_removed_paths(self) -> None:
@@ -2312,6 +2475,8 @@ class MainWindow(FluentWindow):
         how — чем именно показываться (show, showNormal). Пока окна не видно,
         оно прозрачное; непрозрачность возвращается по первой же отрисовке.
         """
+        self._enforce_minimum()
+        self._watch_screen()
         self._revealing = True
         self.setWindowOpacity(0.0)
         (how or self.show)()
@@ -2456,6 +2621,13 @@ class MainWindow(FluentWindow):
         self.tray.show()
         if not self.status_timer.isActive():
             self.status_timer.start()
+        # Строки конфига собираем заранее, пока человек смотрит на страницу:
+        # их под семьдесят, и при первом раскрытии карточки это 450 мс, в
+        # которые окно не отвечает. Порциями и на свёрнутой карточке — самая
+        # долгая пауза 44 мс, а раскрытие потом стоит 84 мс вместо полусекунды.
+        # Через две секунды после оживления: к этому времени обход папок модов
+        # закончен и мы ни с чем не спорим за процессор.
+        QTimer.singleShot(2000, self.launch_page.cfg_card.ensure_built)
 
     def _setup_tray(self, live: bool = True) -> None:
         """Иконка в трее + мини-окно. Крестик главного окна не закрывает
@@ -2535,6 +2707,48 @@ class MainWindow(FluentWindow):
         self.activateWindow()
         self.raise_()
 
+    def _watch_screen(self) -> None:
+        """Следит за переездом окна на другой экран.
+
+        Размер окна там пересчитывается системой под чужой масштаб, и Qt этот
+        результат принимает как есть — даже если вышло меньше минимума. Своего
+        сигнала у виджета нет, он есть у окна, а оно появляется только после
+        показа; подписываемся один раз.
+        """
+        handle = self.windowHandle()
+        if handle is None or getattr(self, "_screen_watched", False):
+            return
+        self._screen_watched = True
+        handle.screenChanged.connect(lambda _s: self._enforce_minimum())
+
+    def _enforce_minimum(self) -> None:
+        """Возвращает окну разумный размер и место на экране.
+
+        Qt держит минимум, пока размером распоряжается он сам. Но окно
+        переживает смену монитора, смену масштаба и — чаще всего — сеанс RDP:
+        там экран виртуальный, при подключении и отключении он меняет размер,
+        и система ужимает окна под него. На своём мониторе окно потом так и
+        остаётся крошечным, а при первой попытке потянуть за край скачком
+        распахивается до минимума.
+
+        Растягивать больше доступной области нельзя: по RDP она бывает меньше
+        нашего минимума, и окно уехало бы за край экрана. Поэтому берём
+        меньшее из двух и заодно возвращаем окно в видимую часть.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        need_w = min(max(self.width(), self.minimumWidth()), area.width())
+        need_h = min(max(self.height(), self.minimumHeight()), area.height())
+        if (need_w, need_h) != (self.width(), self.height()):
+            self.resize(need_w, need_h)
+        # Окно, ужатое чужим экраном, нередко остаётся и сдвинутым за край.
+        x = min(max(self.x(), area.left()), max(area.right() - need_w, area.left()))
+        y = min(max(self.y(), area.top()), max(area.bottom() - need_h, area.top()))
+        if (x, y) != (self.x(), self.y()):
+            self.move(x, y)
+
     def _remember_size(self) -> None:
         """Сохраняет размер окна: при закрытии и при уходе в трей.
 
@@ -2545,7 +2759,10 @@ class MainWindow(FluentWindow):
         s = self.settings
         was_max = bool(self.isMaximized())
         if not was_max:
-            s.window_w, s.window_h = self.width(), self.height()
+            # Меньше минимума не записываем: такой размер всё равно не
+            # применится, а при следующем запуске выглядел бы как поломка.
+            s.window_w = max(self.width(), self.minimumWidth())
+            s.window_h = max(self.height(), self.minimumHeight())
         s.window_max = was_max
         s.save()
 
@@ -2559,6 +2776,11 @@ class MainWindow(FluentWindow):
         # Размер запоминаем в обоих случаях: и когда уходим в трей, и когда
         # закрываемся насовсем.
         self._remember_size()
+        # Крестик по умолчанию прячет программу в мини-окно, но это выбор
+        # человека: кому менеджер нужен только на время запуска, тому
+        # возвращающееся окно мешает. Настройка общая, в «Основном».
+        if not self._quitting and self.settings.close_quits:
+            self._quitting = True
         if not self._quitting:
             event.ignore()
             self.hide()

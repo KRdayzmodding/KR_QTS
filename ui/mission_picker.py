@@ -22,6 +22,7 @@ from core.missions import CatalogEntry, template_name
 from core.settings import Settings
 from ui.download_window import DownloadWindow
 from ui import tokens
+from ui.onewindow import show_once
 from ui.theme import ThemedDialog
 
 
@@ -106,7 +107,8 @@ class MapPicker(QWidget):
         self.branch = "stable"
         self.mode = "diag"
         self.preset_name = ""
-        self._windows: list[DownloadWindow] = []
+        # Открытые окна скачивания и копирования держит ui.onewindow:
+        # он же не даёт открыть второе над той же папкой.
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -327,29 +329,38 @@ class MapPicker(QWidget):
         if t.is_dir():
             self._start_copy(t, d)
             return
-        win = DownloadWindow(entry, t.parent, t.name, mods_dir=self._mods_dl_dir())
-        win.finished_ok.connect(lambda _p, s=t, dst=d: self._start_copy(s, dst))
-        win.show()
-        self._windows.append(win)  # держим ссылку, иначе окно соберёт GC
+        def make():
+            win = DownloadWindow(entry, t.parent, t.name,
+                                 mods_dir=self._mods_dl_dir())
+            win.finished_ok.connect(lambda _p, s=t, dst=d: self._start_copy(s, dst))
+            return win
+
+        # Одно окно на один шаблон: вторая качалка писала бы в ту же папку.
+        show_once(self, f"download:{t}", make)
 
     def _start_copy(self, src, dst, replace: bool = False,
                     keep_storage: bool = True) -> None:
-        dlg = CopyDialog(src, dst, replace=replace, keep_storage=keep_storage,
-                         parent=self.window())
-        dlg.worker.done.connect(lambda _ok, _p: self._update_status())
-        dlg.show()
-        self._windows.append(dlg)
+        def make():
+            dlg = CopyDialog(src, dst, replace=replace, keep_storage=keep_storage,
+                             parent=self.window())
+            dlg.worker.done.connect(lambda _ok, _p: self._update_status())
+            return dlg
+
+        # Одно копирование на одну миссию: два разом пишут в одну папку.
+        show_once(self, f"copy:{dst}", make)
 
     def _update_template(self) -> None:
         t = self._template_dir()
         entry = self.catalog_entry()
         if not t or not entry:
             return
-        win = DownloadWindow(entry, t.parent, t.name, replace=True,
-                             keep_storage=False, mods_dir=self._mods_dl_dir())
-        win.finished_ok.connect(lambda _p: self._update_status())
-        win.show()
-        self._windows.append(win)
+        def make():
+            win = DownloadWindow(entry, t.parent, t.name, replace=True,
+                                 keep_storage=False, mods_dir=self._mods_dl_dir())
+            win.finished_ok.connect(lambda _p: self._update_status())
+            return win
+
+        show_once(self, f"download:{t}", make)
 
     def _recreate_mission(self) -> None:
         d = self._mission_dir()

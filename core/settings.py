@@ -102,6 +102,39 @@ def check_path(key: str, value: str) -> str:
     return PATH_OK
 
 
+def split_flags(text: str) -> list[str]:
+    r"""Разбивает строку флагов запаковки на аргументы.
+
+    Своё, а не shlex, потому что ни один его режим здесь не годится:
+
+        shlex(posix=True)   +K=D:\keys\KR.biprivatekey -> +K=D:keysKR.biprivatekey
+                            обратный слэш считается экранирующим, и путь
+                            молча теряет разделители — pboProject получает
+                            несуществующий файл и подпись не делается;
+        shlex(posix=False)  +K="D:\my keys\KR.biprivatekey" -> два аргумента
+                            кавычки группируют только в начале слова.
+
+    Здесь: пробелы разделяют, кавычки группируют где угодно, обратный слэш —
+    обычный знак. Кавычки в результат не попадают: это разметка строки, а не
+    часть пути.
+    """
+    args: list[str] = []
+    current: list[str] = []
+    quoted = False
+    for ch in text:
+        if ch == '"':
+            quoted = not quoted
+        elif ch.isspace() and not quoted:
+            if current:
+                args.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if current:
+        args.append("".join(current))
+    return args
+
+
 def find_pbo_project_exe(mikero_tools: str) -> str:
     """Путь к pboProject.exe по настройке mikero_tools (папка или сам .exe).
 
@@ -117,12 +150,166 @@ def find_pbo_project_exe(mikero_tools: str) -> str:
     return str(p / "bin" / "pboProject.exe")
 
 
+# Найденные программы помним: обход папки стоит около 120 мс, а спрашивают
+# путь на каждую сборку и на каждое открытие настроек.
+_TOOL_CACHE: dict[tuple[str, str], str] = {}
+
+# Куда не ходим: служебные папки репозитория и промежуточные сборки
+# PyInstaller. В build/ лежат копии тех же exe, но несобранные до конца —
+# на машине с репозиторием их шесть штук против двух настоящих.
+_SKIP_DIRS = {".git", ".svn", "__pycache__", "node_modules", "build", "venv"}
+
+
+def find_tool(root: str, name: str) -> str:
+    """Ищет программу по имени внутри указанной папки.
+
+    Человек указывает одну общую папку с инструментами, а не путь к каждому
+    exe: у Project Builder консольная и оконная половины лежат в разных
+    и знать эту раскладку — не его забота.
+
+    Порядок: сам указанный exe -> привычные места -> обход вглубь. Из
+    найденного выбираем то, что лежит в dist (настоящая раздача), а среди
+    равных — самое свежее.
+    """
+    value = (root or "").strip()
+    if not value:
+        return ""
+    p = Path(value)
+    if p.suffix.lower() == ".exe":
+        # указали конкретный exe: если спрашивают его же — отдаём, иначе
+        # ищем соседа от его папки
+        if p.name.lower() == name.lower():
+            return str(p)
+        # Сосед в той же папке — установка лежит плоско, все exe рядом.
+        # Шаг через родителя нужен только старой раздаче, где у каждой
+        # программы была своя подпапка.
+        if (p.parent / name).is_file():
+            return str(p.parent / name)
+        p = p.parent.parent if p.parent.parent.is_dir() else p.parent
+    key = (str(p), name.lower())
+    cached = _TOOL_CACHE.get(key)
+    if cached and Path(cached).is_file():
+        return cached
+    for quick in (p / name, p / "dist" / Path(name).stem / name):
+        if quick.is_file():
+            _TOOL_CACHE[key] = str(quick)
+            return str(quick)
+    if not p.is_dir():
+        return ""
+    found = _walk_for(p, name)
+    if found:
+        _TOOL_CACHE[key] = found
+    return found
+
+
+def _walk_for(root: Path, name: str, depth: int = 6) -> str:
+    """Обход вглубь с отсевом служебных папок. Пусто — не нашли."""
+    best: tuple[int, float, str] | None = None
+    stack = [(root, 0)]
+    target = name.lower()
+    while stack:
+        folder, level = stack.pop()
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    if (level < depth and entry.name.lower() not in _SKIP_DIRS
+                            and not entry.name.startswith(".")):
+                        stack.append((entry, level + 1))
+                elif entry.name.lower() == target:
+                    rank = 1 if "dist" in (q.lower() for q in entry.parts) else 0
+                    stamp = entry.stat().st_mtime
+                    if best is None or (rank, stamp) > (best[0], best[1]):
+                        best = (rank, stamp, str(entry))
+            except OSError:
+                continue
+    return best[2] if best else ""
+
+
+# Консольная и оконная половины запаковщика в поставке «KR DevToolkit».
+# С 25.10.2026 там единое правило имён: «Имя.exe» — командная строка,
+# «Имя_GUI.exe» — окно. Прежние имена (ProjectBuilderCli.exe, krbuild-cli.exe)
+# не ищем: те сборки сняты с поддержки, и найти старую вместо новой — значит
+# молча паковать неизвестно чем. Пусть лучше скажет, что не нашёл.
+PACKER_CLI_NAMES = ("ProjectBuilder.exe",)
+PACKER_GUI_NAMES = ("ProjectBuilder_GUI.exe",)
+
+
+# Запись установщика Dev Toolkit в реестре. Установка пользовательская, без
+# прав администратора, поэтому ветка только HKCU. Идентификатор постоянный
+# между версиями — это их договор с нами, а не найденная подробность.
+TOOLKIT_UNINSTALL_KEY = (
+    r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    r"\{6F0E3C47-2B7D-4C1A-9E55-8A1D3F6B2C90}_is1")
+
+
+def _installed_toolkit() -> str:
+    """Папка установки из реестра; пусто — не записана или не Windows."""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            TOOLKIT_UNINSTALL_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, "InstallLocation")
+    except OSError:
+        return ""
+    return str(value or "").strip()
+
+
+def toolkit_home() -> str:
+    """Куда установлен Dev Toolkit; пусто — не установлен.
+
+    Сначала реестр: в установщике папку можно сменить, и тогда место по
+    умолчанию пустое, а тулкит стоит где-то ещё. Место по умолчанию остаётся
+    запасным — на случай, когда записи нет, а папка на месте: переставили
+    руками, скопировали с другой машины.
+
+    Спрашивать путь у человека не надо ни в том, ни в другом случае: это
+    просьба сообщить нам то, что мы и так можем узнать.
+    """
+    found = _installed_toolkit()
+    if found and (Path(found) / PACKER_CLI_NAMES[0]).is_file():
+        return str(Path(found))
+    base = os.environ.get("LOCALAPPDATA") or ""
+    if not base:
+        return ""
+    home = Path(base) / "Programs" / "KR DevToolkit"
+    return str(home) if home.is_dir() else ""
+
+
+def toolkit_root(value: str) -> str:
+    """Где искать инструменты: что указано в настройках, иначе установка."""
+    return (value or "").strip() or toolkit_home()
+
+
+def find_first_tool(root: str, names) -> str:
+    """Первая из программ, которая нашлась в папке инструментов."""
+    for name in names:
+        found = find_tool(root, name)
+        if found:
+            return found
+    return ""
+
+
+def find_krbuild_cli(krbuild_exe: str) -> str:
+    """Путь к консольной половине запаковщика по указанной папке."""
+    return find_first_tool(krbuild_exe, PACKER_CLI_NAMES)
+
+
 @dataclass
 class Settings:
     language: str = "ru"
     first_run_done: bool = False
     project_prefix: str = ""   # префикс мододела/проекта — подставляется в hostname создаваемых серверов
-    theme: str = "auto"        # "light" | "dark" | "auto" (следовать теме Windows)
+    # Тёмная по умолчанию, а не «как в Windows»: программу держат открытой
+    # рядом с игрой и редактором, а они тёмные — светлое окно посреди них
+    # бьёт по глазам. Кому нужно иначе, меняет в настройках.
+    theme: str = "dark"        # "light" | "dark" | "auto" (следовать теме Windows)
 
     # Корневые папки установок
     client_stable: str = ""
@@ -156,14 +343,31 @@ class Settings:
     #   +R — не настройка пользователя, а обязательное условие, ставится в
     #        core/packer.py вместе с -E/-M.
     # -X — маски файлов, которые в pbo не попадают. «source» в списке не нужен:
-    # папка ~source\ не инспектируется никогда.
+    # папка ~source\ не инспектируется никогда. Следы обфускатора (.6w_pack,
+    # .6w_obf, *_OBFCACHE) перечислены здесь для наглядности, но держатся не
+    # этим списком: core/packer.py дописывает их к -X при каждой сборке, что
+    # бы в настройках ни оказалось.
     pack_flags: str = (
         "-P -N +B -C -D -H -T +G -Q +Z -O -K "
         "-X=*.h,*.hpp,*.png,*.cpp,thumbs.db,*.dep,*.bak,*.log,*.pew,"
         "*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max,*.blend,*.blend1,*.blend2,"
-        "*.blend3,*.blend4,*.blend5,*.txa,.claude"
+        "*.blend3,*.blend4,*.blend5,*.txa,.claude,"
+        ".6w_pack,.6w_obf,.6w*,obfuscated_entities.json,*OBFCACHE*,"
+        "hobf_pack.settings.json"
     )
     clean_meta: bool = True     # удалять *.meta в сорсах перед сборкой
+    # Чем паковать: "pboproject" — Mikero, "krbuild" — [KR] Project Builder
+    # программа из KR DevToolkit, зовём её exe). Движок выбирается один на
+    # проект, а не на запуск: у обоих свой инкремент и общая папка temp, и
+    # чередование заставило бы каждый пересобирать за другим.
+    pack_tool: str = "pboproject"
+    # Ключ подписи PBO (.biprivatekey). Один на проект и общий для обоих
+    # движков: формат ключа чужой и одинаковый, а подписанные моды сервер
+    # принимает по открытой половине из keys. Пусто — не подписываем.
+    sign_key: str = ""
+    # Папка Dev Toolkit. Пусто — Project Builder не настроен, выбор движка
+    # предложит указать путь. В раздачу его не кладём: 61 МБ чужой программы.
+    krbuild_exe: str = ""
     # Режим pboProject: "" — не перепаковывать, "normal" — инкрементально
     # (переиспользует temp), "full" — FullBuild, чистит temp и собирает всё
     pack_engine: str = "normal"
@@ -238,6 +442,10 @@ class Settings:
     # Каким показываться при запуске: window — обычным окном, tray — только
     # значком в трее, mini — мини-окном поверх остальных.
     start_mode: str = "window"
+    # Что делает крестик главного окна. По умолчанию прячет программу в
+    # мини-окно: в цикле отладки мода она нужна постоянно. Кому она нужна
+    # только на время запуска, тому это мешает — крестик должен закрывать.
+    close_quits: bool = False
 
     log_on_top_server: bool = False
     log_on_top_client: bool = False
@@ -263,6 +471,11 @@ class Settings:
     # останется, но окно само не откроется второй раз
     update_seen: str = ""
 
+    # Пресет, с которым работали в прошлый раз (его file_stem). Пусто — ещё
+    # не выбирали, тогда берётся первый по списку. Хранится здесь, а не в
+    # самом пресете: это свойство рабочего места, а не сервера.
+    last_preset: str = ""
+
     # Steam Web API ключ (steamcommunity.com/dev/apikey) — для зависимостей модов;
     # пусто — зависимости читаются со страницы воркшопа
     steam_api_key: str = ""
@@ -275,6 +488,16 @@ class Settings:
 
     def pbo_project_exe(self) -> str:
         return find_pbo_project_exe(self.mikero_tools)
+
+    def krbuild_cli(self) -> str:
+        """Путь к ProjectBuilder.exe; пусто — движок не настроен.
+
+        Пустое поле — не «не настроено», а «где поставили, там и бери»:
+        установщик кладёт тулкит в одно и то же место, и заставлять указывать
+        его руками значило бы просить человека ввести известное.
+        """
+        root = toolkit_root(self.krbuild_exe)
+        return find_krbuild_cli(root) if root else ""
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -292,3 +515,27 @@ class Settings:
             except (OSError, json.JSONDecodeError, TypeError):
                 pass
         return cls()
+
+    def lift_sign_key(self) -> bool:
+        """Переносит ключ подписи из флагов pboProject в своё поле.
+
+        Раньше он жил внутри строки флагов (+K=путь) и правился в окне
+        настроек pboProject. Теперь это общая настройка: ключ один, а движков
+        два. Старые настройки переносим один раз и молча — человек про эту
+        перестановку знать не обязан, он просто видит путь там, где искал.
+        """
+        if self.sign_key or "K=" not in self.pack_flags:
+            return False
+        parts = split_flags(self.pack_flags)
+        kept, found = [], ""
+        for token in parts:
+            head = token[1:3] if token[:1] in "+-" else token[:2]
+            if head.upper() == "K=":
+                found = token.partition("=")[2]
+                continue
+            kept.append(token)
+        if not found:
+            return False
+        self.sign_key = found
+        self.pack_flags = " ".join(kept)
+        return True

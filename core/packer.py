@@ -9,14 +9,13 @@
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import threading
 from pathlib import Path
 
-from . import keyguard
+from . import keyguard, krbuild
 from .mods import ModInfo
-from .settings import Settings
+from .settings import Settings, split_flags
 
 # Два pboProject одновременно запускать нельзя. Свои настройки он держит в
 # реестре, а рабочую папку temp — общую, и в режиме FullBuild чистит её на
@@ -228,6 +227,58 @@ def pack_source(settings: Settings, mod: ModInfo, source_dir: str,
         _LOCK.release()
 
 
+# Следы обфускатора, лежащие прямо в папках сорсов, рядом с config.cpp:
+# .6w_pack / .6w_obf — его конфиг (защищаемые имена, пути, настройки), а
+# <мод>_OBFCACHE/obfuscated_entities.json — карта «настоящее имя →
+# обфусцированное», то есть обфускация, приложенная к себе же в расшифрованном
+# виде. Первый уже уехал в боевой pbo открытым текстом.
+#
+# Эти маски дописываются к списку -X всегда, даже если в настройках их нет:
+# список исключений правится руками и в диалоге, забыть строчку можно один
+# раз, а выложенный pbo назад не вернёшь.
+_MUST_EXCLUDE = (".6w_pack", ".6w_obf", ".6w*",
+                 "obfuscated_entities.json", "*OBFCACHE*",
+                 "hobf_pack.settings.json")
+
+
+def _with_sign_key(flags: list[str], settings: Settings) -> list[str]:
+    """Ставит ключ подписи из настроек, выкидывая всё, что сказано во флагах.
+
+    Ключ — общая настройка: он один на проект, а движков два. Пока он жил
+    внутри строки флагов, у подписи было две двери — поле в окне флагов и
+    сама строка, — и они расходились. Теперь источник один, а строка флагов
+    про подпись больше ничего не решает.
+    """
+    out = [f for f in flags
+           if (f[1:3] if f[:1] in "+-" else f[:2]).upper() != "K="
+           and f not in ("+K", "-K")]
+    key = (getattr(settings, "sign_key", "") or "").strip()
+    out.append(f"+K={key}" if key else "-K")
+    return out
+
+
+def _with_must_exclude(flags: list[str]) -> list[str]:
+    """Дописывает обязательные маски в -X=; ключа нет — добавляет его.
+
+    Знак у ключа pboProject не различает (+X и -X для списков равнозначны),
+    поэтому ищем по «X=», а не по флагу целиком.
+    """
+    out: list[str] = []
+    found = False
+    for f in flags:
+        key = f[1:3] if f[:1] in "+-" else f[:2]
+        if key.upper() == "X=" and "=" in f:
+            found = True
+            head, _, value = f.partition("=")
+            masks = [m for m in value.split(",") if m]
+            masks += [m for m in _MUST_EXCLUDE if m not in masks]
+            f = head + "=" + ",".join(masks)
+        out.append(f)
+    if not found:
+        out.append("-X=" + ",".join(_MUST_EXCLUDE))
+    return out
+
+
 def _pack_locked(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[bool, str]:
     """Сама сборка. Зовётся только под _LOCK — см. комментарий у него."""
     exe = settings.pbo_project_exe()
@@ -243,16 +294,14 @@ def _pack_locked(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[boo
     # Ставится сразу за путём к сорсам, до пользовательских флагов: у Mikero
     # свой разбор командной строки, и порядок опций для него значим.
     args = [exe, native(source_dir), "+R"]
-    # shlex (posix=True) — значения в кавычках с пробелами (пути, списки масок
-    # исключений) остаются одним аргументом, а не рвутся построчным .split()
-    try:
-        flags = shlex.split(settings.pack_flags, posix=True)
-    except ValueError:
-        flags = settings.pack_flags.split()  # незакрытая кавычка и т.п.
+    # Свой разбор, а не shlex: в posix-режиме он съедает обратные слэши и путь
+    # к ключу подписи приходил к pboProject без разделителей. См. split_flags.
+    flags = split_flags(settings.pack_flags)
     # Режим сборки задаёт FullBuild (C), а не строка флагов: пользователь
     # выбирает его на главной странице, и выбор должен побеждать.
     flags = [f for f in flags if f not in ("+C", "-C")]
     flags.append("+C" if settings.pack_engine == "full" else "-C")
+    flags = _with_must_exclude(_with_sign_key(flags, settings))
     args += flags
     # Движок задаём явно по той же причине, что и +R: иначе берётся то, что
     # осталось в реестре от прошлой GUI-сессии (могло быть Arma3/OFP).
@@ -273,11 +322,171 @@ def _pack_locked(settings: Settings, mod: ModInfo, source_dir: str) -> tuple[boo
     finally:
         keyguard.disarm()
 
-    ok = res.returncode == 0 and pbo_for_source(mod, source_dir).is_file()
-    return ok, "" if ok else _pboproject_log(source_dir)
+    out = pbo_for_source(mod, source_dir)
+    ok = res.returncode == 0 and out.is_file()
+    if not ok:
+        return False, _pboproject_log(source_dir)
+    inside = forbidden_entries(out)
+    if inside:
+        # Файл обфускатора внутри pbo. Проверяется по таблице имён, то есть
+        # ловится и тогда, когда содержимое сжато и строк в нём не видно.
+        return False, ("В готовый PBO попали файлы обфускатора: "
+                       + ", ".join(inside)
+                       + ".\nПроверьте список исключений в настройках "
+                         "pboProject и соберите заново.")
+    leaked = leaked_secrets(out)
+    if leaked:
+        # Не предупреждение: pbo с настройками обфускации — это утечка, и
+        # уехать дальше она не должна. Файл оставляем на месте, чтобы было
+        # что осмотреть.
+        return False, ("В готовом PBO найдены служебные строки обфускатора: "
+                       + ", ".join(leaked)
+                       + ".\nУберите из папки сорсов следы обфускатора "
+                         "(.6w_pack, .6w_obf, папки *_OBFCACHE) и соберите "
+                         "заново.")
+    return True, ""
+
+
+# Приметы обфускатора: в собранном моде их быть не может, а в его конфиге
+# (.6w_pack, .6w_obf) и кэше переименований они есть всегда.
+_SECRETS = (b"identifiers_to_pack", b"default_identifier",
+            b"obfuscated_definitions")
+
+
+# Имена файлов внутри pbo, которых там быть не должно: конфиг обфускатора и
+# кэш переименований. Сверяется с таблицей файлов, а не с содержимым, поэтому
+# работает и когда pbo сжат.
+_FORBIDDEN_NAMES = (".6w_pack", ".6w_obf", "obfuscated_entities.json",
+                    "hobf_pack.settings.json")
+
+
+def pbo_entries(pbo: Path, limit: int = 1 << 20) -> list[str]:
+    """Имена файлов внутри pbo. Пусто — заголовок прочитать не удалось.
+
+    Таблица файлов лежит в начале pbo открытым текстом независимо от сжатия и
+    обфускации содержимого: имя с нулём на конце, за ним пять uint32. Список
+    кончается пустым именем. Читаем только заголовок — с запасом, но не весь
+    файл: pbo бывает в сотни мегабайт.
+    """
+    import struct
+    try:
+        with open(pbo, "rb") as f:
+            head = f.read(limit)
+    except OSError:
+        return []
+    names: list[str] = []
+    done = False
+    pos = 0
+    while pos < len(head):
+        end = head.find(b"\0", pos)
+        if end < 0 or end + 21 > len(head):
+            break
+        raw = head[pos:end]
+        pos = end + 1
+        try:
+            method = struct.unpack_from("<I", head, pos)[0]
+        except struct.error:
+            break
+        pos += 20               # пять uint32: метод и четыре размера/времени
+        if not raw:
+            if method == 0x56657273:    # «Vers» — служебная запись со свойствами
+                while pos < len(head):
+                    end = head.find(b"\0", pos)
+                    if end < 0:
+                        return names
+                    key = head[pos:end]
+                    pos = end + 1
+                    if not key:         # пустой ключ — конец свойств
+                        break
+                continue
+            done = True         # пустое имя без «Vers» — конец таблицы файлов
+            break
+        names.append(raw.decode("cp1251", "replace"))
+    if not done and limit < (16 << 20):
+        # Таблица не кончилась — значит заголовок длиннее прочитанного куска.
+        # Молча отдать половину списка нельзя: по нему решают, чисто ли в pbo.
+        return pbo_entries(pbo, limit * 8)
+    return names
+
+
+def forbidden_entries(pbo: Path) -> list[str]:
+    """Файлы обфускатора, попавшие в pbo. Пусто — чисто."""
+    bad: list[str] = []
+    for name in pbo_entries(pbo):
+        leaf = name.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        if leaf in _FORBIDDEN_NAMES and name not in bad:
+            bad.append(name)
+    return bad
+
+
+def leaked_secrets(pbo: Path) -> list[str]:
+    """Служебные строки, найденные в готовом PBO. Пусто — чисто.
+
+    Читаем кусками: pbo бывает в сотни мегабайт, и держать его в памяти ради
+    двух подстрок незачем. Куски перекрываем, иначе строка, попавшая на стык,
+    не нашлась бы.
+
+    Содержимое в pbo обычно сжато, и тогда строк тут не видно — это нижняя
+    граница проверки, а не вся она: имена файлов смотрит forbidden_entries,
+    им сжатие не мешает.
+    """
+    found: list[str] = []
+    tail = b""
+    try:
+        with open(pbo, "rb") as f:
+            while chunk := f.read(1 << 20):
+                blob = tail + chunk
+                for needle in _SECRETS:
+                    name = needle.decode()
+                    if needle in blob and name not in found:
+                        found.append(name)
+                if len(found) == len(_SECRETS):
+                    break
+                tail = blob[-32:]
+    except OSError:
+        return []       # не прочитали — не выдумываем находок
+    return found
 
 
 def pack_source_auto(settings: Settings, mod: ModInfo, source_dir: str,
-                     on_wait=None) -> tuple[bool, str]:
-    """Единственный движок — pboProject; режим задаёт settings.pack_engine."""
-    return pack_source(settings, mod, source_dir, on_wait=on_wait)
+                     on_wait=None, on_event=None, stop=None) -> tuple[bool, str]:
+    """Собирает PBO тем движком, который выбран в настройках.
+
+    Движков два: Mikero pboProject (по умолчанию) и [KR] Project Builder —
+    программа из KR DevToolkit, которую мы зовём как exe. Режим сборки
+    (обычная или полная) задаёт settings.pack_engine и понимают оба.
+
+    Очередь общая: у обоих своя папка temp и свой инкремент, но запускать
+    две сборки разом всё равно нельзя — вторая будет мешать первой.
+    """
+    if (getattr(settings, "pack_tool", "pboproject") or "pboproject") != "krbuild":
+        return pack_source(settings, mod, source_dir, on_wait=on_wait)
+
+    why = krbuild.missing(settings)
+    if why:
+        return False, f"Project Builder: {why}"
+    if not _LOCK.acquire(blocking=False):
+        if on_wait is not None:
+            on_wait()
+        if not _LOCK.acquire(timeout=_WAIT_SEC):
+            return False, ("другая запаковка не завершилась за "
+                           f"{_WAIT_SEC // 60} минут — сборка отменена")
+    try:
+        ok, text = krbuild.pack(settings, mod, source_dir,
+                                on_event=on_event, stop=stop)
+    finally:
+        _LOCK.release()
+    if not ok:
+        return ok, text
+    # Проверку следов обфускатора оставляем и здесь, но только дешёвую — по
+    # таблице имён в заголовке pbo (0,06 мс). Обфускации у Project Builder
+    # есть её конфигу взяться неоткуда; но список исключений там свой, и
+    # ошибиться в нём можно так же, как в чужом. Побайтовый поиск строк для
+    # этого движка не зовём: читать сотни мегабайт ради невозможного случая
+    # незачем.
+    inside = forbidden_entries(pbo_for_source(mod, source_dir))
+    if inside:
+        return False, ("В готовый PBO попали файлы обфускатора: "
+                       + ", ".join(inside)
+                       + ".\nПроверьте список исключений в настройках Project Builder.")
+    return True, text

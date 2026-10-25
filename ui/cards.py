@@ -13,7 +13,8 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
+from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, Qt, QTimer,
+                            Signal)
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CardWidget, IconWidget, StrongBodyLabel, TransparentToolButton,
@@ -25,6 +26,9 @@ from ui.rows import shrink
 from qfluentwidgets import CaptionLabel
 
 DURATION_MS = 180                       # шкала движения из docs/UX.md, раздел 10
+DURATION_LONG_MS = 250                  # длинный ход: карточка в тысячу пикселей
+_CHASE_LIMIT = 3                        # сколько раз догонять подросшее содержимое
+_CHASE_EPS = 8                          # разница, которой можно пренебречь
 FREE = 16777215                         # «потолка нет» на языке Qt
 
 
@@ -76,6 +80,7 @@ class Section(CardWidget):
         col.addWidget(self.body)
 
         self._open = True
+        self._chase = 0         # догоняний подряд, см. _catch_up
         # Двигаем высоту самой карточки, а не её содержимого. Пока анимировали
         # тело, карточка узнавала о его новом размере следующим проходом
         # раскладки — и на кадр отставала: тело уже ужалось, рамка ещё нет, а
@@ -112,20 +117,81 @@ class Section(CardWidget):
             self.opened.emit()      # содержимое могло ждать этого, чтобы собраться
         self.chevron.setIcon(FIF.CHEVRON_DOWN_MED if open_ else FIF.CHEVRON_RIGHT_MED)
         self._ani.stop()
-        shut = self.head.sizeHint().height()
+        shut = self._shut()
         if open_:
+            # Высоту раскрытой карточки нельзя ни предсказать, ни получить
+            # на месте. Подсказка размера врёт, и крупно: в «Настройках
+            # сервера» строки перестраиваются в колонки по ширине, и sizeHint
+            # обещал 1098 px против настоящих 4103 — анимация доезжала до
+            # обещанного, а потом карточка допрыгивала на три тысячи. Спросить
+            # раскладку прямо здесь тоже нельзя: карточка лежит в области
+            # прокрутки, и настоящий размер она получает только следующим
+            # проходом цикла событий.
+            #
+            # Поэтому снимаем потолок и ждём один проход, погасив на это время
+            # отрисовку окна: раскладка успевает посчитать правду, а на экран
+            # промежуточное состояние не попадает. Один кадр задержки глазом
+            # не виден, зато ход начинается и кончается там, где должен.
             self.body.setVisible(True)
-            # Целевую высоту меряем при снятом потолке: под потолком подсказка
-            # размера врёт, и анимация доезжала не туда.
             self.setMaximumHeight(FREE)
-            full = self.sizeHint().height()
-            self.setMaximumHeight(self.height())
-            self._ani.setStartValue(shut)
-            self._ani.setEndValue(full)
-        else:
-            self._ani.setStartValue(self.height())
-            self._ani.setEndValue(shut)
+            window = self.window()
+            if window is not None:
+                window.setUpdatesEnabled(False)
+            QTimer.singleShot(0, self._begin_open)
+            return
+        self._set_range(self.height(), shut)
+        self._run()
+
+    def _begin_open(self) -> None:
+        """Второй шаг раскрытия: высота уже посчитана, можно ехать."""
+        window = self.window()
+        try:
+            if not self._open:
+                return              # успели свернуть обратно
+            self._set_range(self._shut(), self.height())
+            self._run()
+        finally:
+            if window is not None:
+                window.setUpdatesEnabled(True)
+
+    def _run(self) -> None:
+        """Пускает ход, выбрав длительность по расстоянию.
+
+        Шкала 120/180/250 из docs/UX.md, п.10. Карточка модов едет больше
+        тысячи пикселей, и за 180 мс это одиннадцать кадров по сто — глаз
+        читает их как прыжки, а не как движение. Короткому ходу лишние
+        миллисекунды, наоборот, вредят.
+        """
+        distance = abs(self._ani.endValue() - self._ani.startValue())
+        self._ani.setDuration(DURATION_MS if distance < 400 else DURATION_LONG_MS)
         self._ani.start()
+
+    def _shut(self) -> int:
+        """Высота свёрнутой карточки — настоящая, а не обещанная.
+
+        Подсказка размера шапки больше реальной на 16–32 px: в ней заложен
+        полный текст итога, который на экране укорочен. Ход заканчивался на
+        обещанной высоте, и карточка потом оседала на эти пикселы — мелко, но
+        заметно, потому что оседала рывком.
+        """
+        return self.head.height() or self.head.sizeHint().height()
+
+    def _set_range(self, start: int, end: int) -> None:
+        """Задаёт пределы анимации, не трогая само свойство.
+
+        У остановленной анимации setEndValue пересчитывает текущее значение и
+        тут же пишет его в свойство: карточка на мгновение получала полную
+        высоту, страница раскладывалась под неё, и только потом начинался ход
+        от шапки. Замерено по valueChanged: первым приходило 1235 px, вторым —
+        75 px.
+        """
+        self._ani.blockSignals(True)
+        try:
+            self._ani.setStartValue(start)
+            self._ani.setEndValue(end)
+        finally:
+            self._ani.blockSignals(False)
+        self.setMaximumHeight(start)
 
     def _relayout(self, *_a) -> None:
         parent = self.parentWidget()
@@ -142,10 +208,37 @@ class Section(CardWidget):
         if not self._open:
             # Свёрнутое тело прячем совсем, иначе от него остаётся полоска.
             self.body.setVisible(False)
+            self._chase = 0
         # Потолок снимаем в обоих случаях: свёрнутую высоту задаёт шапка, а
         # раскрытую — содержимое, и оставленный потолок обрезал бы его, когда
         # строки перестроятся в одну колонку.
         self.setMaximumHeight(FREE)
+        if self._open:
+            # Через проход цикла: раскладка досчитывает высоту не сразу, и
+            # спрошенная в тот же миг она равна той, на которой мы встали —
+            # догонять было бы нечего, а карточка потом всё равно подрастала.
+            QTimer.singleShot(0, self._catch_up)
+
+    def _catch_up(self) -> None:
+        """Доезжает, если содержимое оказалось выше, чем было в начале хода.
+
+        У «Настроек сервера» раскладка досчитывает высоту не за один проход, а
+        за пять: 155 → 1018 → 1070 → 4103 (замерено). Предсказать итог нельзя
+        ничем — ни подсказкой размера, ни одним проходом цикла. Поэтому после
+        хода сверяемся с тем, что получилось, и недостающее доезжаем тем же
+        движением, а не отдаём скачком на три тысячи пикселей.
+
+        Догоняем не бесконечно: три раза, дальше остаток уже мелкий.
+        """
+        self._relayout()
+        target = self.height()
+        done = int(self._ani.endValue())
+        if self._chase >= _CHASE_LIMIT or abs(target - done) <= _CHASE_EPS:
+            self._chase = 0
+            return
+        self._chase += 1
+        self._set_range(done, target)
+        self._run()
 
 
 def rows_card(icon, title: str, summary: str, rows: list[QWidget]) -> Section:

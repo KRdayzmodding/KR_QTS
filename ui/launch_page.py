@@ -125,7 +125,7 @@ class LaunchInterface(QWidget):
     # ----------------------------------------------------------------- шапка
 
     def _preset_row(self) -> QHBoxLayout:
-        top = QHBoxLayout()
+        top = self._top_row = QHBoxLayout()
         top.setSpacing(tokens.SPACE_XS)
         top.addWidget(BodyLabel(tr("main.preset", "Пресет:")))
         self.preset_combo = ComboBox()
@@ -140,6 +140,19 @@ class LaunchInterface(QWidget):
         self.b_del.setToolTip(tr("main.preset_del", "Удалить"))
         for b in (self.b_new, self.b_edit, self.b_del):
             top.addWidget(b)
+        # Обслуживание пресета — меню, а не четыре кнопки: чистят БД и профиль
+        # между прогонами, то есть это действия, а не настройки, и в редакторе
+        # им было не место. Отдельными кнопками они занимали бы здесь всю
+        # строку, а две из четырёх необратимы — рядом с «Запустить» таким не
+        # стоять. Меню собирается при открытии, как «Библиотека» у модов.
+        self.btn_service = PushButton(FIF.BROOM, tr("main.service", "Обслуживание"))
+        self.btn_service.setToolTip(tr("main.service_tip",
+                                       "Папка профиля, права админок, очистка БД миссии "
+                                       "и профиля — всё по выбранному пресету."))
+        self.btn_service.setEnabled(False)      # пока пресет не выбран
+        self._service_text = self.btn_service.text()
+        self._row_need = 0                      # мерим при первом показе
+        top.addWidget(self.btn_service)
         top.addSpacing(tokens.SPACE_M)
         top.addWidget(BodyLabel(tr("main.branch", "Ветка:")))
         self.branch_combo = ComboBox()
@@ -157,6 +170,32 @@ class LaunchInterface(QWidget):
         self.btn_update.setVisible(False)
         top.addWidget(self.btn_update)
         return top
+
+    def resizeEvent(self, e):       # имя метода задаёт Qt
+        super().resizeEvent(e)
+        self._fit_preset_row()
+
+    def _fit_preset_row(self) -> None:
+        """Узкому окну «Обслуживание» показывается одним значком.
+
+        Строка пресета — единственная, которая не переносится: в ней выбор
+        пресета и ветки, и рвать её на две строки некуда. При минимальном
+        окне и раскрытой панели слева подпись у кнопки отнимала последние
+        сто пикселей, и «Ветка» уезжала за край с горизонтальной прокруткой.
+        Значок с подсказкой остаётся на месте и не врёт про размер окна.
+        """
+        if not self._row_need:
+            if not self.btn_service.text():
+                return                  # мерить можно только с подписью
+            self._row_need = (self._top_row.sizeHint().width()
+                              + 2 * tokens.SPACE_L)
+        # Порог на раскрытие выше порога на сворачивание: ровно на границе
+        # подпись иначе мигала бы при каждом пикселе движения рамки.
+        text = self.btn_service.text()
+        if text and self.width() < self._row_need:
+            self.btn_service.setText("")
+        elif not text and self.width() > self._row_need + tokens.SPACE_M:
+            self.btn_service.setText(self._service_text)
 
     # -------------------------------------------------------------- карточка
     #                                                                состояния
@@ -208,6 +247,19 @@ class LaunchInterface(QWidget):
         box.addLayout(row)
         return card
 
+    def apply_pack_tool(self) -> None:
+        """Прячет то, что относится к невыбранному движку.
+
+        Зовётся при сборке карточки и после сохранения настроек: движок
+        меняют там, а видно это должно быть здесь.
+        """
+        krbuild = getattr(self.win.settings, "pack_tool", "pboproject") == "krbuild"
+        self.pbo_row.setVisible(not krbuild)
+        self.krbuild_row.setVisible(krbuild)
+        # Логи запаковки у нас читаются в формате pboProject; у Project Builder
+        # свой лог, и путь к нему программа пишет в журнал после сборки.
+        self.btn_packlogs.setVisible(not krbuild)
+
     def _pick_sides(self, key: str) -> None:
         """Сегмент переставляет галки — они и есть хранилище выбора."""
         if self._syncing:
@@ -257,6 +309,13 @@ class LaunchInterface(QWidget):
         self.btn_pack_settings.setToolTip(tr("main.pack_settings_tip",
                                              "Настройки pboProject — те же, что в «Настройках», "
                                              "но под рукой. Сохраняются сразу."))
+        self.btn_krbuild_settings = PushButton(FIF.SETTING,
+                                               tr("settings.krbuild_settings",
+                                                  "Настройки Project Builder"))
+        self.btn_krbuild_settings.setToolTip(tr(
+            "main.krbuild_settings_tip",
+            "Проверки, исправления и ключ подписи у Project Builder свои — "
+            "открывается его окно."))
         self.btn_sources = PushButton(FIF.SYNC, tr("main.mods_with_sources",
                                                    "Запаковать моды"))
         self.btn_packlogs = PushButton(FIF.ZIP_FOLDER, tr("main.show_packlogs",
@@ -264,6 +323,19 @@ class LaunchInterface(QWidget):
         self.btn_packlogs.setToolTip(tr("main.show_packlogs_tip",
                                         "Логи pboProject по последней запаковке: "
                                         "отдельно сборка pbo, отдельно бинаризация."))
+        # Строки, привязанные к движку: показываем только ту, чей движок
+        # выбран. Чужие настройки на виду человек читает как «надо
+        # заполнить» — и заполняет, а они ни на что не влияют.
+        self.pbo_row = setting_row(tr("main.pack_flags_row", "Флаги pboProject"),
+                                   tr("main.pack_flags_desc",
+                                      "Те же, что в настройках, но под рукой."),
+                                   self.btn_pack_settings)
+        self.krbuild_row = setting_row(tr("main.krbuild_row", "Сборка Project Builder"),
+                                       tr("main.krbuild_row_desc",
+                                          "Проверки, исправления и ключ подписи — "
+                                          "в его собственном окне."),
+                                       self.btn_krbuild_settings)
+
         actions = QWidget()
         arow = QHBoxLayout(actions)
         arow.setContentsMargins(0, tokens.SPACE_XXS, 0, 0)
@@ -282,13 +354,12 @@ class LaunchInterface(QWidget):
                            "Мод, у которого сорсы новее его PBO, запакуется перед "
                            "стартом — правки попадут в игру."),
                         self.pack_engine),
-            setting_row(tr("main.pack_flags_row", "Флаги pboProject"),
-                        tr("main.pack_flags_desc",
-                           "Те же, что в настройках, но под рукой."),
-                        self.btn_pack_settings),
             ]),
+            self.pbo_row,
+            self.krbuild_row,
             actions,
         ])
+        self.apply_pack_tool()
         return self.pack_card
 
     def _setup_card(self):
@@ -344,6 +415,11 @@ class LaunchInterface(QWidget):
         # мы утопили бы первое во втором.
         self.launch_log = PlainTextEdit()
         self.launch_log.setReadOnly(True)
+        # Предел строк, как у консоли. Журнал редкий, но программа живёт
+        # сутками: сервер с автоперезапуском дописывает сюда строку за
+        # строкой, и документ рос бы без конца — вместе с памятью и ценой
+        # каждой следующей вставки.
+        self.launch_log.setMaximumBlockCount(20000)
         self.launch_log.setFont(tokens.mono_font())
         self.launch_log.setMinimumHeight(140)
         # Пустое состояние: пустая чёрная область молчит о том, зачем она.

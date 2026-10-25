@@ -8,8 +8,8 @@ from PySide6.QtCore import QTimer, QUrl, QRegularExpression
 from PySide6.QtGui import QDesktopServices, QRegularExpressionValidator
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PlainTextEdit, ComboBox, CheckBox,
-    PushButton, ToolButton, BodyLabel, CaptionLabel,
-    StrongBodyLabel, SimpleCardWidget, SwitchButton, TransparentToolButton, TeachingTip,
+    PushButton, PrimaryPushButton, ToolButton, BodyLabel, CaptionLabel,
+    SwitchButton, TransparentToolButton, TeachingTip,
     TeachingTipTailPosition, InfoBar, InfoBarPosition,
     FluentIcon as FIF, setTheme, Theme,
 )
@@ -21,6 +21,8 @@ from core.i18n import tr, AVAILABLE
 from core.settings import (
     Settings, find_pbo_project_exe, check_path, PATH_MISSING, PATH_NOT_INSTALLED,
 )
+from ui import tokens
+from ui.cards import rows_card
 from ui.pboproject_dialog import PboProjectDialog
 from ui.steamid_list import SteamIdList
 
@@ -212,21 +214,31 @@ class SettingsPage(QScrollArea):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(10)
 
-        def section(title: str) -> QFormLayout:
-            """Заголовок + обведённая рамкой карточка с полями секции."""
-            layout.addWidget(StrongBodyLabel(title))
-            card = SimpleCardWidget()
-            inner_box = QVBoxLayout(card)
-            inner_box.setContentsMargins(16, 12, 16, 12)
-            f = QFormLayout()
+        self.sections: list = []
+
+        def section(title: str, icon=FIF.SETTING, summary: str = "") -> QFormLayout:
+            """Сворачиваемая карточка раздела; возвращает её форму для полей.
+
+            Раньше разделы стояли развёрнутыми один под другим: семь штук,
+            две с половиной тысячи пикселей, и нужную строку искали
+            прокруткой. Теперь по умолчанию свёрнуты все — видно оглавление,
+            и до любого раздела один щелчок. Итог в шапке говорит, что
+            внутри, иначе сворачивание прячет информацию, а не экономит
+            место.
+            """
+            holder = QWidget()
+            f = QFormLayout(holder)
+            f.setContentsMargins(0, 0, 0, 0)
             f.setSpacing(8)
-            inner_box.addLayout(f)
+            card = rows_card(icon, title, summary, [holder])
+            card.set_open(False)
             layout.addWidget(card)
-            layout.addSpacing(6)
+            self.sections.append(card)
             return f
 
         # ------------------------------------------------------------ Общее
-        form_general = section(tr("settings.section_general", "Общее"))
+        form_general = section(tr("settings.section_general", "Общее"), FIF.SETTING,
+                               tr("settings.section_general_sum", "язык, тема, запуск и закрытие окна"))
         self.lang = ComboBox()
         for code, label in AVAILABLE.items():
             self.lang.addItem(label, userData=code)
@@ -303,7 +315,23 @@ class SettingsPage(QScrollArea):
         form_general.addRow(BodyLabel(tr("settings.start_mode", "Как показываться при запуске")),
                             self.start_mode)
 
-        form_paths = section(tr("settings.section_paths", "Клиент и сервер"))
+        # Тумблер, а не галка, по той же причине, что у проверки обновлений:
+        # это состояние программы. Подписи называют, что произойдёт, — иначе
+        # «включено» пришлось бы расшифровывать в голове.
+        self.close_quits = SwitchButton()
+        self.close_quits.setOnText(tr("settings.close_quits_on", "Закрывает программу"))
+        self.close_quits.setOffText(tr("settings.close_quits_off", "Сворачивает в мини-окно"))
+        self.close_quits.setChecked(settings.close_quits)
+        self.close_quits.setToolTip(tr(
+            "settings.close_quits_tip",
+            "Мини-окно удобно, пока правишь мод: программа под рукой, но не "
+            "занимает экран. Если она нужна только на время запуска, пусть "
+            "крестик закрывает её совсем. Выход из трея работает в любом случае."))
+        form_general.addRow(BodyLabel(tr("settings.close_quits", "Крестик окна")),
+                            self.close_quits)
+
+        form_paths = section(tr("settings.section_paths", "Клиент и сервер"), FIF.FOLDER,
+                               tr("settings.section_paths_sum", "где стоят игра, сервер и инструменты"))
         self.p_client = PathRow(settings.client_stable, self, "client_stable")
         self.p_client_exp = PathRow(settings.client_exp, self, "client_exp")
         self.p_server = PathRow(settings.server_stable, self, "server_stable")
@@ -348,7 +376,8 @@ class SettingsPage(QScrollArea):
         form_paths.addRow("", b_paths)
 
         # ------------------------------------------------------------ Steam
-        form_steam = section(tr("settings.section_steam", "Steam"))
+        form_steam = section(tr("settings.section_steam", "Steam"), FIF.PEOPLE,
+                               tr("settings.section_steam_sum", "админские SteamID, пароль VPPA, ключ API"))
         # ключ берём с живого поля: его могли вписать только что, не сохранив
         self.admin_ids = SteamIdList(list(settings.admin_steamids),
                                      lambda: self.steam_key.text().strip())
@@ -391,22 +420,133 @@ class SettingsPage(QScrollArea):
         form_steam.addRow("", steam_hint)
 
         # ------------------------------------------------------------ Запаковка
-        form_pack = section(tr("settings.section_pack", "Запаковка модов"))
+        form_pack = section(tr("settings.section_pack", "Запаковка модов"), FIF.ZIP_FOLDER,
+                               tr("settings.section_pack_sum", "чем паковать PBO, ключ подписи"))
         self._pack_flags = settings.pack_flags
         self._clean_meta = settings.clean_meta
 
-        # Mikero Tools — первым: это движок «полной» запаковки, всё ниже зависит от него
+        # Первым — чем паковать: от этого зависит всё остальное в разделе.
+        # Настройки чужого упаковщика не должны висеть там, где он не
+        # используется: человек читает их как «надо заполнить» и заполняет.
+        self.pack_tool = ComboBox()
+        self.pack_tool.addItem(tr("settings.tool_pboproject", "Mikero pboProject"),
+                               userData="pboproject")
+        self.pack_tool.addItem(tr("settings.tool_krbuild", "[KR] Project Builder"),
+                               userData="krbuild")
+        idx_tool = self.pack_tool.findData(getattr(settings, "pack_tool", "pboproject"))
+        self.pack_tool.setCurrentIndex(max(idx_tool, 0))
+        self.pack_tool.setToolTip(tr(
+            "settings.tool_tip",
+            "Чем собирать PBO. Движок выбирается один на проект: у обоих свой "
+            "учёт изменений и общая папка temp, и чередование заставило бы "
+            "каждый пересобирать за другим."))
+        form_pack.addRow(BodyLabel(tr("settings.tool_label", "Чем паковать")),
+                         self.pack_tool)
+
+        # --- настройки pboProject: путь к Mikero, ключ подписи, окно флагов
+        self.pbo_box = QWidget()
+        pbo_form = QFormLayout(self.pbo_box)
+        pbo_form.setContentsMargins(0, 0, 0, 0)
+        pbo_form.setSpacing(8)
         self.p_mikero = PathRow(settings.mikero_tools, self, "mikero_tools")
-        form_pack.addRow(BodyLabel(tr("settings.mikero", "Mikero Tools (DePboTools)")), self.p_mikero)
+        pbo_form.addRow(BodyLabel(tr("settings.mikero", "Mikero Tools (DePboTools)")),
+                        self.p_mikero)
         mikero_hint = CaptionLabel(tr("settings.mikero_hint",
                                       "pboProject входит в состав Mikero Tools и требует "
                                       "установленных DayZ Tools — без них бинаризация не работает."))
         mikero_hint.setWordWrap(True)
-        form_pack.addRow("", mikero_hint)
+        pbo_form.addRow("", mikero_hint)
 
-        self.b_pbo_settings = PushButton(FIF.SETTING, tr("settings.pbo_settings", "Настройки PboProject"))
+        # Ключ подписи здесь, а не общей строкой: pboProject принимает его
+        # флагом запуска, а Project Builder — только из своих настроек,
+        # ключа командной строки у него нет. Общее поле обещало бы то, чего
+        # для второго движка мы сделать не можем.
+        key_row = QHBoxLayout()
+        key_row.setSpacing(4)
+        self.sign_key = LineEdit()
+        self.sign_key.setText(getattr(settings, "sign_key", ""))
+        self.sign_key.setPlaceholderText(tr("settings.sign_key_ph",
+                                            "PBO не подписываются"))
+        b_key_pick = ToolButton(FIF.FOLDER)
+        b_key_pick.setToolTip(tr("settings.sign_key_pick", "Выбрать файл ключа"))
+        b_key_pick.clicked.connect(self._pick_sign_key)
+        self.b_key_new = PushButton(FIF.ADD, tr("settings.sign_key_new", "Создать…"))
+        self.b_key_new.clicked.connect(self._create_sign_key)
+        key_row.addWidget(self.sign_key, 1)
+        key_row.addWidget(b_key_pick)
+        key_row.addWidget(self.b_key_new)
+        pbo_form.addRow(BodyLabel(tr("settings.sign_key", "Ключ подписи")), key_row)
+        key_hint = CaptionLabel(tr(
+            "settings.sign_key_hint",
+            "Закрытый ключ (.biprivatekey), которым подписываются собранные "
+            "PBO. Открытую половину (.bikey) нужно положить в папку keys "
+            "сервера, иначе он подписанные моды не примет. Пусто — не "
+            "подписывать."))
+        key_hint.setWordWrap(True)
+        pbo_form.addRow("", key_hint)
+
+        self.b_pbo_settings = PushButton(FIF.SETTING,
+                                         tr("settings.pbo_settings", "Настройки PboProject"))
         self.b_pbo_settings.clicked.connect(self._open_pbo_settings)
-        form_pack.addRow(BodyLabel(tr("settings.pbo_settings_label", "Запаковка PBO")), self.b_pbo_settings)
+        pbo_form.addRow(BodyLabel(tr("settings.pbo_settings_label", "Запаковка PBO")),
+                        self.b_pbo_settings)
+        form_pack.addRow(self.pbo_box)
+
+        # --- настройки Project Builder: путь и кнопка в его собственное окно
+        self.krbuild_box = QWidget()
+        kb_form = QFormLayout(self.krbuild_box)
+        kb_form.setContentsMargins(0, 0, 0, 0)
+        kb_form.setSpacing(8)
+        self.p_krbuild = PathRow(getattr(settings, "krbuild_exe", ""), self)
+        kb_form.addRow(BodyLabel(tr("settings.krbuild", "Папка Dev Toolkit")),
+                       self.p_krbuild)
+        krbuild_hint = CaptionLabel(tr(
+            "settings.krbuild_hint",
+            "Можно не заполнять: установленный [KR] Dev Toolkit программа "
+            "находит сама. Папка нужна, только если держите его отдельной "
+            "копией — запаковщик и окно настроек найдутся в ней по вложенным "
+            "папкам. В поставку он не входит, это отдельная программа."))
+        krbuild_hint.setWordWrap(True)
+        kb_form.addRow("", krbuild_hint)
+
+        # Что нашлось по указанной папке. Без этой строки поле молчит: папка
+        # указана, а нашлась программа или нет — никак не узнать, пока не
+        # дойдёшь до запаковки. Человек в такой тишине решает, что не видит.
+        self.krbuild_found = CaptionLabel("")
+        self.krbuild_found.setWordWrap(True)
+        kb_form.addRow("", self.krbuild_found)
+
+        # Следующий шаг там же, где отказ. Выбрать этот движок без тулкита
+        # можно, а собрать им нельзя — и человек остаётся с «не установлен»
+        # и без способа это исправить. Кнопка живёт только в этом состоянии.
+        self.b_toolkit_get = PrimaryPushButton(
+            FIF.DOWNLOAD, tr("settings.toolkit_get", "Скачать и установить"))
+        self.b_toolkit_get.clicked.connect(self._install_toolkit)
+        kb_form.addRow("", self.b_toolkit_get)
+        self.b_toolkit_get.setVisible(False)
+        self._krbuild_timer = QTimer(self)
+        self._krbuild_timer.setSingleShot(True)
+        self._krbuild_timer.setInterval(400)    # не искать на каждую букву
+        self._krbuild_timer.timeout.connect(self._show_krbuild_found)
+        self.p_krbuild.edit.textChanged.connect(self._krbuild_timer.start)
+        # И сохраняем по ходу: путь сюда чаще вставляют, а не допечатывают,
+        # и ждать ухода фокуса, чтобы настройка «вступила в силу», незачем.
+        self.p_krbuild.edit.textChanged.connect(self._save_later)
+        self.b_krbuild_settings = PushButton(FIF.SETTING,
+                                             tr("settings.krbuild_settings",
+                                                "Настройки Project Builder"))
+        self.b_krbuild_settings.clicked.connect(self._open_krbuild_settings)
+        kb_form.addRow(BodyLabel(tr("settings.krbuild_settings_label", "Сборка")),
+                       self.b_krbuild_settings)
+        kb_hint = CaptionLabel(tr(
+            "settings.krbuild_own_hint",
+            "Проверки, исправления, подпись и ключ у Project Builder свои — они "
+            "задаются в его окне, а не здесь."))
+        kb_hint.setWordWrap(True)
+        kb_form.addRow("", kb_hint)
+        form_pack.addRow(self.krbuild_box)
+
+        self.pack_tool.currentIndexChanged.connect(self._tool_changed)
 
         self.pack_engine = ComboBox()
         self.pack_engine.addItem(tr("settings.engine_normal",
@@ -419,6 +559,9 @@ class SettingsPage(QScrollArea):
                                        "секунды; полная чистит temp и пересобирает всё."))
         form_pack.addRow(BodyLabel(tr("settings.engine_label", "Способ запаковки модов")), self.pack_engine)
 
+        self._tool_changed()
+        self._show_krbuild_found()
+
         # «полная» запаковка зависит и от pboProject, и от DayZ Tools
         self.p_mikero.edit.textChanged.connect(self._update_pbo_button_state)
         self.p_tools.edit.textChanged.connect(self._update_pbo_button_state)
@@ -426,7 +569,8 @@ class SettingsPage(QScrollArea):
 
         # ---------------------------------------------------- Filepatching
         # -------------------------------------------- Обновление модов
-        form_upd = section(tr("settings.section_modupd", "Обновление модов"))
+        form_upd = section(tr("settings.section_modupd", "Обновление модов"), FIF.UPDATE,
+                               tr("settings.section_modupd_sum", "проверка и докачка модов мастерской"))
 
         upd_note = CaptionLabel(tr(
             "settings.modupd_note",
@@ -508,7 +652,8 @@ class SettingsPage(QScrollArea):
                         self.mod_update_timeout_min)
         self._modupd_method_changed()
 
-        form_fp = section(tr("settings.section_filepatch", "Filepatching"))
+        form_fp = section(tr("settings.section_filepatch", "Filepatching"), FIF.LINK,
+                               tr("settings.section_filepatch_sum", "ссылки на папки скриптов для правок на лету"))
         fp_row = QHBoxLayout()
         self.b_fp_add = PushButton(FIF.LINK, tr("filepatch.add", "Создать симлинк"))
         self.b_fp_add.clicked.connect(self._filepatch_add)
@@ -542,7 +687,8 @@ class SettingsPage(QScrollArea):
         self._update_filepatch_status()
 
         # ------------------------------------------- Внешнее управление
-        form_cli = section(tr("settings.section_cli", "Внешнее управление"))
+        form_cli = section(tr("settings.section_cli", "Внешнее управление"), FIF.COMMAND_PROMPT,
+                               tr("settings.section_cli_sum", "команды снаружи: qtsctl и задачи редактора"))
 
         cli_note = CaptionLabel(tr(
             "settings.cli_note",
@@ -618,23 +764,25 @@ class SettingsPage(QScrollArea):
         # верный способ забыть новое поле и получить молча неверный индикатор.
         for widget in (self.lang, self.pack_engine, self.theme, self.stop_method,
                        self.start_mode, self.mod_update_method,
-                       self.mod_update_timeout_min):
+                       self.mod_update_timeout_min, self.pack_tool):
             widget.currentIndexChanged.connect(lambda _i: self._save())
         # Тумблеры и галки шлют разные сигналы — подключаемся по тому, какой
         # у виджета есть, чтобы новое поле нельзя было забыть привязать.
         for widget in (self.check_updates, self.mod_update_before_launch,
-                       self.external_control, self.start_with_windows):
+                       self.external_control, self.start_with_windows,
+                       self.close_quits):
             signal = (getattr(widget, "checkedChanged", None)
                       or getattr(widget, "toggled", None))
             signal.connect(lambda _v: self._save())
         # Печатают руками — пишем по окончании ввода, а не по букве.
         for widget in (self.project_prefix, self.admin_pass, self.steam_key,
-                       self.steamcmd_exe, self.steam_login):
+                       self.steamcmd_exe, self.steam_login, self.sign_key):
             widget.editingFinished.connect(self._save)
         self.workshop.textChanged.connect(self._save_later)
         self.admin_ids.changed.connect(lambda: self._save())
         for row in (self.p_client, self.p_client_exp, self.p_server, self.p_server_exp,
-                    self.p_mikero, self.p_tools, self.p_tools_exp, self.p_downloads):
+                    self.p_mikero, self.p_krbuild, self.p_tools, self.p_tools_exp,
+                    self.p_downloads):
             row.edit.editingFinished.connect(self._save)
 
         # Слежением за загрузками Steam владеет главное окно: качать можно
@@ -850,6 +998,161 @@ class SettingsPage(QScrollArea):
         self._filepatch_report(filepatch.remove_all(self.settings),
                                tr("filepatch.cleared", "Симлинки удалены"))
 
+    def _tool_changed(self, *_a) -> None:
+        """Показывает настройки только того движка, который выбран."""
+        krbuild_chosen = self.pack_tool.currentData() == "krbuild"
+        self.pbo_box.setVisible(not krbuild_chosen)
+        self.krbuild_box.setVisible(krbuild_chosen)
+        if krbuild_chosen:
+            # Выбор движка — тот самый момент, когда человек узнаёт, что
+            # тулкита нет. Показывать ему состояние, посчитанное при открытии
+            # страницы, значит рисковать устаревшим отказом.
+            self._show_krbuild_found()
+
+    def _show_krbuild_found(self) -> None:
+        """Пишет под полем, что нашлось в указанной папке."""
+        from core import krbuild
+        # Спрашиваем про то, что введено сейчас, а не про сохранённое:
+        # строка должна отвечать на ввод, а не на прошлый сеанс.
+        from dataclasses import replace
+        typed = self.p_krbuild.text().strip()
+        probe = replace(self.settings, krbuild_exe=typed)
+        where = probe.krbuild_cli()
+        if where:
+            gui = krbuild.gui_exe(probe)
+            version = krbuild.version_of(where)
+            shown = f"{where} ({version})" if version else where
+            # Пустое поле и найденная программа — не одно и то же сообщение:
+            # человек должен видеть, что путь взялся из установки, а не из
+            # его ввода, иначе «я ничего не указывал, а оно работает» читается
+            # как ошибка.
+            if typed:
+                found = tr("settings.krbuild_found", "Нашлось: {p}", p=shown)
+            else:
+                found = tr("settings.krbuild_auto",
+                           "Установленный Dev Toolkit: {p}", p=shown)
+            if not gui:
+                found += " " + tr("settings.krbuild_no_window",
+                                  "Окна настроек рядом нет — кнопка выше не сработает.")
+            self.krbuild_found.setText(found)
+            role = "success" if gui else "warning"
+        elif not typed:
+            self.krbuild_found.setText(tr(
+                "settings.krbuild_none",
+                "Dev Toolkit не установлен. Поставьте его или укажите папку, "
+                "если держите отдельной копией."))
+            role = "text_dim"
+        else:
+            self.krbuild_found.setText(tr(
+                "settings.krbuild_missing",
+                "В этой папке нет запаковщика (ProjectBuilder.exe) — ни в "
+                "ней самой, ни во вложенных."))
+            role = "error"
+        self.krbuild_found.setStyleSheet(f"color:{tokens.color(role)};")
+        self.b_toolkit_get.setVisible(not where)
+
+    def _open_krbuild_settings(self) -> None:
+        """Открывает окно настроек Project Builder — его, а не наше.
+
+        Проверки, исправления и подпись там свои; повторять их у себя значило
+        бы завести второй источник правды для чужой программы.
+        """
+        import subprocess
+        from dataclasses import replace
+
+        from core import krbuild
+        # По введённому прямо сейчас, а не по сохранённому: иначе сразу после
+        # ввода пути кнопка отвечает «не найдено», пока строка под полем в том
+        # же окне пишет «нашлось». Человек верит кнопке и решает, что сломано.
+        probe = replace(self.settings, krbuild_exe=self.p_krbuild.text().strip())
+        gui = krbuild.gui_exe(probe)
+        if not gui:
+            InfoBar.warning(
+                title=tr("settings.krbuild_no_gui", "Окно Project Builder не найдено"),
+                content=tr("settings.krbuild_no_gui_body",
+                           "Укажите папку Dev Toolkit — рядом с запаковщиком "
+                           "лежит ProjectBuilder_GUI.exe с окном настроек."),
+                parent=self.window(), duration=6000,
+                position=InfoBarPosition.TOP_RIGHT)
+            return
+        # Второй раз не запускаем: у чужой программы одно окно настроек, и
+        # две копии писали бы в один и тот же build_kit.json — кто последний
+        # закрыл, того и настройки.
+        from ui.onewindow import raise_process_window
+        running = getattr(self, "_krbuild_proc", None)
+        if running is not None and running.poll() is None:
+            if not raise_process_window(running.pid):
+                InfoBar.info(
+                    title=tr("settings.krbuild_already", "Окно настроек уже открыто"),
+                    content="", parent=self.window(), duration=4000,
+                    position=InfoBarPosition.TOP_RIGHT)
+            return
+        try:
+            self._krbuild_proc = subprocess.Popen([gui, "--settings"])
+        except OSError as e:
+            InfoBar.error(title=tr("settings.krbuild_no_run", "Не удалось открыть"),
+                          content=str(e), parent=self.window(), duration=6000,
+                          position=InfoBarPosition.TOP_RIGHT)
+
+    def _install_toolkit(self) -> None:
+        """Скачивает установщик Dev Toolkit и отдаёт его человеку."""
+        from ui.onewindow import show_once
+        from ui.toolkit_setup_dialog import ToolkitSetupDialog
+
+        def make():
+            dialog = ToolkitSetupDialog(self.window())
+            dialog.installed.connect(self._toolkit_installed)
+            return dialog
+
+        show_once(self, "toolkit_setup", make)
+
+    def _toolkit_installed(self) -> None:
+        """Тулкит поставился — поле с папкой больше не нужно.
+
+        Если там был путь, по которому ничего не нашлось, он теперь мешает:
+        указанная папка важнее установки, и человек остался бы с «не нашёлся»
+        сразу после удачной установки.
+        """
+        from dataclasses import replace
+        typed = self.p_krbuild.text().strip()
+        if typed and not replace(self.settings, krbuild_exe=typed).krbuild_cli():
+            self.p_krbuild.edit.setText("")
+        self._show_krbuild_found()
+        InfoBar.success(
+            title=tr("settings.toolkit_ready", "Dev Toolkit установлен"),
+            content=tr("settings.toolkit_ready_body",
+                       "Запаковщик найден — можно собирать."),
+            parent=self.window(), duration=5000,
+            position=InfoBarPosition.TOP_RIGHT)
+
+    def _pick_sign_key(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("settings.sign_key_pick", "Выбрать файл ключа"),
+            self.sign_key.text(),
+            tr("settings.sign_key_filter", "Ключ подписи (*.biprivatekey)"))
+        if path:
+            self.sign_key.setText(path)
+            self._save()
+
+    def _create_sign_key(self) -> None:
+        """Заводит пару ключей и сразу подставляет закрытый в поле."""
+        from ui.signkey_dialog import SignKeyDialog
+        dlg = SignKeyDialog(self.settings, self)
+        if not dlg.exec() or not dlg.created:
+            return
+        self.sign_key.setText(dlg.created)
+        self._save()
+        from core import signkey
+        public = signkey.public_of(dlg.created)
+        InfoBar.success(
+            title=tr("settings.sign_key_done", "Ключ создан"),
+            content=tr("settings.sign_key_done_body",
+                       "Открытую половину положите в keys сервера: {p}",
+                       p=public or "—"),
+            parent=self.window(), duration=8000,
+            position=InfoBarPosition.TOP_RIGHT)
+
     def _open_pbo_settings(self) -> None:
         dlg = PboProjectDialog(self._pack_flags, self._clean_meta, self)
         if dlg.exec():
@@ -877,6 +1180,7 @@ class SettingsPage(QScrollArea):
             "stop_method": self.stop_method.currentData(),
             "start_with_windows": self.start_with_windows.isChecked(),
             "start_mode": self.start_mode.currentData(),
+            "close_quits": self.close_quits.isChecked(),
             "project_prefix": self.project_prefix.text().strip(),
             "client_stable": self.p_client.text(),
             "client_exp": self.p_client_exp.text(),
@@ -890,6 +1194,9 @@ class SettingsPage(QScrollArea):
             "admin_password": self.admin_pass.text(),
             "steam_api_key": self.steam_key.text().strip(),
             "downloads_dir": self.p_downloads.text(),
+            "sign_key": self.sign_key.text().strip(),
+            "pack_tool": self.pack_tool.currentData(),
+            "krbuild_exe": self.p_krbuild.text(),
             "pack_flags": self._pack_flags,
             "clean_meta": self._clean_meta,
             "pack_engine": self.pack_engine.currentData(),

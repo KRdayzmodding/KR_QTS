@@ -80,10 +80,6 @@ def _bool_meta() -> dict[str, tuple[str, str]]:
         "P": (tr("pbo.p", "Без паузы (пакетный режим)"),
               tr("pbo.p_tip", "Обязательно для автоматической сборки — без этого pboProject "
                  "может открыть GUI и ждать участия пользователя, из-за чего сборка зависнет.")),
-        "K": (tr("pbo.k", "Подписывать PBO"),
-              tr("pbo.k_tip", "Создаёт .bisign рядом с pbo и кладёт публичный ключ в keys/. "
-                 "Если ниже указан приватный ключ, подпись включается автоматически "
-                 "независимо от этого переключателя.")),
         "N": (tr("pbo.n", "Подробный лог"),
               tr("pbo.n_tip", "Много дополнительной информации в выводе — полезно при поиске "
                  "причины ошибки, но заметно замедляет сборку.")),
@@ -110,13 +106,13 @@ def _bool_meta() -> dict[str, tuple[str, str]]:
 def _text_meta() -> dict[str, tuple[str, str, str, str]]:
     """ключ_виджета -> (буква_флага, лейбл, подсказка, тип: "file"|"text")."""
     return {
-        "K_file": ("K", tr("pbo.k_file", "Приватный ключ (.biprivatekey)"),
-                  tr("pbo.k_file_tip", "Нужен, если включена подпись PBO выше."), "file"),
         "Z_excl": ("Z", tr("pbo.z_excl", "Исключить из сжатия"),
                   tr("pbo.z_excl_tip", "Файлы/маски через запятую, которые не нужно сжимать "
                      "(например *.paa,*.ogg)."), "text"),
         "X_excl": ("X", tr("pbo.x_excl", "Исключить из PBO"),
-                  tr("pbo.x_excl_tip", "Файлы/маски через запятую, которые вообще не попадут в pbo."), "text"),
+                  tr("pbo.x_excl_tip", "Файлы/маски через запятую, которые вообще не попадут в pbo. "
+                     "Следы обфускатора (.6w_pack, .6w_obf, *_OBFCACHE) исключаются всегда, "
+                     "даже если убрать их из этого списка."), "text"),
         "A": ("A", tr("pbo.appid", "AppID (только платный DLC)"),
               tr("pbo.appid_tip", "Оставьте пустым, если это не платный DLC-контент."), "text"),
     }
@@ -217,14 +213,17 @@ class PboProjectDialog(ThemedDialog):
             letter, label, tip, kind = text_meta[key]
             self._add_text_row(form_compress, key, label, tip, kind, texts.get(letter, ""))
 
+        # Подписи здесь больше нет: ключ один на проект и нужен обоим движкам,
+        # поэтому он переехал в «Настройки». Второй двери не оставляем — две
+        # двери в одну настройку расходятся при первой же правке. Подпись
+        # включается самим наличием ключа, отдельного переключателя не нужно.
         v.addWidget(StrongBodyLabel(tr("pbo.section_signing", "Подпись")))
-        form_sign = QFormLayout()
-        form_sign.setSpacing(8)
-        label, tip = bool_meta["K"]
-        self._add_bool_row(form_sign, "K", label, tip)
-        letter, label, tip, kind = text_meta["K_file"]
-        self._add_text_row(form_sign, "K_file", label, tip, kind, texts.get(letter, ""))
-        v.addLayout(form_sign)
+        sign_note = CaptionLabel(tr(
+            "pbo.sign_moved",
+            "Ключ подписи задаётся в «Настройках» — он общий для обоих "
+            "движков запаковки. Пока ключ не указан, PBO не подписываются."))
+        sign_note.setWordWrap(True)
+        v.addWidget(sign_note)
 
         form_adv = bool_section(tr("pbo.section_advanced", "Прочее"), _SECTION_ADVANCED)
         letter, label, tip, kind = text_meta["A"]
@@ -325,15 +324,10 @@ class PboProjectDialog(ThemedDialog):
                 tokens.append(f"+{letter}")
             elif val is False:
                 tokens.append(f"-{letter}")
-        key_val = self._texts["K_file"].text().strip()
-        if key_val:
-            # путь к ключу подразумевает включённую подпись — не дублируем
-            # состояние отдельным +K/-K
-            tokens = [t for t in tokens if t not in ("+K", "-K")]
-            tokens.append(f"+K={_quote_if_needed(key_val)}")
+        # Про подпись строка флагов больше ничего не решает: ключ приходит из
+        # настроек, и core/packer сам ставит +K= или -K перед запуском.
+        tokens = [t for t in tokens if t not in ("+K", "-K")]
         for key, edit in self._texts.items():
-            if key == "K_file":
-                continue
             letter = self._letter_by_key[key]
             val = edit.text().strip()
             if not val:

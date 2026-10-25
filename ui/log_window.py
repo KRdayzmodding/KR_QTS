@@ -19,6 +19,7 @@ from qfluentwidgets import (
 
 from core.i18n import tr
 from core import logsource
+from ui.logview import append_html
 from ui import tokens
 
 # По сколько файлов подтягивать в режиме «во всех файлах». Их бывают сотни,
@@ -381,6 +382,10 @@ class LogWindow(QWidget):
         super().showEvent(event)
         if self._on_top:
             self._apply_on_top()
+        # Пока окно было спрятано, хвост не читался — догоняем сразу, чтобы
+        # человек увидел свежее, а не то, что было при закрытии.
+        if self.timer.isActive():
+            self._poll()
 
     def _apply_bg(self) -> None:
         bg = "rgb(43, 43, 43)" if isDarkTheme() else "white"
@@ -437,7 +442,8 @@ class LogWindow(QWidget):
 
     def _session_file(self) -> Path | None:
         """Файл выбранного вида, появившийся уже после начала запуска."""
-        newest = logsource.newest_of_kind(self.directory, self.kind)
+        # Ждём файл этой сессии — спрашиваем папку заново, см. log_files.
+        newest = logsource.newest_of_kind(self.directory, self.kind, fresh=True)
         return None if newest is None or str(newest) in self._known else newest
 
     def _reload(self) -> None:
@@ -508,7 +514,7 @@ class LogWindow(QWidget):
                           n=len(lines), t=total), "session")
         for line, level in lines:
             self._buffer.append((line, level))
-            self._show(line, level)
+        self._show_many(lines)
         self._mark_matches()
         self.btn_more.setVisible(rest > 0)
         if rest > 0:
@@ -518,6 +524,14 @@ class LogWindow(QWidget):
         self._load_recent(self._shown_files + _FILES_STEP)
 
     def _poll(self) -> None:
+        # Спрятанному окну хвост не нужен. Окна логов создаются при сборке
+        # главного и живут всю сессию, даже если их ни разу не открыли; а
+        # ожидание файла сессии перебирает папку логов клиента — у неё
+        # четыре тысячи файлов, и такой проход стоит десятки миллисекунд
+        # дважды в секунду. Со стороны это ровно те «фризы при перетаскивании
+        # окна»: главное окно и окно логов живут в одном потоке.
+        if not self.isVisible():
+            return
         if getattr(self, "_awaiting", False):
             # ждём, когда движок заведёт лог этой сессии
             if self._session_file() is None:
@@ -525,16 +539,23 @@ class LogWindow(QWidget):
             self._awaiting = False
             self._reload()
             return
-        before = self._buffer_len()
+        fresh = []
         for tailer in self.tailers:
             for line in tailer.poll():
-                if line.startswith("=== ") and line.endswith(" ==="):
-                    self._append(line, "session")
-                else:
-                    self._append(line, logsource.classify(line))
-        # дописанные строки могли добавить совпадений — пересчитываем, но только
-        # когда есть что искать и что-то действительно пришло
-        if self._query and self._buffer_len() != before:
+                level = ("session" if line.startswith("=== ") and line.endswith(" ===")
+                         else logsource.classify(line))
+                self._buffer.append((line, level))
+                # в режиме отсева новые строки показываем, только если
+                # подходят — иначе живой хвост затирал бы результат поиска
+                if not (self._filter and self._query) or self._query in line.lower():
+                    fresh.append((line, level))
+        self._show_many(fresh)
+        # дописанные строки могли добавить совпадений — пересчитываем, но
+        # только когда есть что искать и что-то действительно пришло.
+        # Раньше сравнивалась длина буфера, а он с пределом: на полном
+        # буфере длина не менялась, и подсветка переставала обновляться
+        # ровно тогда, когда лог становится длинным.
+        if self._query and fresh:
             self._mark_matches(keep_index=True)
 
     def _enter_pressed(self) -> None:
@@ -554,12 +575,20 @@ class LogWindow(QWidget):
         if not (self._filter and self._query) or self._query in line.lower():
             self._show(line, level)
 
-    def _show(self, line: str, level: str) -> None:
+    def _piece(self, line: str, level: str) -> str:
+        """Разметка одной строки. Показом занимается _show/_show_many."""
         color = tokens.level_colors().get(level, tokens.color("console_fg"))
         # совпадения красит _mark_matches дополнительными выделениями — в обоих
         # режимах одинаково, иначе в отсеве не было бы ни счётчика, ни переходов
-        self.view.appendHtml(f'<span style="color:{color};">'
-                             f'{_highlight(line)}</span>')
+        return f'<span style="color:{color};">{_highlight(line)}</span>'
+
+    def _show(self, line: str, level: str) -> None:
+        append_html(self.view, [self._piece(line, level)])
+
+    def _show_many(self, pairs) -> None:
+        """Пачкой: вставка на строку стоит столько же, сколько на тысячу,
+        поэтому всё, что льётся циклом, льётся одним куском. См. ui/logview."""
+        append_html(self.view, [self._piece(line, level) for line, level in pairs])
 
     # ------------------------------------------------------------------ поиск
 
@@ -656,19 +685,16 @@ class LogWindow(QWidget):
                 if not self._buffer and self._placeholder:
                     # показывать нечего — вернуть надо объяснение, а не пустоту
                     self._show(self._placeholder, "session")
-                for line, level in self._buffer:
-                    self._show(line, level)
+                self._show_many(self._buffer)
             self._mark_matches()
             return
         self.view.clear()
         if not self._query:
-            for line, level in self._buffer:
-                self._show(line, level)
+            self._show_many(self._buffer)
             return
         if not self.directory:
-            for line, level in self._buffer:
-                if self._query in line.lower():
-                    self._show(line, level)
+            self._show_many([(line, level) for line, level in self._buffer
+                             if self._query in line.lower()])
             return
 
         # Чтение папки логов уходит в поток: она линейно зависит от объёма
@@ -695,11 +721,12 @@ class LogWindow(QWidget):
         if not results:
             self._show(tr("log.search_none", "Ничего не найдено: «{q}»", q=raw), "session")
             return
-        for fname, lineno, text in results:
-            # имя файла нужно только когда файлов несколько; номер строки —
-            # всегда, иначе в отфильтрованном виде теряешь место в логе
-            prefix = f"{lineno}: " if one_file else f"{fname}:{lineno}: "
-            self._show(prefix + text, logsource.classify(text))
+        # имя файла нужно только когда файлов несколько; номер строки —
+        # всегда, иначе в отфильтрованном виде теряешь место в логе
+        self._show_many([
+            (f"{lineno}: {text}" if one_file else f"{fname}:{lineno}: {text}",
+             logsource.classify(text))
+            for fname, lineno, text in results])
         if len(results) >= self._SEARCH_LIMIT:
             self._show(tr("log.search_capped",
                           "=== показаны первые {n}; уточните запрос ===",

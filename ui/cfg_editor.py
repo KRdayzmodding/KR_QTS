@@ -17,11 +17,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    CaptionLabel, CheckBox, ComboBox, InfoBar, InfoBarPosition,
-    LineEdit, PushButton, SearchLineEdit, StrongBodyLabel,
+    CaptionLabel, CheckBox, ComboBox, LineEdit, PushButton, SearchLineEdit, StrongBodyLabel,
     SwitchButton, FluentIcon as FIF,
 )
 
@@ -123,6 +122,9 @@ class _Row:
         return query in self.spec.name.lower() or query in self.spec.hint.lower()
 
 
+_CHUNK = 8      # строк конфига за один проход цикла событий, см. build_in_chunks
+
+
 class CfgKeys(QWidget):
     """Список известных ключей конфига: поиск, группы, строки со значениями.
 
@@ -164,6 +166,16 @@ class CfgKeys(QWidget):
         box.addLayout(self.inner_box)
 
         self._built = False
+        # Пошаговая сборка: очередь групп, накопленные строки текущей группы
+        # и таймер, который везёт их по одной порции за проход цикла.
+        self._building = False
+        self._queue: list = []
+        self._pending: list = []
+        self._on_built = None
+        self._chunk_timer = QTimer(self)
+        self._chunk_timer.setSingleShot(True)
+        self._chunk_timer.setInterval(0)
+        self._chunk_timer.timeout.connect(self._build_chunk)
 
     def build(self) -> None:
         """Раскладывает все ключи по группам. Зовётся при первом показе.
@@ -177,6 +189,72 @@ class CfgKeys(QWidget):
         self._built = True
         for group in servercfg.GROUPS:
             self._add_group(group, servercfg.specs_of_group(group))
+
+    def build_in_chunks(self, done=None) -> None:
+        """То же самое, но порциями, отдавая управление между ними.
+
+        Разом эти строки стоят 450 мс — на столько окно замирало при первом
+        раскрытии карточки, и только потом начинался ход. Измерено, что почти
+        всё время уходит на создание самих строк (246 мс) и на их показ внутри
+        живой раскладки, а не на раскладку по колонкам (13 мс).
+
+        По восемь строк за проход — это около тридцати миллисекунд работы и
+        возврат в цикл событий: окно остаётся живым, а карточка наполняется на
+        глазах. Высоту она при этом догоняет сама, см. Section._catch_up.
+        """
+        if self._built or self._building:
+            return
+        self._building = True
+        self._queue = [(g, list(servercfg.specs_of_group(g))) for g in servercfg.GROUPS]
+        self._pending = []
+        self._on_built = done
+        self._chunk_timer.start()
+
+    def _build_chunk(self) -> None:
+        """Одна порция: несколько строк, и дальше через цикл событий."""
+        if not self._queue:
+            self._finish_chunks()
+            return
+        group, specs = self._queue[0]
+        batch, rest = specs[:_CHUNK], specs[_CHUNK:]
+        self._loading = True            # значения раскладываем сами, без сигналов
+        try:
+            for spec in batch:
+                row = _Row(spec, self)
+                self.rows[spec.name] = row
+                self._pending.append(row.widget)
+                if spec.name in self._values:
+                    # Значение ставим сразу: иначе строка секунду показывает
+                    # умолчание, а потом меняется сама собой на глазах.
+                    row.set_value(self._values[spec.name])
+        finally:
+            self._loading = False
+        if rest:
+            self._queue[0] = (group, rest)
+        else:
+            self._queue.pop(0)
+            self._close_group(group)
+        self._chunk_timer.start()
+
+    def _close_group(self, group: str) -> None:
+        """Группа дособрана — раскладываем её по колонкам и показываем."""
+        if not self._pending:
+            return
+        head = subheading(tr(f"cfg.group.{group}",
+                             servercfg.GROUP_NAMES.get(group, group)),
+                          line=bool(self.groups))
+        cols = Columns(self._pending)
+        self.inner_box.addWidget(head)
+        self.inner_box.addWidget(cols)
+        self.groups[group] = (head, cols)
+        self._pending = []
+
+    def _finish_chunks(self) -> None:
+        self._building = False
+        self._built = True
+        if self._on_built is not None:
+            self._on_built()
+            self._on_built = None
 
     # ---------------------------------------------------------------- группы
 
@@ -272,8 +350,9 @@ class CfgKeys(QWidget):
 class CfgCard(QWidget):
     """Конфиг сервера внутри карточки на «Запуске».
 
-    Кнопка сохранения своя: конфиг это файл, и писать его на каждое нажатие
-    тумблера нельзя.
+    Пишется сам, без кнопки: так же, как пресет и общие настройки. Но не на
+    каждое нажатие — с отсрочкой по последнему действию: файл перечитывается
+    целиком, а галок за раз снимают несколько.
 
     Раньше рядом жила отдельная страница с тем же списком ключей — второй вход
     в одно и то же место, лишний пункт в панели разделов и лишний переход. От
@@ -285,6 +364,8 @@ class CfgCard(QWidget):
         super().__init__(parent)
         self.cfg: ServerCfg | None = None
         self._path: Path | None = None
+        self._timer = None          # отсрочка записи
+        self._waiting = False       # запись ждёт остановки сервера
 
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
@@ -303,9 +384,6 @@ class CfgCard(QWidget):
         self.btn_reload = PushButton(FIF.SYNC, tr("cfg.reload", "Перечитать"))
         self.btn_reload.clicked.connect(self.reload)
         head.addWidget(self.btn_reload)
-        self.btn_save = PushButton(FIF.SAVE, tr("common.save", "Сохранить"))
-        self.btn_save.clicked.connect(self.save)
-        head.addWidget(self.btn_save)
         box.addWidget(Rule())
         box.addLayout(head)
 
@@ -331,7 +409,13 @@ class CfgCard(QWidget):
         box.addWidget(hint)
 
     def _touch(self) -> None:
-        self.unsaved.setText(tr("cfg.dirty", "Есть несохранённые изменения"))
+        """Что-то поменяли — записываем, но не сию секунду."""
+        if self._timer is None:
+            self._timer = QTimer(self)
+            self._timer.setSingleShot(True)
+            self._timer.setInterval(500)
+            self._timer.timeout.connect(self.save)
+        self._timer.start()
 
     def ensure_built(self) -> None:
         """Строит ключи, если их ещё нет. Зовётся при раскрытии карточки.
@@ -343,8 +427,10 @@ class CfgCard(QWidget):
         """
         if self.keys.is_built():
             return
-        self.keys.build()
-        self.keys.load(self.keys.values_waiting())
+        # Порциями: разом это 450 мс, в которые окно не отвечает, а карточка
+        # ещё и не начинает открываться. См. CfgKeys.build_in_chunks.
+        self.keys.build_in_chunks(
+            lambda: self.keys.load(self.keys.values_waiting()))
 
     def set_path(self, path: Path | None) -> None:
         self._path = Path(path) if path else None
@@ -381,27 +467,29 @@ class CfgCard(QWidget):
         self.keys.load(self.cfg.values())
 
     def save(self) -> None:
+        """Пишет файл. Зовётся по отсрочке после правки и при остановке сервера."""
         if not self.cfg:
             return
         from core.launcher import dayz_running
         if dayz_running():
-            InfoBar.warning(title=tr("cfg.save_busy", "Сервер запущен — сохранение отменено"),
-                            content=tr("cfg.save_busy_body",
-                                       "Остановите сервер: изменения cfg он всё равно не "
-                                       "подхватит на лету, а при выходе может перезаписать файл."),
-                            parent=self.window(), duration=6000,
-                            position=InfoBarPosition.TOP_RIGHT)
+            # Сервер читает конфиг при старте и может переписать файл при
+            # выходе — поверх него писать бессмысленно. Ждём и говорим об этом
+            # строкой в карточке, а не всплывашкой на каждое нажатие.
+            self._waiting = True
+            self.unsaved.setText(tr("cfg.save_waiting",
+                                    "Сервер запущен — сохраним после остановки"))
             return
         try:
             self.cfg.apply(self.keys.wanted())
             self.cfg.save()
         except OSError as e:
-            InfoBar.error(title=tr("cfg.save_err_title", "Ошибка сохранения"), content=str(e),
-                          parent=self.window(), duration=5000,
-                          position=InfoBarPosition.TOP_RIGHT)
+            self.unsaved.setText(tr("cfg.save_err", "Не сохранено: {e}", e=str(e)))
             return
+        self._waiting = False
         self.unsaved.setText("")
         self.enc_label.setVisible(False)
-        InfoBar.success(title=tr("cfg.saved", "Конфиг сохранён в UTF-8 без BOM."), content="",
-                        parent=self.window(), duration=3000,
-                        position=InfoBarPosition.TOP_RIGHT)
+
+    def flush_if_waiting(self) -> None:
+        """Сервер остановился — дописываем то, что ждало."""
+        if self._waiting:
+            self.save()

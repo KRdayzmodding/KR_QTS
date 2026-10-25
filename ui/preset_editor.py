@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QFileDialog, QApplication,
+    QVBoxLayout, QHBoxLayout, QFormLayout, QFileDialog, QApplication,
     QGroupBox, QWizardPage, QWidget, QSizePolicy,
 )
 from qfluentwidgets import (
@@ -229,34 +229,13 @@ class AdvancedPresetDialog(ThemedDialog):
 
         layout.addLayout(form)
         layout.addWidget(self._auto_box(preset))
-        form = QFormLayout()
 
-        # Сетка, а не строка: вчетвером эти кнопки требовали 1422 пикселя по
-        # горизонтали и растягивали окно шире любого экрана. В два столбца
-        # хватает семисот.
-        clean_row = QGridLayout()
-        b_clear_db = PushButton(FIF.DELETE, tr("preset.clear_db", "Очистить БД"))
-        b_clear_db.setToolTip(tr("preset.clear_db_tip",
-                                 "Удаляет папки storage_* в миссии пресета — обнуление "
-                                 "персистентности (лут, персонажи, постройки)."))
-        b_clear_db.clicked.connect(self._clear_storage)
-        b_clear_prof = PushButton(FIF.BROOM, tr("preset.clear_prof", "Очистить профайл"))
-        b_clear_prof.setToolTip(tr("preset.clear_prof_tip",
-                                   "Полностью чистит папку профиля сервера (логи, настройки модов)."))
-        b_clear_prof.clicked.connect(self._clear_profile)
-        b_admin = PushButton(FIF.PEOPLE, tr("preset.admin_sync", "Права админок"))
-        b_admin.setToolTip(tr("preset.admin_sync_tip",
-                              "Перезаписывает в профиле списки админов и пароль VPP "
-                              "из «Настроек» — для COT, VPPAdminTools и LBmaster."))
-        b_admin.clicked.connect(self._sync_admin_tools)
-        b_open_prof = PushButton(FIF.FOLDER, tr("preset.open_prof", "Открыть папку профиля"))
-        b_open_prof.setToolTip(tr("preset.open_prof_tip",
-                                  "Открывает папку профиля сервера в проводнике."))
-        b_open_prof.clicked.connect(self._open_profile)
-        for i, b in enumerate((b_clear_db, b_clear_prof, b_admin, b_open_prof)):
-            clean_row.addWidget(b, i // 2, i % 2)
-        form.addRow("", clean_row)
-        layout.addLayout(form)
+        # Четырёх кнопок (очистка БД и профиля, права админок, открыть папку
+        # профиля) здесь больше нет: это действия над пресетом, а не его
+        # настройки, и делают их между прогонами, не открывая редактор. Они
+        # переехали в меню «Обслуживание» в строке пресета на странице
+        # запуска — см. ui/preset_actions.py. Второй двери тут не оставляем:
+        # два входа в одно действие расходятся при первой же правке.
 
         self.params_box = QHBoxLayout()
         layout.addLayout(self.params_box)
@@ -339,84 +318,6 @@ class AdvancedPresetDialog(ThemedDialog):
         self._files_hint_update()
         self._apply_now()
         self.map_picker.ensure_mission()    # нет на диске — начнётся загрузка
-
-    def _clear_storage(self) -> None:
-        from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
-        from core.layout import clear_mission_storage
-        mission = self.map_picker.mission_name()
-        box = MessageBox(tr("preset.clear_db", "Очистить БД"),
-                         tr("preset.clear_db_confirm",
-                            "Удалить storage_* в миссии «{m}»?\nЛут, персонажи и постройки "
-                            "будут сброшены.", m=mission or "?"), self)
-        if not box.exec():
-            return
-        n = clear_mission_storage(self.settings, self.branch.currentData(),
-                                  self.mode.currentData(), mission)
-        InfoBar.success(title=tr("preset.cleared_db", "Удалено storage-папок: {n}", n=n),
-                        content="", parent=self, duration=3000,
-                        position=InfoBarPosition.TOP_RIGHT)
-
-    def _clear_profile(self) -> None:
-        from qfluentwidgets import MessageBox, InfoBar, InfoBarPosition
-        from core.launcher import dayz_running
-        from core.layout import clear_profile, preset_base_name
-        if dayz_running():
-            InfoBar.warning(title=tr("preset.busy_title", "Сервер запущен"),
-                            content=tr("preset.busy_body",
-                                       "Остановите сервер — он держит файлы профиля открытыми "
-                                       "и перезапишет их при выходе."),
-                            parent=self, duration=6000, position=InfoBarPosition.TOP_RIGHT)
-            return
-        profiles = self.preset.profiles or preset_base_name(
-            self.name.text().strip(), self.map_picker.mission_name())
-        box = MessageBox(tr("preset.clear_prof", "Очистить профайл"),
-                         tr("preset.clear_prof_confirm",
-                            "Полностью очистить папку профиля «{p}»?", p=profiles or "?"),
-                         self)
-        if not box.exec():
-            return
-        n = clear_profile(self.settings, self.branch.currentData(),
-                          self.mode.currentData(), profiles)
-        InfoBar.success(title=tr("preset.cleared_prof", "Удалено элементов: {n}", n=n),
-                        content="", parent=self, duration=3000,
-                        position=InfoBarPosition.TOP_RIGHT)
-
-    def _profile_dir(self) -> str:
-        """Абсолютный путь папки профиля для текущих значений формы."""
-        from core.layout import resolve_profiles, preset_base_name
-        profiles = self.preset.profiles or preset_base_name(
-            self.name.text().strip(), self.map_picker.mission_name())
-        return resolve_profiles(profiles, self.settings, self.branch.currentData(),
-                                self.mode.currentData())
-
-    def _open_profile(self) -> None:
-        import os
-        from qfluentwidgets import InfoBar, InfoBarPosition
-        path = self._profile_dir()
-        if not path or not Path(path).is_dir():
-            InfoBar.warning(title=tr("preset.no_profile",
-                                     "Папки профиля ещё нет — она создастся при запуске."),
-                            content=path or "", parent=self, duration=5000,
-                            position=InfoBarPosition.TOP_RIGHT)
-            return
-        os.startfile(path)  # noqa: S606 — открытие проводника по своей же папке
-
-    def _sync_admin_tools(self) -> None:
-        from qfluentwidgets import InfoBar, InfoBarPosition
-        from core.admin_tools import apply as apply_admin_rights
-        s = self.settings
-        if not s.admin_steamids and not s.admin_password.strip():
-            InfoBar.warning(title=tr("preset.admin_sync_empty",
-                                     "В настройках не заданы ни SteamID админов, ни пароль."),
-                            content="", parent=self, duration=5000,
-                            position=InfoBarPosition.TOP_RIGHT)
-            return
-        # mods=None — обновляем обе админки: какая из них подключена к пресету,
-        # тут неважно, лишние файлы никому не мешают
-        done = apply_admin_rights(self._profile_dir(), None, s.admin_steamids, s.admin_password)
-        InfoBar.success(title=tr("preset.admin_synced", "Обновлено админок: {n}", n=len(done)),
-                        content=", ".join(t.title for t, _ in done),
-                        parent=self, duration=4000, position=InfoBarPosition.TOP_RIGHT)
 
     def _auto_box(self, preset: ServerPreset) -> QGroupBox:
         """Автоматика сервера: автозапуск, перезапуск по часам, подъём после падения.
