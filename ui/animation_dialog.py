@@ -3,8 +3,8 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QProcess, QStandardPaths
-from PySide6.QtWidgets import QFileDialog, QFormLayout, QHBoxLayout, QVBoxLayout, QWidget
-from qfluentwidgets import (BodyLabel, CheckBox, ComboBox, FluentIcon as FIF, LineEdit,
+from PySide6.QtWidgets import QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QVBoxLayout, QWidget
+from qfluentwidgets import (BodyLabel, CheckBox, FluentIcon as FIF, LineEdit,
                             PlainTextEdit, PrimaryPushButton, ToolButton)
 
 from core.i18n import tr
@@ -23,7 +23,8 @@ class AnimationDialog(ThemedDialog):
         layout.setSpacing(tokens.SPACE_S)
         self.form = QFormLayout()
         layout.addLayout(self.form)
-        self.operation = ComboBox()
+        self.operation = QComboBox()
+        self.operation.setAccessibleName(tr("animation.operation", "Операция"))
         for name, key, fallback in (
             ("model-import", "model_import", "XOB → Blender"),
             ("model-export", "model_export", "Blender → XOB"),
