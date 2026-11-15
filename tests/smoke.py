@@ -723,6 +723,7 @@ def sign_key() -> None:
     print("Ключ подписи:")
     import tempfile
     from pathlib import Path as _P
+    from unittest.mock import patch
     from core import signkey
     from core.packer import _with_sign_key
     from core.settings import Settings as _S
@@ -760,8 +761,14 @@ def sign_key() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         ok, text = signkey.create(_S(), "КР тест", tmp)
         check("негодное имя ключа отклоняется", not ok and "латиница" in text, text)
-        ok, text = signkey.create(_S(), "KR", "")
-        check("без папки ключ не создаётся", not ok, text)
+        with patch.object(signkey, "dscreatekey", return_value="DSCreateKey.exe"), \
+                patch.object(signkey.subprocess, "run") as run:
+            for folder in ("", "   "):
+                ok, text = signkey.create(_S(), "KR", folder)
+                check(f"пустая папка {folder!r} отклонена",
+                      not ok and "Не выбрана папка" in text, text)
+            check("без папки генератор не вызывается", not run.called)
+        check("без пути открытый ключ не найден", signkey.public_of("") == "")
         # существующий файл не перезаписываем: им подписано всё, что роздано
         (_P(tmp) / ("KR" + signkey.PRIVATE_SUFFIX)).write_text("x", encoding="utf-8")
         ok, text = signkey.create(_S(), "KR", tmp)

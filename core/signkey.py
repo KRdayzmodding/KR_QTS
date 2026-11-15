@@ -58,9 +58,9 @@ def create(settings: Settings, name: str, folder: str) -> tuple[bool, str]:
     if not NAME_RE.match(name):
         return False, ("Имя ключа: латиница, цифры, дефис и подчёркивание, "
                        "до 32 знаков")
-    where = Path(folder or "")
-    if not str(where):
+    if not folder or not str(folder).strip():
         return False, "Не выбрана папка для ключа"
+    where = Path(folder)
     private = where / (name + PRIVATE_SUFFIX)
     if private.exists():
         return False, f"Такой ключ уже есть: {private}"
@@ -99,7 +99,7 @@ def public_of(private: str) -> str:
     Он и нужен серверу: закрытым подписывают, открытый кладут в keys.
     """
     p = Path(private or "")
-    if not str(p):
+    if not p.name:
         return ""
     pub = p.with_suffix(PUBLIC_SUFFIX)
     return str(pub) if pub.is_file() else ""
