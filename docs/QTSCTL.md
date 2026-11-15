@@ -177,8 +177,11 @@ qtsctl -preset dev +server +client ^
 правке кода, есть явная форма, где мод назван прямо:
 
 ```
-+src:@KR_Test=P:\KR\Test_Scripts
++src:@KR_Test=P:\KR\Test_Scripts +mod=F:\Builds\@KR_Test
 ```
+
+Укажи этот мод в той же команде через `+mod` или `+serverMod`. Если передаёшь
+путь к моду, в привязке пиши имя его папки.
 
 ### 5.6. Отвязать и забыть
 

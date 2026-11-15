@@ -7,7 +7,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from . import junction
 from .settings import (
@@ -165,6 +165,12 @@ def as_folder(name: str) -> str:
     """
     n = name if name.startswith("@") else "@" + name
     return _BAD_IN_FOLDER.sub("_", n)
+
+
+def mod_ref_key(ref: str) -> str:
+    """Ключ реестра для имени мода или пути к его папке из командной строки."""
+    name = PureWindowsPath(ref).name if "\\" in ref or "/" in ref else ref
+    return as_folder(name).lower()
 
 
 # Состояния проверки обновления.

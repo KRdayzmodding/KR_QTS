@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cliargs import Overlay, SIDE_SERVER
-from .mods import ModInfo, SOURCE_LOCAL, as_folder
+from .mods import ModInfo, SOURCE_LOCAL, mod_ref_key
 from .presets import ServerPreset
 
 # Виды заметок в отчёте. Всё, что накладка сделала неочевидного, обязано быть
@@ -71,17 +71,6 @@ class Plan:
     notes: list[Note] = field(default_factory=list)
 
 
-def _key(ref: str) -> str:
-    """Ключ реестра по ссылке из командной строки.
-
-    Ссылка бывает именем («KR_Test», «@KR_Test») и путём («F:\\Builds\\@KR_New»).
-    В обоих случаях опознаём мод по имени папки: именно им он подключается к
-    игре, и именно оно лежит ключом в реестре.
-    """
-    name = Path(ref).name if ("\\" in ref or "/" in ref) else ref
-    return as_folder(name).lower()
-
-
 def _is_path(ref: str) -> bool:
     return "\\" in ref or "/" in ref
 
@@ -102,12 +91,12 @@ def plan(ov: Overlay, registry) -> Plan:
     seen_sources: dict[str, str] = {}
 
     for ref in ov.forget:
-        key = _key(ref)
+        key = mod_ref_key(ref)
         out.forget.append(key)
         out.notes.append(Note(N_FORGOTTEN, mod=key))
 
     for m in ov.mods:
-        key = _key(m.ref)
+        key = mod_ref_key(m.ref)
         mod = registry.get(key)
         if mod is None and _is_path(m.ref):
             # Третий случай: мода нет нигде. Заводим по указанной папке — один

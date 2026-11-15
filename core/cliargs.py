@@ -22,6 +22,7 @@ from __future__ import annotations
 import difflib
 from dataclasses import dataclass, field
 
+from .mods import mod_ref_key
 from .params import BOTH, CLIENT, FLAG, INT, SERVER, SWITCH, PARAMS, ParamSpec
 
 # Команды. Пустая строка запроса означает запуск: «qtsctl -preset dev +server»
@@ -351,6 +352,8 @@ def parse(argv: list[str]) -> Request:
     req = Request()
     ov = req.overlay
     last_mod: ModRef | None = None
+    named_mods: dict[str, ModRef] = {}
+    sources: list[tuple[ModRef | str, bool, str, str]] = []
     command_seen = False
     i = 0
 
@@ -427,23 +430,15 @@ def parse(argv: list[str]) -> Request:
                 for n in names:
                     last_mod = ModRef(ref=n, side=side)
                     ov.mods.append(last_mod)
+                    named_mods.setdefault(mod_ref_key(n), last_mod)
         elif key == "src":
-            target = last_mod
-            if qualifier:
-                target = next((m for m in ov.mods
-                               if m.ref.lstrip("@").lower() == qualifier.lstrip("@").lower()),
-                              None)
-                if target is None:
-                    raise CliError(
-                        f"«{token}»: мод «{qualifier}» в этой команде не подключён.",
-                        "Явная форма работает только для мода, который есть "
-                        "в этой же команде.")
+            target = qualifier or last_mod
             if target is None:
                 raise CliError(
                     f"«{token}» стоит раньше первого +mod.",
                     "Сорсы принадлежат моду: сначала +mod=..., потом +src=... "
                     "к нему. Либо явно: +src:@Мод=путь.")
-            (target.add_sources if plus else target.drop_sources).append(value)
+            sources.append((target, plus, value, token))
         elif key == "forget":
             ov.forget.extend(_as_list(value))
         elif key == "pack":
@@ -482,6 +477,16 @@ def parse(argv: list[str]) -> Request:
                 bag[p.name] = _int(spec, value) if p.ptype == INT else value
         else:                                   # pragma: no cover — недостижимо
             raise CliError(f"Аргумент «{spec.name}» разобран, но не применён.")
+
+    # Явная ссылка может предшествовать +mod. Применяем и позиционные ссылки
+    # после разбора, сохраняя исходный порядок папок каждого мода.
+    for target, plus, value, token in sources:
+        mod = named_mods.get(mod_ref_key(target)) if isinstance(target, str) else target
+        if mod is None:
+            raise CliError(
+                f"«{token}»: мод «{target}» в этой команде не подключён.",
+                "Явная форма работает только для мода, который есть в этой же команде.")
+        (mod.add_sources if plus else mod.drop_sources).append(value)
 
     if req.detach and req.wait is not None:
         raise CliError("+detach и -wait просят противоположного.",

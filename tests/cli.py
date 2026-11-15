@@ -112,6 +112,16 @@ def test_mods() -> None:
     check(r.overlay.mods[0].add_sources == ["P:\\a"], "явная форма адресует мод")
     check(not r.overlay.mods[1].add_sources, "явная форма не задела соседа")
 
+    r = parse([r"+src:adm=P:\first", "+mod=@Other", r"+src=P:\other",
+               r"+serverMod=F:\Builds\@Adm", r"+src=P:\second",
+               r"+src:@ADM=P:\third", r"-src:Adm=P:\old"])
+    other, admin = r.overlay.mods
+    check(other.add_sources == [r"P:\other"], "позиционная привязка осталась у соседа")
+    check(admin.side == cliargs.SIDE_SERVER and
+          admin.add_sources == [r"P:\first", r"P:\second", r"P:\third"],
+          "явные и позиционные привязки к моду по пути сохраняют порядок")
+    check(admin.drop_sources == [r"P:\old"], "явная отвязка узнаёт мод по имени папки")
+
     r = parse(["+mod=@A", "-src=P:\\old"])
     check(r.overlay.mods[0].drop_sources == ["P:\\old"], "-src снимает привязку")
 
@@ -213,6 +223,11 @@ def test_plan_three_cases() -> None:
     p = overlay.plan(parse([r"+mod=@KR_Test", r"+src=P:\KR\Test"]).overlay, reg)
     check(p.bind == [("@kr_test", r"P:\KR\Test")] and not p.register,
           "случай 2: мод есть, сорсы привязываем")
+
+    ov = parse([r"-src:kr_core=P:\KR\Core_Scripts", r"+mod=@KR_Core"]).overlay
+    p = overlay.plan(ov, reg)
+    check(p.unbind == [("@kr_core", r"P:\KR\Core_Scripts")] and not p.register,
+          "явная отвязка перед модом из реестра адресует существующую запись")
 
     p = overlay.plan(parse([r"+mod=F:\Builds\@KR_New", r"+src=P:\KR\New"]).overlay, reg)
     check([r.key for r in p.register] == ["@kr_new"], "случай 3: мод заводится")
