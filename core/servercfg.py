@@ -319,10 +319,12 @@ class ServerCfg:
         """Дописывает ключ, которого в файле нет."""
         spec = BY_NAME.get(name)
         raw = f'"{value}"' if (spec.quoted if spec else False) else value
-        line = f"{name} = {raw};\n"
+        first_break = re.search(r"\r?\n", self.text)
+        newline = first_break.group() if first_break else "\n"
+        line = f"{name} = {raw};{newline}"
         at = self._insert_at()
-        if at < len(self.text) and not self.text[:at].endswith("\n"):
-            line = "\n" + line
+        if at > 0 and self.text[at - 1] != "\n":
+            line = newline + line
         self.text = self.text[:at] + line + self.text[at:]
 
     def apply(self, wanted: dict[str, str | None]) -> None:

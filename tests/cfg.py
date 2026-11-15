@@ -93,6 +93,27 @@ def test_add() -> None:
     check(cfg.values().get("instanceId") == "1", "дописанный ключ читается обратно")
 
 
+def test_add_line_endings() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "serverDZ.cfg"
+        for original, expected in (
+            (b"", b"maxPlayers = 42;\n"),
+            (b"// note", b"// note\nmaxPlayers = 42;\n"),
+            (b'hostname = "KR";', b'hostname = "KR";\nmaxPlayers = 42;\n'),
+            (b'hostname = "KR"; // note', b'hostname = "KR"; // note\nmaxPlayers = 42;\n'),
+            (b'// note\r\nhostname = "KR";', b'// note\r\nhostname = "KR";\r\nmaxPlayers = 42;\r\n'),
+            (b'hostname = "KR";\r\n// note', b'hostname = "KR";\r\nmaxPlayers = 42;\r\n// note'),
+            (b'hostname = "KR";\n// note', b'hostname = "KR";\nmaxPlayers = 42;\n// note'),
+        ):
+            path.write_bytes(original)
+            cfg = ServerCfg(path)
+            cfg.apply({"maxPlayers": "42"})
+            cfg.save()
+            check(path.read_bytes() == expected, f"перенос строки при добавлении в {original!r}")
+            check(ServerCfg(path).values().get("maxPlayers") == "42",
+                  f"после открытия виден добавленный ключ в {original!r}")
+
+
 def test_remove() -> None:
     cfg = cfg_from(SAMPLE)
     gone = cfg.remove(["maxPlayers", "disableBanlist"])
@@ -126,7 +147,8 @@ def test_apply() -> None:
 
 
 def main() -> int:
-    for fn in (test_specs, test_read, test_change, test_add, test_remove, test_apply):
+    for fn in (test_specs, test_read, test_change, test_add, test_add_line_endings,
+               test_remove, test_apply):
         fn()
     if _fails:
         print(f"НЕ ПРОШЛО ({len(_fails)}):")

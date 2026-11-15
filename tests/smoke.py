@@ -1549,7 +1549,8 @@ def external() -> None:
     import cfg as cfg_tests                       # tests/cfg.py
     cfg_tests._fails.clear()
     for fn in (cfg_tests.test_specs, cfg_tests.test_read, cfg_tests.test_change,
-               cfg_tests.test_add, cfg_tests.test_remove, cfg_tests.test_apply):
+               cfg_tests.test_add, cfg_tests.test_add_line_endings, cfg_tests.test_remove,
+               cfg_tests.test_apply):
         fn()
     from core import servercfg
     check(f"конфиг: {len(servercfg.SPECS)} известных ключей",
