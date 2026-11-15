@@ -93,6 +93,7 @@ def dictionaries() -> None:
 
 def screens(lang: str = "ru") -> None:
     print(f"Экраны ({lang}):")
+    from PySide6.QtCore import QCoreApplication, QEvent
     from PySide6.QtWidgets import QApplication
     # приложение одно на весь прогон: второй QApplication Qt не допускает
     if QApplication.instance() is None:
@@ -174,6 +175,11 @@ def screens(lang: str = "ru") -> None:
             check(f"{lang}/{name}: ширина {wd} px не больше {PAGE_MAX_W}",
                   wd <= PAGE_MAX_W or name in KNOWN_WIDE,
                   "" if wd <= PAGE_MAX_W else f"требует {wd} px{note}")
+
+    # У окон нет родителя. Освобождаем их, пока QApplication ещё работает.
+    for w in built.values():
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def flashes() -> None:
