@@ -144,16 +144,18 @@ def run_checks(preset: ServerPreset, settings: Settings, branch: str,
     # перепаковку он уже включил в настройках, и спрашивать каждый запуск
     # «точно перепаковать?» — значит требовать подтверждения тому, что он
     # только что попросил делать всегда. Что именно пакуется, видно по ходу
-    # дела в таблице запаковки. А вот отсутствие pboProject — настоящий
-    # тупик: паковать нечем, и сервер поднимется со старыми pbo.
+    # дела в таблице запаковки. Для сборки нужен выбранный в настройках движок.
     if settings.repack_before_launch:
         stale_names = [mod.name for mod, _ in packer.stale_mods(selected)]
         if stale_names:
-            exe, tool = settings.pbo_project_exe(), "pboProject"
+            if settings.pack_tool == "krbuild":
+                exe, tool = settings.krbuild_cli(), "ProjectBuilder"
+            else:
+                exe, tool = settings.pbo_project_exe(), "pboProject"
             if not Path(exe).is_file():
                 crit("packer", tr("check.packer_missing",
                      "Моды {mods} требуют запаковки, но {tool} не найден: {p}",
-                     mods=", ".join(stale_names), tool=tool, p=exe))
+                     mods=", ".join(stale_names), tool=tool, p=exe or "—"))
 
     # Моды из мастерской: устаревший мод — это сервер, который ведёт себя не
     # так, как написано в его скриптах, и понять это по логам невозможно.
