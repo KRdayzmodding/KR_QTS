@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .presets import ServerPreset
-from .settings import Settings, EXPERIMENTAL
+from .settings import Settings, EXPERIMENTAL, split_flags
 
 # Файлы логов DayZ. Почти все — новый файл на сессию, с меткой времени в
 # имени; server_console.log единственный с постоянным именем: движок пишет
@@ -96,7 +96,13 @@ def server_log_dir(preset: ServerPreset, settings: Settings, branch: str) -> Pat
     return Path(p) if p else None
 
 
-def client_log_dir(branch: str) -> Path | None:
+def client_log_dir(branch: str, preset: ServerPreset | None = None,
+                   settings: Settings | None = None) -> Path | None:
+    if preset is not None and settings is not None:
+        for arg in reversed(split_flags(preset.extra_client)):
+            name, _, folder = arg.partition("=")
+            if name.lower() == "-profiles" and folder:
+                return Path(settings.client_root(branch)) / folder
     local = os.environ.get("LOCALAPPDATA", "")
     if not local:
         return None

@@ -596,9 +596,9 @@ class MainWindow(FluentWindow):
             prof = resolve_profiles(p.profiles, self.settings, branch, p.mode)
             self.monitors[SERVER].start(Path(prof) if prof else None, adopt=True)
         if self.client_pid:
-            self.monitors[CLIENT].start(logsource.client_log_dir(branch), adopt=True)
+            self.monitors[CLIENT].start(logsource.client_log_dir(branch, p, self.settings), adopt=True)
 
-    def _bind_log_dirs(self, adopt: bool | None = None) -> None:
+    def _bind_log_dirs(self, adopt: bool | None = None, launch_preset=None) -> None:
         """adopt — стороны уже работали до нас: лежащие файлы и есть их сессия.
 
         Значение по умолчанию берётся из состояния окна, а не считается ложью.
@@ -621,8 +621,11 @@ class MainWindow(FluentWindow):
         self.log_server.set_directory(
             logsource.server_log_dir(p, self.settings, branch) if p else None,
             adopt=adopt, keep=self._starting or self.server_running())
-        self.log_client.set_directory(logsource.client_log_dir(branch), adopt=adopt,
-                                      keep=self._starting or self.client_running())
+        keep_client = self._starting or self.client_running()
+        client_dir = self.log_client.directory if keep_client else None
+        if launch_preset is not None or client_dir is None:
+            client_dir = logsource.client_log_dir(branch, launch_preset or p, self.settings)
+        self.log_client.set_directory(client_dir, adopt=adopt, keep=keep_client)
 
     def _branch(self) -> str:
         return self.launch_page.branch_combo.currentData() or STABLE
@@ -1177,7 +1180,7 @@ class MainWindow(FluentWindow):
         self._adopted = False   # запускаем сами: сессия начинается сейчас
         # Снимок «что лежало до этого запуска» — здесь, пока _starting ещё не
         # поднят: дальше перепривязки будут его беречь, а не пересчитывать.
-        self._bind_log_dirs(adopt=False)
+        self._bind_log_dirs(adopt=False, launch_preset=p if want_cli else None)
         self._starting = True
         self._launch_logged = False
         self._sequence_open = True
@@ -1204,8 +1207,7 @@ class MainWindow(FluentWindow):
         if want_srv:
             self.monitors[SERVER].start(Path(prof) if prof else None)
         if want_cli:
-            # клиенту -profiles не передаётся, его RPT всегда в %LOCALAPPDATA%
-            self.monitors[CLIENT].start(logsource.client_log_dir(branch))
+            self.monitors[CLIENT].start(self.log_client.directory)
         settings = self.settings
         if pack is not None:
             # Копия настроек, а не правка: «+pack=full» относится к одному

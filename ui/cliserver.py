@@ -303,7 +303,7 @@ class CliServer(QObject):
                                                   win._branch()) if win.current else None
                 kinds = SERVER_KINDS
             else:
-                folder = logsource.client_log_dir(win._branch())
+                folder = win.log_client.directory
                 kinds = CLIENT_KINDS
         except (OSError, AttributeError):
             return {}
