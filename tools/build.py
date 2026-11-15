@@ -13,6 +13,7 @@ config и downloads приложение создаёт в %APPDATA%, см. core
 """
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
 import sys
@@ -130,7 +131,13 @@ def main() -> int:
     if "--clean" in sys.argv:
         args.insert(3, "--clean")
     print("  PyInstaller…")
-    rc = subprocess.run(args, cwd=ROOT).returncode
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        # Qt links to Windows ICU. PyInstaller consults PATH, where an unrelated
+        # application can provide an incompatible icuuc.dll before System32.
+        system32 = str(Path(env["SystemRoot"]) / "System32")
+        env["PATH"] = system32 + os.pathsep + env.get("PATH", "")
+    rc = subprocess.run(args, cwd=ROOT, env=env).returncode
     if rc:
         return rc
     out = ROOT / "dist" / "KR_QTS"

@@ -16,6 +16,7 @@ class AnimationDialog(ThemedDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.settings = settings
+        self.suggested_output = ""
         self.setWindowTitle(tr("animation.title", "Модели и анимации"))
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
@@ -113,8 +114,10 @@ class AnimationDialog(ThemedDialog):
 
     def _suggest_output(self):
         source = self.fields["source"].text().strip()
-        if source and not self.fields["output"].text():
-            self.fields["output"].setText(str(Path(source).with_suffix(self._suffix("output")[1:])))
+        current = self.fields["output"].text()
+        if Path(source).name and (not current or current == self.suggested_output):
+            self.suggested_output = str(Path(source).with_suffix(self._suffix("output")[1:]))
+            self.fields["output"].setText(self.suggested_output)
 
     def _browse(self, key):
         start = self.fields[key].text() or self.fields["source"].text()
