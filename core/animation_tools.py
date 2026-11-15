@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import filecmp
 import os
 from pathlib import Path
 import re
@@ -171,6 +172,20 @@ def run(args, settings=None):
             logs.append(_invoke([exe, local]))
             converted = local.with_suffix(output_type)
             if converted.is_file():
+                if output_type == ".txa":
+                    verify = scratch / "verify"
+                    verify.mkdir()
+                    txa = verify / converted.name
+                    shutil.copyfile(converted, txa)
+                    problem = tr("animation.lossy", "TXA не удалось вернуть в побайтно исходный ANM. Для сохранения оригинала используйте scene-import.")
+                    try:
+                        _invoke([exe, txa])
+                    except ValueError as exc:
+                        raise ValueError(f"{problem}\n{exc}") from exc
+                    restored = txa.with_suffix(".anm")
+                    if not restored.is_file() or not filecmp.cmp(local, restored, shallow=False):
+                        raise ValueError(problem)
+                    logs.append(tr("animation.verified", "Проверено: обратная конвертация вернула исходный ANM байт в байт."))
                 shutil.copyfile(converted, stages[0])
         else:
             bridge = _toolkit_file("blender/xob_cli.py", args, settings)

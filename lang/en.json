@@ -1,4 +1,6 @@
 {
+  "animation.lossy": "Converting this TXA back did not reproduce the original ANM byte for byte. Use scene-import to preserve the original.",
+  "animation.verified": "Verified: converting the TXA back reproduced the original ANM byte for byte.",
   "animation.action": "Action name",
   "animation.advanced": "More options",
   "animation.armature": "Armature name",

@@ -33,8 +33,14 @@ class AnimationTests(unittest.TestCase):
             exe, local = command
             self.assertEqual(exe, self.kit / "AnmConverter.exe")
             self.assertNotEqual(local.parent, source.parent)
-            self.assertEqual(local.name, source.name)
-            local.with_suffix(".txa").write_bytes(b"converted")
+            if local.suffix == ".anm":
+                self.assertEqual(local.name, source.name)
+                self.assertEqual(local.read_bytes(), b"input")
+                local.with_suffix(".txa").write_bytes(b"converted")
+            else:
+                self.assertEqual(local.suffix, ".txa")
+                self.assertEqual(local.read_bytes(), b"converted")
+                local.with_suffix(".anm").write_bytes(b"input")
             return "converted"
 
         with patch.object(tools, "_invoke", convert):
@@ -44,6 +50,22 @@ class AnimationTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), b"input")
         self.assertEqual(output.read_bytes(), b"converted")
         self.assertFalse(source.with_suffix(".txa").exists())
+
+    def test_lossy_txa_is_refused_before_replacing_existing_result(self):
+        source, target = self.root / "clip.anm", self.root / "clip.txa"
+        source.write_bytes(b"clip with unknown chunk")
+        target.write_bytes(b"previous")
+
+        def lossy(command):
+            path = command[-1]
+            suffix = ".anm" if path.suffix == ".txa" else ".txa"
+            path.with_suffix(suffix).write_bytes(b"clip")
+            return ""
+
+        with patch.object(tools, "_invoke", lossy), self.assertRaisesRegex(ValueError, "scene-import"):
+            self.execute("convert", source, "-o", target, "--overwrite")
+        self.assertEqual(target.read_bytes(), b"previous")
+        self.assertEqual(source.read_bytes(), b"clip with unknown chunk")
 
     def test_scene_export_failure_keeps_previous_outputs(self):
         source = self.root / "character.blend"

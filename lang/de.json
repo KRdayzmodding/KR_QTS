@@ -1,4 +1,6 @@
 {
+  "animation.lossy": "Aus dieser TXA ließ sich die ursprüngliche ANM nicht bytegenau wiederherstellen. Verwenden Sie scene-import, um das Original zu erhalten.",
+  "animation.verified": "Geprüft: Die Rückkonvertierung hat die ursprüngliche ANM bytegenau wiederhergestellt.",
   "animation.action": "Aktionsname",
   "animation.advanced": "Weitere Optionen",
   "animation.armature": "Armatur-Name",

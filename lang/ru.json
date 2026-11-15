@@ -1,4 +1,6 @@
 {
+  "animation.lossy": "TXA не удалось вернуть в побайтно исходный ANM. Для сохранения оригинала используйте scene-import.",
+  "animation.verified": "Проверено: обратная конвертация вернула исходный ANM байт в байт.",
   "animation.action": "Имя действия",
   "animation.advanced": "Дополнительные параметры",
   "animation.armature": "Имя арматуры",
