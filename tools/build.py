@@ -135,7 +135,7 @@ def main() -> int:
     if sys.platform == "win32":
         # Qt links to Windows ICU. PyInstaller consults PATH, where an unrelated
         # application can provide an incompatible icuuc.dll before System32.
-        system32 = str(Path(env["SystemRoot"]) / "System32")
+        system32 = str(Path(os.environ["SystemRoot"]) / "System32")
         env["PATH"] = system32 + os.pathsep + env.get("PATH", "")
     rc = subprocess.run(args, cwd=ROOT, env=env).returncode
     if rc:
