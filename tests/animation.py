@@ -17,7 +17,7 @@ class AnimationTests(unittest.TestCase):
         self.root = Path(tmp.name)
         self.kit = self.root / "комплект с пробелом"
         (self.kit / "blender").mkdir(parents=True)
-        for rel in ("AnmConverter.exe", "blender.exe", "blender/xob_cli.py"):
+        for rel in ("AnmConverter.exe", "blender.exe", "blender/xob_cli.py", "blender/model_studio.py"):
             (self.kit / rel).touch()
         self.settings = Settings(animation_toolkit=str(self.kit), animation_blender=str(self.kit / "blender.exe"))
 
@@ -122,6 +122,28 @@ class AnimationTests(unittest.TestCase):
                              "--assets-root", self.root / "missing library")
         self.assertEqual(sent, [roots, roots, roots[1:], []])
         self.assertFalse((self.root / "missing.blend").exists())
+
+    def test_entire_library_uses_studio_backend_for_import_and_export(self):
+        source, scene = self.root / "wolf.xob", self.root / "wolf.blend"
+        visual = self.root / "wolf.p3d"
+        for path in (source, scene, visual):
+            path.touch()
+        anims = self.root / "anims with spaces"
+        anims.mkdir()
+        folder = self.root / "results"
+        with patch.object(tools, "_invoke", return_value="Studio report") as invoke:
+            report = self.execute("library-import", source, "-o", scene, "--animations", anims,
+                                  "--visual", visual, "--assets-root", self.kit, "--overwrite")
+            self.assertEqual(report, "Studio report")
+            command = invoke.call_args.args[0]
+            self.assertEqual(command[command.index("--python") + 1], self.kit / "blender/model_studio.py")
+            self.assertEqual(command[command.index("--") + 1:],
+                             ["import", source, "-o", scene, "--assets-root", self.kit,
+                              "--animations", anims, "--visual", visual, "--overwrite"])
+            self.execute("library-export", scene, "-o", folder)
+            command = invoke.call_args.args[0]
+            self.assertEqual(command[command.index("--") + 1:], ["export", scene, "-o", folder])
+        self.assertFalse(folder.exists())
 
     def test_publish_restores_prior_file_when_second_name_cannot_be_created(self):
         first, second = self.root / "first", self.root / "second"

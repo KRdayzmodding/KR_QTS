@@ -30,12 +30,15 @@ class AnimationDialog(ThemedDialog):
             ("convert", "convert", "ANM ⇄ TXA"),
             ("scene-import", "scene_import", "Применить ANM к ригу"),
             ("scene-export", "scene_export", "Экспорт анимации из Blender"),
+            ("library-import", "library_import", "Модель и все анимации → Blender"),
+            ("library-export", "library_export", "Экспорт модели и всех анимаций"),
         ):
             self.operation.addItem(tr(f"animation.{key}", fallback), userData=name)
         self.form.addRow(BodyLabel(tr("animation.operation", "Операция")), self.operation)
         self.fields = {}
         self.rows = {}
         for key, label in (("source", "Исходный файл"), ("rig", "Риг XOB / Blender"),
+                           ("animations", "Папка анимаций"), ("visual", "Видимая модель P3D"),
                            ("assets_root", "Ресурсы модели"),
                            ("output", "Сохранить в"), ("model_out", "Дополнительно сохранить XOB"),
                            ("armature", "Имя арматуры"), ("action", "Имя действия"),
@@ -55,7 +58,7 @@ class AnimationDialog(ThemedDialog):
         self.fields["toolkit"].setText(settings.animation_toolkit)
         self.fields["blender"].setText(settings.animation_blender)
         self.fields["assets_root"].setText(settings.animation_assets_root)
-        for key in ("toolkit", "blender", "assets_root"):
+        for key in ("toolkit", "blender", "assets_root", "animations", "visual"):
             self.fields[key].setPlaceholderText(tr("animation.automatic", "Автопоиск"))
         for key in ("armature", "action", "model_out"):
             self.fields[key].setPlaceholderText(tr("animation.optional", "Необязательно"))
@@ -86,7 +89,10 @@ class AnimationDialog(ThemedDialog):
         visible = {"source", "output"}
         if mode == "scene-import":
             visible.add("rig")
-        if mode == "model-import" or (mode == "scene-import" and Path(self.fields["rig"].text()).suffix.lower() != ".blend"):
+        if mode == "library-import":
+            visible.add("animations")
+        xob_rig = mode == "scene-import" and Path(self.fields["rig"].text()).suffix.lower() != ".blend"
+        if mode in ("model-import", "library-import") or xob_rig:
             visible.add("assets_root")
         if mode == "scene-export":
             visible.add("model_out")
@@ -98,11 +104,13 @@ class AnimationDialog(ThemedDialog):
                 visible.add("armature")
             if mode == "scene-export":
                 visible.add("action")
+            if mode == "library-import":
+                visible.add("visual")
         for key, row in self.rows.items():
             self.form.setRowVisible(row, key in visible)
 
     def _changed(self, *_):
-        for key in ("source", "rig", "output", "model_out", "armature", "action"):
+        for key in ("source", "rig", "output", "model_out", "armature", "action", "animations", "visual"):
             self.fields[key].clear()
         self._rows()
 
@@ -110,23 +118,31 @@ class AnimationDialog(ThemedDialog):
         mode = self.operation.currentData()
         if key == "source":
             return {"convert": "*.anm *.txa", "model-import": "*.xob", "model-export": "*.blend",
+                    "library-import": "*.xob", "library-export": "*.blend",
                     "scene-import": "*.anm", "scene-export": "*.blend"}[mode]
         if key == "output":
             suffix = Path(self.fields["source"].text()).suffix.lower()
             return {"convert": "*.anm" if suffix == ".txa" else "*.txa", "model-import": "*.blend",
-                    "model-export": "*.xob", "scene-import": "*.blend", "scene-export": "*.anm"}[mode]
-        return {"rig": "*.xob *.blend", "model_out": "*.xob", "blender": "*.exe"}[key]
+                    "model-export": "*.xob", "scene-import": "*.blend", "scene-export": "*.anm",
+                    "library-import": "*.blend"}[mode]
+        return {"rig": "*.xob *.blend", "model_out": "*.xob", "blender": "*.exe", "visual": "*.p3d"}[key]
 
     def _suggest_output(self):
         source = self.fields["source"].text().strip()
         current = self.fields["output"].text()
         if Path(source).name and (not current or current == self.suggested_output):
-            self.suggested_output = str(Path(source).with_suffix(self._suffix("output")[1:]))
+            path = Path(source)
+            if self.operation.currentData() == "library-export":
+                target = path.with_name(path.stem + "_export")
+            else:
+                target = path.with_suffix(self._suffix("output")[1:])
+            self.suggested_output = str(target)
             self.fields["output"].setText(self.suggested_output)
 
     def _browse(self, key):
         start = self.fields[key].text() or self.fields["source"].text()
-        if key in ("toolkit", "assets_root"):
+        output_folder = key == "output" and self.operation.currentData() == "library-export"
+        if key in ("toolkit", "assets_root", "animations") or output_folder:
             choice = QFileDialog.getExistingDirectory(self, self.windowTitle(), start)
         else:
             select = QFileDialog.getSaveFileName if key in ("output", "model_out") else QFileDialog.getOpenFileName
@@ -143,8 +159,21 @@ class AnimationDialog(ThemedDialog):
             self.result.setPlainText(tr("animation.choose", "Укажите исходный файл, результат и нужный для операции риг."))
             return
         argv = ["animation", mode, values["source"], "-o", values["output"]]
-        for key in ("rig", "model_out", "armature", "action", "toolkit", "blender", "assets_root"):
-            if values[key] and (self.rows[key].isVisible() or key == "toolkit" or (key == "blender" and mode != "convert")):
+        option_keys = {
+            "convert": (),
+            "model-import": ("assets_root",),
+            "model-export": ("armature",),
+            "scene-import": ("rig", "armature"),
+            "scene-export": ("model_out", "armature", "action"),
+            "library-import": ("animations", "visual", "assets_root"),
+            "library-export": (),
+        }[mode]
+        if mode == "scene-import" and Path(values["rig"]).suffix.lower() == ".xob":
+            option_keys += ("assets_root",)
+        if mode != "convert":
+            option_keys += ("blender",)
+        for key in (*option_keys, "toolkit"):
+            if values[key]:
                 argv.extend(["--" + key.replace("_", "-"), values[key]])
         if self.replace.isChecked():
             argv.append("--overwrite")

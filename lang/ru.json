@@ -1,4 +1,8 @@
 {
+  "animation.library_import": "Модель и все анимации → Blender",
+  "animation.library_export": "Экспорт модели и всех анимаций",
+  "animation.animations": "Папка анимаций",
+  "animation.visual": "Видимая модель P3D",
   "animation.lossy": "TXA не удалось вернуть в побайтно исходный ANM. Для сохранения оригинала используйте scene-import.",
   "animation.verified": "Проверено: обратная конвертация вернула исходный ANM байт в байт.",
   "animation.action": "Имя действия",

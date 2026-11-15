@@ -25,6 +25,8 @@ def arguments():
         ("model-export", "Export the model from a Blender scene to DayZ XOB"),
         ("scene-import", "Apply an ANM clip to an XOB or Blender rig"),
         ("scene-export", "Export an ANM clip and optionally its XOB model"),
+        ("library-import", "Open a DayZ model and its animation library in DayZ Model Studio"),
+        ("library-export", "Export the model, all clips and their report from DayZ Model Studio"),
     ):
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("source", type=Path)
@@ -33,7 +35,7 @@ def arguments():
         sub.add_argument("--overwrite", action="store_true", help="Replace existing outputs")
         if name != "convert":
             sub.add_argument("--blender", help="Path to blender.exe")
-        if name in ("model-import", "scene-import"):
+        if name in ("model-import", "scene-import", "library-import"):
             sub.add_argument("--assets-root", type=Path, action="append", metavar="DIR",
                              help="Model resource directory for XOB import (repeat for multiple directories)")
         if name in ("model-export", "scene-import", "scene-export"):
@@ -43,6 +45,9 @@ def arguments():
         if name == "scene-export":
             sub.add_argument("--model-out", type=Path, help="Also export this XOB model")
             sub.add_argument("--action", help="Blender action name")
+        if name == "library-import":
+            sub.add_argument("--animations", type=Path, metavar="DIR", help="Directory containing ANM clips")
+            sub.add_argument("--visual", type=Path, metavar="MODEL.p3d", help="Visual P3D model for a skeleton XOB")
     return parser
 
 
@@ -88,6 +93,44 @@ def _check_file(path, suffixes, *, input_file):
     if input_file and not path.is_file():
         raise ValueError(tr("animation.input_missing", "Входной файл не найден: {path}").format(path=path))
     return path
+
+
+def _blender_command(script, args, settings):
+    bridge = _toolkit_file("blender/" + script, args, settings)
+    return [_blender(args, settings), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", bridge, "--"]
+
+
+def _asset_flags(args, settings):
+    roots = args.assets_root
+    if not roots and settings.animation_assets_root:
+        roots = [Path(settings.animation_assets_root)]
+    flags = []
+    for root in roots or ():
+        folder = root.expanduser().resolve()
+        if not folder.is_dir():
+            message = tr("animation.assets_missing", "Папка ресурсов модели не найдена: {path}")
+            raise ValueError(message.format(path=folder))
+        flags.extend(["--assets-root", folder])
+    return flags
+
+
+def _studio(args, settings):
+    importing = args.command == "library-import"
+    source = _check_file(args.source, (".xob",) if importing else (".blend",), input_file=True)
+    output = args.output.expanduser().resolve()
+    command = _blender_command("model_studio.py", args, settings)
+    command += ["import" if importing else "export", source, "-o", output]
+    if importing:
+        command += _asset_flags(args, settings)
+        if args.animations:
+            command += ["--animations", args.animations.expanduser().resolve()]
+        if args.visual:
+            command += ["--visual", args.visual.expanduser().resolve()]
+    if args.overwrite:
+        command.append("--overwrite")
+    # Studio owns staging, batch validation and publishing for its complete library.
+    return _invoke(command)
 
 
 def _invoke(argv):
@@ -145,6 +188,8 @@ def _publish(stages, outputs, overwrite):
 def run(args, settings=None):
     settings = settings or Settings.load()
     command = args.command
+    if command in ("library-import", "library-export"):
+        return _studio(args, settings)
     source_types = {"convert": (".anm", ".txa"), "model-import": (".xob",),
                     "model-export": (".blend",), "scene-import": (".anm",),
                     "scene-export": (".blend",)}
@@ -191,9 +236,7 @@ def run(args, settings=None):
                     logs.append(tr("animation.verified", "Проверено: обратная конвертация вернула исходный ANM байт в байт."))
                 shutil.copyfile(converted, stages[0])
         else:
-            bridge = _toolkit_file("blender/xob_cli.py", args, settings)
-            base = [_blender(args, settings), "--background", "--factory-startup", "--disable-autoexec",
-                    "--python-exit-code", "1", "--python", bridge, "--"]
+            base = _blender_command("xob_cli.py", args, settings)
             op = {"model-import": "import", "model-export": "export",
                   "scene-import": "import-anm", "scene-export": "export-anm"}[command]
             armature = ["--armature", args.armature] if getattr(args, "armature", None) else []
@@ -201,15 +244,7 @@ def run(args, settings=None):
             if command == "scene-import":
                 flags.extend(["--rig", inputs[1]])
             if command == "model-import" or (command == "scene-import" and inputs[1].suffix.lower() == ".xob"):
-                roots = args.assets_root
-                if not roots and settings.animation_assets_root:
-                    roots = [Path(settings.animation_assets_root)]
-                for root in roots or ():
-                    folder = root.expanduser().resolve()
-                    if not folder.is_dir():
-                        message = tr("animation.assets_missing", "Папка ресурсов модели не найдена: {path}")
-                        raise ValueError(message.format(path=folder))
-                    flags.extend(["--assets-root", folder])
+                flags += _asset_flags(args, settings)
             elif getattr(args, "assets_root", None):
                 logs.append(tr("animation.assets_blend",
                                "Для готовой сцены Blender используются сохранённые в ней материалы."))

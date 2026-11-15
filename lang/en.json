@@ -1,4 +1,8 @@
 {
+  "animation.library_import": "Model and all animations → Blender",
+  "animation.library_export": "Export model and all animations",
+  "animation.animations": "Animations folder",
+  "animation.visual": "Visual P3D model",
   "animation.lossy": "Converting this TXA back did not reproduce the original ANM byte for byte. Use scene-import to preserve the original.",
   "animation.verified": "Verified: converting the TXA back reproduced the original ANM byte for byte.",
   "animation.action": "Action name",

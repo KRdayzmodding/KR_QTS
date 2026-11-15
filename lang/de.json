@@ -1,4 +1,8 @@
 {
+  "animation.library_import": "Modell und alle Animationen → Blender",
+  "animation.library_export": "Modell und alle Animationen exportieren",
+  "animation.animations": "Animationsordner",
+  "animation.visual": "Sichtbares P3D-Modell",
   "animation.assets_root": "Modellressourcen",
   "animation.assets_missing": "Modellressourcenverzeichnis nicht gefunden: {path}",
   "animation.assets_blend": "Eine vorhandene Blender-Szene verwendet ihre gespeicherten Materialien.",
