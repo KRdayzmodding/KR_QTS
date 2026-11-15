@@ -404,14 +404,19 @@ qtsctl animation model-export editing/character.blend -o result/character.xob
 qtsctl animation scene-import walk.anm --rig editing/character.blend -o editing/walk.blend
 qtsctl animation scene-export editing/walk.blend -o result/edited.anm --model-out result/edited.xob
 qtsctl animation library-import wolf.xob --animations anims -o editing/wolf.blend
+qtsctl animation library-import animals.pbo --model virtual/path/wolf.xob -o editing/wolf.blend
 qtsctl animation library-export editing/wolf.blend -o result/wolf
 ```
 
 Команды `library-import` и `library-export` вызывают DayZ Model Studio.
 Первая собирает модель и клипы из папки в одну сцену Blender. Допускается
 явно передать видимую P3D-модель для XOB-скелета через `--visual`.
-Вторая сохраняет XOB, клипы ANM по их относительным именам и отчёт в отдельную
-папку. При первом экспорте выберите новую или пустую папку.
+Вторая сохраняет модель, клипы и доступные ресурсы по их игровым относительным
+путям. Отчёт `model-studio.json` находится в корне результата. При первом
+экспорте выберите новую или пустую папку. Параметр `--geometry visual` выбирает
+видимый меш при экспорте, `--primary-uv-only` явно разрешает сокращение
+до основного UV-слоя при таком экспорте. Путь модели внутри
+PBO можно посмотреть в отдельной программе DayZ Model Studio.
 
 Для экспорта одного клипа опустите `--model-out`. При нескольких действиях
 в Blender укажите `--action`. Перед сохранением TXA команда конвертирует его

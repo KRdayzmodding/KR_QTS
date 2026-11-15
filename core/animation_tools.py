@@ -46,15 +46,21 @@ def arguments():
             sub.add_argument("--model-out", type=Path, help="Also export this XOB model")
             sub.add_argument("--action", help="Blender action name")
         if name == "library-import":
+            sub.add_argument("--model", metavar="XOB", help="Virtual XOB path inside a PBO archive")
             sub.add_argument("--animations", type=Path, metavar="DIR", help="Directory containing ANM clips")
             sub.add_argument("--visual", type=Path, metavar="MODEL.p3d", help="Visual P3D model for a skeleton XOB")
+        if name == "library-export":
+            sub.add_argument("--geometry", choices=("source", "visual"), help="Export original or visible model geometry")
+            sub.add_argument("--primary-uv-only", action="store_true", help="Reduce a visual XOB6 export to its primary UV layer")
     return parser
 
 
 def _toolkit_file(relative: str, args, settings) -> Path:
     base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
     explicit = args.toolkit or settings.animation_toolkit
-    roots = [explicit] if explicit else [base, base.parent, settings.krbuild_exe, toolkit_home()]
+    local = os.environ.get("LOCALAPPDATA")
+    studio_install = Path(local) / "Programs/KR DayZ Model Studio" if local else None
+    roots = [explicit] if explicit else [base, base.parent, studio_install, settings.krbuild_exe, toolkit_home()]
     for value in filter(None, roots):
         root = Path(value)
         if root.is_file():
@@ -117,7 +123,7 @@ def _asset_flags(args, settings):
 
 def _studio(args, settings):
     importing = args.command == "library-import"
-    source = _check_file(args.source, (".xob",) if importing else (".blend",), input_file=True)
+    source = _check_file(args.source, (".xob", ".pbo") if importing else (".blend",), input_file=True)
     output = args.output.expanduser().resolve()
     command = _blender_command("model_studio.py", args, settings)
     command += ["import" if importing else "export", source, "-o", output]
@@ -127,6 +133,13 @@ def _studio(args, settings):
             command += ["--animations", args.animations.expanduser().resolve()]
         if args.visual:
             command += ["--visual", args.visual.expanduser().resolve()]
+        if args.model:
+            command += ["--model", args.model]
+    else:
+        if args.geometry:
+            command += ["--geometry", args.geometry]
+        if args.primary_uv_only:
+            command.append("--primary-uv-only")
     if args.overwrite:
         command.append("--overwrite")
     # Studio owns staging, batch validation and publishing for its complete library.

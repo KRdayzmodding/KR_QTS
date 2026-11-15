@@ -1,4 +1,6 @@
 {
+  "animation.library_output": "Новая или пустая папка для файлов с игровыми путями",
+  "animation.model": "Путь XOB в архиве PBO",
   "animation.library_import": "Модель и все анимации → Blender",
   "animation.library_export": "Экспорт модели и всех анимаций",
   "animation.animations": "Папка анимаций",

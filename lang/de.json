@@ -1,4 +1,6 @@
 {
+  "animation.library_output": "Neuer oder leerer Ordner für die Dateien mit Spielpfaden",
+  "animation.model": "XOB-Pfad im PBO-Archiv",
   "animation.library_import": "Modell und alle Animationen → Blender",
   "animation.library_export": "Modell und alle Animationen exportieren",
   "animation.animations": "Animationsordner",

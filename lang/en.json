@@ -1,4 +1,6 @@
 {
+  "animation.library_output": "New or empty folder for the game-relative files",
+  "animation.model": "XOB path inside the PBO",
   "animation.library_import": "Model and all animations → Blender",
   "animation.library_export": "Export model and all animations",
   "animation.animations": "Animations folder",

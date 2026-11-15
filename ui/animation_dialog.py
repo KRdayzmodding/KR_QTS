@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QProcess
+from PySide6.QtCore import QProcess, QStandardPaths
 from PySide6.QtWidgets import QFileDialog, QFormLayout, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (BodyLabel, CheckBox, ComboBox, FluentIcon as FIF, LineEdit,
                             PlainTextEdit, PrimaryPushButton, ToolButton)
@@ -38,7 +38,8 @@ class AnimationDialog(ThemedDialog):
         self.fields = {}
         self.rows = {}
         for key, label in (("source", "Исходный файл"), ("rig", "Риг XOB / Blender"),
-                           ("animations", "Папка анимаций"), ("visual", "Видимая модель P3D"),
+                           ("model", "Путь XOB в архиве PBO"), ("animations", "Папка анимаций"),
+                           ("visual", "Видимая модель P3D"),
                            ("assets_root", "Ресурсы модели"),
                            ("output", "Сохранить в"), ("model_out", "Дополнительно сохранить XOB"),
                            ("armature", "Имя арматуры"), ("action", "Имя действия"),
@@ -50,7 +51,7 @@ class AnimationDialog(ThemedDialog):
             self.fields[key] = field
             self.rows[key] = row
             line.addWidget(field)
-            if key not in ("armature", "action"):
+            if key not in ("armature", "action", "model"):
                 pick = ToolButton(FIF.FOLDER)
                 pick.clicked.connect(lambda checked=False, item=key: self._browse(item))
                 line.addWidget(pick)
@@ -81,6 +82,7 @@ class AnimationDialog(ThemedDialog):
         self.operation.currentIndexChanged.connect(self._changed)
         self.fields["rig"].textChanged.connect(self._rows)
         self.fields["source"].editingFinished.connect(self._suggest_output)
+        self.fields["source"].textChanged.connect(self._rows)
         self._rows()
 
     def _rows(self, *_):
@@ -91,6 +93,8 @@ class AnimationDialog(ThemedDialog):
             visible.add("rig")
         if mode == "library-import":
             visible.add("animations")
+            if Path(self.fields["source"].text()).suffix.lower() == ".pbo":
+                visible.add("model")
         xob_rig = mode == "scene-import" and Path(self.fields["rig"].text()).suffix.lower() != ".blend"
         if mode in ("model-import", "library-import") or xob_rig:
             visible.add("assets_root")
@@ -108,9 +112,12 @@ class AnimationDialog(ThemedDialog):
                 visible.add("visual")
         for key, row in self.rows.items():
             self.form.setRowVisible(row, key in visible)
+        self.fields["output"].setPlaceholderText(
+            tr("animation.library_output", "Новая или пустая папка для файлов с игровыми путями")
+            if mode == "library-export" else "")
 
     def _changed(self, *_):
-        for key in ("source", "rig", "output", "model_out", "armature", "action", "animations", "visual"):
+        for key in ("source", "rig", "output", "model", "model_out", "armature", "action", "animations", "visual"):
             self.fields[key].clear()
         self._rows()
 
@@ -118,7 +125,7 @@ class AnimationDialog(ThemedDialog):
         mode = self.operation.currentData()
         if key == "source":
             return {"convert": "*.anm *.txa", "model-import": "*.xob", "model-export": "*.blend",
-                    "library-import": "*.xob", "library-export": "*.blend",
+                    "library-import": "*.xob *.pbo", "library-export": "*.blend",
                     "scene-import": "*.anm", "scene-export": "*.blend"}[mode]
         if key == "output":
             suffix = Path(self.fields["source"].text()).suffix.lower()
@@ -134,6 +141,9 @@ class AnimationDialog(ThemedDialog):
             path = Path(source)
             if self.operation.currentData() == "library-export":
                 target = path.with_name(path.stem + "_export")
+            elif self.operation.currentData() == "library-import":
+                folder = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+                target = Path(folder) / "KR DayZ Model Studio" / (path.stem + ".blend")
             else:
                 target = path.with_suffix(self._suffix("output")[1:])
             self.suggested_output = str(target)
@@ -170,6 +180,8 @@ class AnimationDialog(ThemedDialog):
         }[mode]
         if mode == "scene-import" and Path(values["rig"]).suffix.lower() == ".xob":
             option_keys += ("assets_root",)
+        if mode == "library-import" and Path(values["source"]).suffix.lower() == ".pbo":
+            option_keys += ("model",)
         if mode != "convert":
             option_keys += ("blender",)
         for key in (*option_keys, "toolkit"):
