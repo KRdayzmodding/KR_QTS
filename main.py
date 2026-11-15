@@ -89,6 +89,13 @@ def main() -> int:
     app.setWindowIcon(outside_icon())
     # колесо мыши листает страницы, а не правит числа под курсором
     nowheel.install(app)
+    if "--animation" in sys.argv[1:]:
+        from ui.animation_dialog import AnimationDialog
+        settings = Settings.load()
+        i18n.load(settings.language)
+        setTheme(_THEMES.get(settings.theme, Theme.AUTO))
+        AnimationDialog(settings).exec()
+        return 0
 
     # До чтения настроек: вторая копия не должна успеть ничего ни прочитать,
     # ни записать — иначе два менеджера начнут спорить за одни файлы.

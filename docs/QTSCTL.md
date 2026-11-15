@@ -380,3 +380,28 @@ qtsctl -preset dev -server -client +pack
 qtsctl status
 qtsctl status -json    для скрипта
 ```
+# Модели и анимации
+
+В QTS откройте **Модели и анимации** или запустите `KR_QTS.exe --animation`.
+Выберите операцию, исходный файл и имя результата. Для анимации укажите ещё
+риг XOB либо существующую сцену Blender. Имя арматуры и действия можно задать
+в дополнительных параметрах. Для работы с XOB и сценами нужен Blender.
+Команды обрабатывают локальные файлы независимо от сервера.
+
+```powershell
+qtsctl animation convert walk.anm -o editing/walk.txa
+qtsctl animation convert editing/walk.txa -o result/walk.anm
+qtsctl animation model-import character.xob -o editing/character.blend
+qtsctl animation model-export editing/character.blend -o result/character.xob
+qtsctl animation scene-import walk.anm --rig editing/character.blend -o editing/walk.blend
+qtsctl animation scene-export editing/walk.blend -o result/edited.anm --model-out result/edited.xob
+```
+
+Для экспорта одного клипа опустите `--model-out`. При нескольких действиях
+используйте `--action`, при нескольких арматурах — `--armature`.
+Существующий результат можно заменить с `--overwrite`. Исходники защищены.
+Для переносимого комплекта положите `AnmConverter.exe` с его библиотеками и
+каталог `blender/` (мост `xob_cli.py` и пакет `kr_xob/`) рядом с QTS либо
+в `tools/`. Конвертер может также использоваться из установленного KR DevToolkit.
+Отдельную папку указывайте в форме или через `--toolkit`, программу Blender — через
+`--blender`. Полный список параметров — `qtsctl animation --help`.

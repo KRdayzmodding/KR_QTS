@@ -30,6 +30,8 @@ TOPICS = ("commands", cliargs.G_BASIC, cliargs.G_MODS, cliargs.G_PACK,
 # написать», но не на вопрос «что из этого мне нужно», а спрашивают именно
 # второе.
 COMMANDS_HELP = (
+    ("animation", "cli.cmd.animation",
+     "Модели и анимации без запуска сервера. Команды: qtsctl animation --help."),
     (cliargs.LAUNCH, "cli.cmd.launch",
      "Поднять сервер и клиент по пресету. Глагол можно не писать — команда "
      "без глагола означает запуск."),
@@ -223,7 +225,7 @@ def capabilities() -> dict:
             item["diag_only"] = True
         args.append(item)
     return {"v": cliproto.API,
-            "commands": list(cliargs.COMMANDS),
+            "commands": [*cliargs.COMMANDS, "animation"],
             "command_help": {name: tr(key, default)
                              for name, key, default in COMMANDS_HELP},
             "args": args,
