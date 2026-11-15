@@ -266,6 +266,19 @@ def wheel_rules() -> None:
     page.deleteLater()
 
 
+def _panel_registry():
+    """Два мода для проверок интерфейса, независимо от установок пользователя."""
+    from core.mods import ModInfo, ModRegistry, SOURCE_LOCAL
+    from core.settings import Settings
+
+    registry = ModRegistry(Settings())
+    for name, server in (("SmokeClient", False), ("SmokeServer", True)):
+        mod = ModInfo(name=name, path=str(ROOT / "tests" / name),
+                      source=SOURCE_LOCAL, group="Smoke", is_server=server)
+        registry.mods[mod.folder_name.lower()] = mod
+    return registry
+
+
 def server_flag() -> None:
     """Признак «серверный» переживает нажатие.
 
@@ -281,7 +294,6 @@ def server_flag() -> None:
     import core.presets as presets_mod
     from core.mods import ModRegistry
     from core.presets import ServerPreset
-    from core.settings import Settings as _S
     from ui.mods_panel import COL_SERVER, ModsPanel
     app = QApplication.instance() or QApplication([])
 
@@ -289,13 +301,11 @@ def server_flag() -> None:
     mods_mod.ModRegistry.save_flags = lambda self: None      # на диск не пишем
     presets_mod.apply_server_flag = lambda name, flag: ["smoke"]
     try:
-        st = _S.load()
-        reg = ModRegistry(st)
-        reg.scan()
+        reg = _panel_registry()
         preset = ServerPreset(name="smoke_flag", mission="smoke.chernarusplus")
         preset.save = lambda: None
         panel = ModsPanel()
-        panel.set_context(reg, st)
+        panel.set_context(reg, reg.settings)
         panel.preset = preset
         item = next(iter(panel._iter_mod_items()), None)
         mod = panel._item_mod(item) if item is not None else None
@@ -1422,29 +1432,24 @@ def mods_buttons() -> None:
     """
     print("Кнопки состава модов:")
     from PySide6.QtWidgets import QApplication
-    from core.mods import ModRegistry
     from core.presets import ServerPreset
-    from core.settings import Settings as _S
     from ui.mods_panel import ModsPanel
     QApplication.instance() or QApplication([])
 
-    st = _S.load()
-    reg = ModRegistry(st)
-    reg.scan()
+    reg = _panel_registry()
     preset = ServerPreset(name="smoke_all", mission="smoke.chernarusplus")
     preset.save = lambda: None      # на диск ничего не уходит
     panel = ModsPanel()
-    panel.set_context(reg, st)
+    panel.set_context(reg, reg.settings)
     panel.preset = preset
-    total = len(reg.all())
     for flat in (False, True):
         panel._flat_view = flat
         panel._rebuild()
         preset.mods, preset.server_mods = [], []
         panel._set_all(True)
-        got = len(preset.mods) + len(preset.server_mods)
         vid = "плоский список" if flat else "дерево"
-        check(f"включить все ({vid}): подключено {got} из {total}", got == total)
+        check(f"включить все ({vid}): подключены оба мода",
+              preset.mods == ["SmokeClient"] and preset.server_mods == ["SmokeServer"])
         panel._set_all(False)
         check(f"выключить все ({vid})",
               not preset.mods and not preset.server_mods)
