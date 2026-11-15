@@ -1,4 +1,7 @@
 {
+  "animation.assets_root": "Modellressourcen",
+  "animation.assets_missing": "Modellressourcenverzeichnis nicht gefunden: {path}",
+  "animation.assets_blend": "Eine vorhandene Blender-Szene verwendet ihre gespeicherten Materialien.",
   "animation.lossy": "Aus dieser TXA ließ sich die ursprüngliche ANM nicht bytegenau wiederherstellen. Verwenden Sie scene-import, um das Original zu erhalten.",
   "animation.verified": "Geprüft: Die Rückkonvertierung hat die ursprüngliche ANM bytegenau wiederhergestellt.",
   "animation.action": "Aktionsname",

@@ -370,6 +370,7 @@ class Settings:
     krbuild_exe: str = ""
     animation_toolkit: str = ""
     animation_blender: str = ""
+    animation_assets_root: str = ""
     # Режим pboProject: "" — не перепаковывать, "normal" — инкрементально
     # (переиспользует temp), "full" — FullBuild, чистит temp и собирает всё
     pack_engine: str = "normal"

@@ -31,11 +31,12 @@ class AnimationDialog(ThemedDialog):
             ("scene-import", "scene_import", "Применить ANM к ригу"),
             ("scene-export", "scene_export", "Экспорт анимации из Blender"),
         ):
-            self.operation.addItem(tr("animation." + key, fallback), userData=name)
+            self.operation.addItem(tr(f"animation.{key}", fallback), userData=name)
         self.form.addRow(BodyLabel(tr("animation.operation", "Операция")), self.operation)
         self.fields = {}
         self.rows = {}
         for key, label in (("source", "Исходный файл"), ("rig", "Риг XOB / Blender"),
+                           ("assets_root", "Ресурсы модели"),
                            ("output", "Сохранить в"), ("model_out", "Дополнительно сохранить XOB"),
                            ("armature", "Имя арматуры"), ("action", "Имя действия"),
                            ("toolkit", "Папка комплекта KR"), ("blender", "Программа Blender")):
@@ -50,10 +51,11 @@ class AnimationDialog(ThemedDialog):
                 pick = ToolButton(FIF.FOLDER)
                 pick.clicked.connect(lambda checked=False, item=key: self._browse(item))
                 line.addWidget(pick)
-            self.form.addRow(BodyLabel(tr("animation." + key, label)), row)
+            self.form.addRow(BodyLabel(tr(f"animation.{key}", label)), row)
         self.fields["toolkit"].setText(settings.animation_toolkit)
         self.fields["blender"].setText(settings.animation_blender)
-        for key in ("toolkit", "blender"):
+        self.fields["assets_root"].setText(settings.animation_assets_root)
+        for key in ("toolkit", "blender", "assets_root"):
             self.fields[key].setPlaceholderText(tr("animation.automatic", "Автопоиск"))
         for key in ("armature", "action", "model_out"):
             self.fields[key].setPlaceholderText(tr("animation.optional", "Необязательно"))
@@ -74,6 +76,7 @@ class AnimationDialog(ThemedDialog):
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._error)
         self.operation.currentIndexChanged.connect(self._changed)
+        self.fields["rig"].textChanged.connect(self._rows)
         self.fields["source"].editingFinished.connect(self._suggest_output)
         self._rows()
 
@@ -83,6 +86,8 @@ class AnimationDialog(ThemedDialog):
         visible = {"source", "output"}
         if mode == "scene-import":
             visible.add("rig")
+        if mode == "model-import" or (mode == "scene-import" and Path(self.fields["rig"].text()).suffix.lower() != ".blend"):
+            visible.add("assets_root")
         if mode == "scene-export":
             visible.add("model_out")
         if extra:
@@ -121,7 +126,7 @@ class AnimationDialog(ThemedDialog):
 
     def _browse(self, key):
         start = self.fields[key].text() or self.fields["source"].text()
-        if key == "toolkit":
+        if key in ("toolkit", "assets_root"):
             choice = QFileDialog.getExistingDirectory(self, self.windowTitle(), start)
         else:
             select = QFileDialog.getSaveFileName if key in ("output", "model_out") else QFileDialog.getOpenFileName
@@ -138,14 +143,15 @@ class AnimationDialog(ThemedDialog):
             self.result.setPlainText(tr("animation.choose", "Укажите исходный файл, результат и нужный для операции риг."))
             return
         argv = ["animation", mode, values["source"], "-o", values["output"]]
-        for key in ("rig", "model_out", "armature", "action", "toolkit", "blender"):
+        for key in ("rig", "model_out", "armature", "action", "toolkit", "blender", "assets_root"):
             if values[key] and (self.rows[key].isVisible() or key == "toolkit" or (key == "blender" and mode != "convert")):
                 argv.extend(["--" + key.replace("_", "-"), values[key]])
         if self.replace.isChecked():
             argv.append("--overwrite")
-        if (self.settings.animation_toolkit, self.settings.animation_blender) != (values["toolkit"], values["blender"]):
-            self.settings.animation_toolkit = values["toolkit"]
-            self.settings.animation_blender = values["blender"]
+        path_settings = {f"animation_{key}": values[key] for key in ("toolkit", "blender", "assets_root")}
+        if any(getattr(self.settings, key) != value for key, value in path_settings.items()):
+            for key, value in path_settings.items():
+                setattr(self.settings, key, value)
             self.settings.save()
         if getattr(sys, "frozen", False):
             exe = str(Path(sys.executable).with_name("qtsctl.exe"))

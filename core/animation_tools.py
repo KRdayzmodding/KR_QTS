@@ -33,6 +33,9 @@ def arguments():
         sub.add_argument("--overwrite", action="store_true", help="Replace existing outputs")
         if name != "convert":
             sub.add_argument("--blender", help="Path to blender.exe")
+        if name in ("model-import", "scene-import"):
+            sub.add_argument("--assets-root", type=Path, action="append", metavar="DIR",
+                             help="Model resource directory for XOB import (repeat for multiple directories)")
         if name in ("model-export", "scene-import", "scene-export"):
             sub.add_argument("--armature", help="Armature object name in Blender")
         if name == "scene-import":
@@ -197,6 +200,19 @@ def run(args, settings=None):
             flags = armature.copy()
             if command == "scene-import":
                 flags.extend(["--rig", inputs[1]])
+            if command == "model-import" or (command == "scene-import" and inputs[1].suffix.lower() == ".xob"):
+                roots = args.assets_root
+                if not roots and settings.animation_assets_root:
+                    roots = [Path(settings.animation_assets_root)]
+                for root in roots or ():
+                    folder = root.expanduser().resolve()
+                    if not folder.is_dir():
+                        message = tr("animation.assets_missing", "Папка ресурсов модели не найдена: {path}")
+                        raise ValueError(message.format(path=folder))
+                    flags.extend(["--assets-root", folder])
+            elif getattr(args, "assets_root", None):
+                logs.append(tr("animation.assets_blend",
+                               "Для готовой сцены Blender используются сохранённые в ней материалы."))
             if getattr(args, "action", None):
                 flags.extend(["--action", args.action])
             logs.append(_invoke([*base, op, source, "-o", stages[0], *flags]))

@@ -388,10 +388,18 @@ qtsctl status -json    для скрипта
 в дополнительных параметрах. Для работы с XOB и сценами нужен Blender.
 Команды обрабатывают локальные файлы независимо от сервера.
 
+При импорте XOB отдельно или вместе с ANM поле **Ресурсы модели** запоминает
+папку с внешними материалами и текстурами. Поле можно оставить пустым.
+Для нескольких библиотек повторите `--assets-root` в командной строке.
+Мост Blender также читает `KR_DAYZ_ASSET_ROOTS` (несколько путей в Windows
+разделяются точкой с запятой). Существующий риг .blend сохраняет собственные
+материалы.
+
 ```powershell
 qtsctl animation convert walk.anm -o editing/walk.txa
 qtsctl animation convert editing/walk.txa -o result/walk.anm
 qtsctl animation model-import character.xob -o editing/character.blend
+qtsctl animation model-import character.xob --assets-root "D:\DayZ assets" --assets-root "D:\Models" -o editing/character.blend
 qtsctl animation model-export editing/character.blend -o result/character.xob
 qtsctl animation scene-import walk.anm --rig editing/character.blend -o editing/walk.blend
 qtsctl animation scene-export editing/walk.blend -o result/edited.anm --model-out result/edited.xob
@@ -404,8 +412,8 @@ qtsctl animation scene-export editing/walk.blend -o result/edited.anm --model-ou
 откройте ANM в Blender через `scene-import`, чтобы сохранить встроенную копию
 оригинала. При нескольких арматурах используйте `--armature`.
 Существующий результат можно заменить с `--overwrite`. Исходники защищены.
-Для переносимого комплекта положите `AnmConverter.exe` с его библиотеками и
-каталог `blender/` (мост `xob_cli.py` и пакет `kr_xob/`) рядом с QTS либо
-в `tools/`. Конвертер может также использоваться из установленного KR DevToolkit.
+Для ANM ↔ TXA установите официальный KR DevToolkit с компонентом AnmConverter.
+Для переносимого комплекта положите каталог `blender/` (мост `xob_cli.py` и
+пакет `kr_xob/`) рядом с QTS либо в `tools/`.
 Отдельную папку указывайте в форме или через `--toolkit`, программу Blender — через
 `--blender`. Полный список параметров — `qtsctl animation --help`.

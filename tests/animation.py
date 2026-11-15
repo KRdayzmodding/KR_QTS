@@ -93,6 +93,36 @@ class AnimationTests(unittest.TestCase):
             self.execute("scene-import", clip, "--rig", rig, "-o", rig, "--overwrite")
         self.assertEqual(rig.read_bytes(), b"rig")
 
+    def test_xob_imports_forward_resource_roots_and_keep_blender_materials(self):
+        model, clip = self.root / "actor.xob", self.root / "idle.anm"
+        saved = self.root / "rig.blend"
+        model.touch()
+        clip.touch()
+        saved.touch()
+        roots = [self.root / "library A", self.root / "библиотека B"]
+        for root in roots:
+            root.mkdir()
+        self.settings.animation_assets_root = str(roots[1])
+        sent = []
+
+        def blender(argv):
+            sent.append([argv[i + 1] for i, arg in enumerate(argv) if arg == "--assets-root"])
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"scene")
+            return "resource report from Blender"
+
+        roots_cli = ["--assets-root", roots[0], "--assets-root", roots[1]]
+        with patch.object(tools, "_invoke", blender):
+            log = self.execute("model-import", model, "-o", self.root / "one.blend", *roots_cli)
+            self.assertIn("resource report from Blender", log)
+            self.execute("scene-import", clip, "--rig", model, "-o", self.root / "two.blend", *roots_cli)
+            self.execute("model-import", model, "-o", self.root / "three.blend")
+            self.execute("scene-import", clip, "--rig", saved, "-o", self.root / "four.blend", *roots_cli)
+            with self.assertRaises(ValueError):
+                self.execute("model-import", model, "-o", self.root / "missing.blend",
+                             "--assets-root", self.root / "missing library")
+        self.assertEqual(sent, [roots, roots, roots[1:], []])
+        self.assertFalse((self.root / "missing.blend").exists())
+
     def test_publish_restores_prior_file_when_second_name_cannot_be_created(self):
         first, second = self.root / "first", self.root / "second"
         first.write_bytes(b"previous")
