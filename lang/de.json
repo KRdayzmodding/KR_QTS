@@ -521,6 +521,7 @@
   "main.relaunching": "— Start: {s} von „{n}“ ({b}) —",
   "main.repack_off": "Nicht packen",
   "main.repack_unavailable": "Packen nicht verfügbar: pboProject und DayZ Tools werden benötigt.",
+  "main.repack_kr_unavailable": "ProjectBuilder.exe in den KR-DevToolkit-Einstellungen auswählen.",
   "main.restart_cancelled": "Neustart abgebrochen",
   "main.restart_queued": "Nach dem Beenden wird neu gestartet",
   "main.restart_queued_btn": "Startet neu",

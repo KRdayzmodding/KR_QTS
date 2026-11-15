@@ -27,7 +27,7 @@ from core.preflight import run_checks
 from core.presets import ServerPreset, MODE_DIAG
 from core.settings import (
     Settings, STABLE, EXPERIMENTAL, CLIENT_EXE, SERVER_EXE, PATH_NOT_INSTALLED,
-    check_path, find_pbo_project_exe, is_install,
+    check_path, is_install,
 )
 from core.steam_urls import SETTINGS_APPS
 from core.version import APP_NAME, VERSION
@@ -2268,22 +2268,19 @@ class MainWindow(FluentWindow):
         if not exp_ok and combo.currentIndex() == 1:
             combo.setCurrentIndex(0)
 
-        # Запаковка требует и pboProject, и DayZ Tools (pboProject зовёт
-        # Оба режима — это pboProject, поэтому доступность у них общая:
-        # он сам зовёт бинаризатор из DayZ Tools и без них падает.
         engine = self.launch_page.pack_engine
-        ok = (Path(find_pbo_project_exe(s.mikero_tools)).is_file()
-              and bool(s.dayz_tools) and Path(s.dayz_tools).is_dir())
+        if s.pack_tool == "krbuild":
+            ok = Path(s.krbuild_cli()).is_file()
+            missing = tr("main.repack_kr_unavailable", "Укажите ProjectBuilder.exe в настройках KR DevToolkit.")
+        else:
+            ok = Path(s.pbo_project_exe()).is_file() and bool(s.dayz_tools) and Path(s.dayz_tools).is_dir()
+            missing = tr("main.repack_unavailable", "Запаковка недоступна: нужны pboProject и DayZ Tools.")
         for data in ("normal", "full"):
             idx = engine.findData(data)
             engine.setItemEnabled(idx, ok)
             if not ok and engine.currentIndex() == idx:
                 engine.setCurrentIndex(0)   # «Не запаковывать»
-        if not ok:
-            engine.setToolTip(tr("main.repack_unavailable",
-                                 "Запаковка недоступна: нужны pboProject и DayZ Tools."))
-        else:
-            engine.setToolTip("")
+        engine.setToolTip("" if ok else missing)
 
     # ------------------------------------------------------------ обновление
 

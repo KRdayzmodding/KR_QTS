@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import os
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -14,6 +15,35 @@ from core.settings import STABLE, Settings
 
 
 class PreflightPacker(unittest.TestCase):
+    def test_ui_keeps_full_repack_with_projectbuilder_alone(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from qfluentwidgets import ComboBox
+        from ui.main_window import MainWindow
+
+        app = QApplication.instance() or QApplication([])
+        engine, branches = ComboBox(), ComboBox()
+        for value in ("", "normal", "full"):
+            engine.addItem(value or "off", userData=value)
+        branches.addItems(["stable", "experimental"])
+        with tempfile.TemporaryDirectory() as temp:
+            exe = Path(temp) / "ProjectBuilder.exe"
+            exe.touch()
+            settings = Settings(krbuild_exe=str(exe), mikero_tools="", dayz_tools="", pack_tool="krbuild")
+            window = SimpleNamespace(settings=settings,
+                                     launch_page=SimpleNamespace(pack_engine=engine, branch_combo=branches))
+            engine.setCurrentIndex(2)
+            MainWindow._update_branch_availability(window)
+            self.assertEqual(engine.currentData(), "full")
+            self.assertFalse(engine.toolTip())
+            exe.unlink()
+            MainWindow._update_branch_availability(window)
+            self.assertEqual(engine.currentData(), "")
+            self.assertIn("ProjectBuilder", engine.toolTip())
+        engine.deleteLater()
+        branches.deleteLater()
+        app.processEvents()
+
     def test_only_the_selected_engine_can_satisfy_preflight(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
