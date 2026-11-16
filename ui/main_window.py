@@ -256,9 +256,6 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setMinimumExpandWidth(200)
 
         self.addSubInterface(self.launch_page, FIF.PLAY, tr("main.tab_launch", "Запуск"))
-        self.navigationInterface.addItem(
-            routeKey="animation", icon=FIF.VIDEO, text=tr("animation.title", "Модели и анимации"),
-            onClick=self._animation_tools, selectable=False)
         self.addSubInterface(self.settings_page, FIF.SETTING,
                              tr("menu.settings_nav", "Настройки"),
                              position=NavigationItemPosition.BOTTOM)
@@ -2435,10 +2432,6 @@ class MainWindow(FluentWindow):
                          tr("upd.install_failed", "Обновление не установлено"), err)
             return
         self.quit_app()
-
-    def _animation_tools(self) -> None:
-        from ui.animation_dialog import AnimationDialog
-        AnimationDialog(self.settings, self).exec()
 
     def _about(self) -> None:
         import re
