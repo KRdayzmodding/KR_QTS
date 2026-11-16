@@ -250,15 +250,11 @@ def build_client_command(preset: ServerPreset, settings: Settings, branch: str,
         # он записан в BattlEye\BELauncher.ini (64BitExe) и всегда верный.
         be = Path(client_root) / BE_LAUNCHER_NAME
         exe = str(be if be.is_file() else Path(client_root) / "DayZ_x64.exe")
-    extra = split_flags(preset.extra_client)
-    # DayZDiag can run a local mission offline. Supplying -connect here would
-    # send the client to the network server instead of its explicit mission.
-    offline = use_diag and any(a.lower().startswith("-mission=") and a[9:] for a in extra)
-    args = [] if offline else [f"-connect=127.0.0.1:{preset.port}"]
+    args = [f"-connect=127.0.0.1:{preset.port}"]
     if preset.mods:
         args.append(f"-mod={_mods_arg(preset.mods, registry, client_root, settings)}")
     args += _params_args(preset, CLIENT)
-    args += extra
+    args += split_flags(preset.extra_client)
     return exe, args, client_root
 
 

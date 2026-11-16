@@ -143,16 +143,6 @@ def main(argv: list[str]) -> int:
     except Exception:                                   # noqa: BLE001
         i18n.load("ru")     # настроек может не быть вовсе — справка нужна и так
 
-    if argv and argv[0].lower() == "animation":
-        from core import animation_tools
-        options = animation_tools.arguments().parse_args(argv[1:])
-        try:
-            _out(animation_tools.run(options))
-            return 0
-        except (OSError, ValueError) as exc:
-            _out(str(exc))
-            return 1
-
     try:
         req = cliargs.parse(argv)
     except CliError as e:

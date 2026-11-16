@@ -368,9 +368,6 @@ class Settings:
     # Папка Dev Toolkit. Пусто — Project Builder не настроен, выбор движка
     # предложит указать путь. В раздачу его не кладём: 61 МБ чужой программы.
     krbuild_exe: str = ""
-    animation_toolkit: str = ""
-    animation_blender: str = ""
-    animation_assets_root: str = ""
     # Режим pboProject: "" — не перепаковывать, "normal" — инкрементально
     # (переиспользует temp), "full" — FullBuild, чистит temp и собирает всё
     pack_engine: str = "normal"
